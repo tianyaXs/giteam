@@ -468,9 +468,16 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build tauri app");
 
-    app.run(|_app_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
-            giteam_core::pi_agent::PiAgentService::global().shutdown();
+    app.run(|app_handle, event| {
+        match event {
+            tauri::RunEvent::Exit => {
+                giteam_core::pi_agent::PiAgentService::global().shutdown();
+            }
+            // macOS：关闭按钮 hide 到托盘后，点 Dock 图标走 Reopen 而不是再起进程。
+            // 不处理的话图标点了没反应，窗口仍藏着。
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => show_main_window(app_handle),
+            _ => {}
         }
     });
 }
@@ -510,6 +517,15 @@ fn clamp_window_to_monitor(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 从托盘 / Dock 图标把主窗口拉回前台。
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// 构建系统托盘图标与菜单。关闭按钮由前端按 `closeBehavior` 决定 hide（最小化到
 /// 托盘）或 destroy（退出）；托盘提供「显示窗口」恢复、「退出 Giteam」真正关闭
 /// （触发 `RunEvent::Exit` 走既有 pi_agent shutdown）。
@@ -523,12 +539,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "tray_show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
+            "tray_show" => show_main_window(app),
             "tray_quit" => app.exit(0),
             _ => {}
         })
@@ -538,11 +549,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 event,
                 tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. }
             ) {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         });
     if let Some(icon) = icon {
