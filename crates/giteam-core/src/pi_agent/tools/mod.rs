@@ -7,6 +7,7 @@
 mod approval;
 mod background;
 mod browser_use;
+mod command_safety;
 mod shell_resolver;
 mod edit_guard;
 mod question;

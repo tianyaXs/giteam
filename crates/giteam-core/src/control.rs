@@ -1,6 +1,7 @@
 use super::pi_agent::{
     default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
     AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
+    SteerOutcome,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -1754,6 +1755,38 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             }
         });
         return (200, response);
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/steer" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let session_id = raw
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let message = raw
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if session_id.is_empty() || message.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "sessionId and message are required" }),
+            );
+        }
+        // 同步排队（service 层内存队列，turn 边界投递）；事件经既有 SSE 通道下发。
+        let outcome = match PiAgentService::global().steer(session_id, message) {
+            Ok(SteerOutcome::Queued { run_id }) => {
+                serde_json::json!({ "status": "queued", "runId": run_id })
+            }
+            Ok(SteerOutcome::Idle) => serde_json::json!({ "status": "idle" }),
+            Err(error) => return pi_error_response(error),
+        };
+        return (200, outcome);
     }
 
     if req.method == "POST" && req.path == "/api/v1/agent/abort" {

@@ -6,14 +6,16 @@
 
 use async_trait::async_trait;
 
-/// Plan 白名单：只读探索 + 提问 + 网络查阅。
-/// 不含 `todowrite` / `task`（leaf 禁止再委派）。
+/// Plan 白名单：只读探索 + 网络查阅。
+/// 不含 `todowrite` / `task`（leaf 禁止再委派），也**不含 `question`**：
+/// 子会话的 interaction 事件只经 SubagentChildEvent 投影给父流，前端
+/// 应答卡片只认主 sessionId——子代理提问永远等不到回答，只会挂到
+/// stall 超时把整个 task 判死。歧义应带回摘要由父侧决策。
 pub const PLAN_ENABLED_TOOLS: &[&str] = &[
     "read",
     "grep",
     "find",
     "ls",
-    "question",
     "web_fetch",
     "web_search",
 ];
@@ -33,13 +35,15 @@ pub const MAX_CONCURRENT_CHILDREN: usize = 3;
 const PLAN_ROLE_RULES: &str = "\
 You are a planning subagent. Explore the codebase and return an actionable plan.\n\
 Do NOT create, edit, or delete files. Do NOT run mutating shell commands.\n\
-Start immediately with read/grep/find/ls — do not spend the first turn on checklists or narration.\n\
+Start exploring immediately — do not spend the first turn on checklists or narration.\n\
 Prefer concrete file/symbol lookups over outlining a plan before you have evidence.\n\
 Context budget: prefer grep/find/ls before large reads; keep each read small \
 (limit ≤ 200, page with offset). Never dump whole files with limit 2000. \
 If a tool result was truncated or spilled to disk, continue with a smaller window \
 instead of re-reading the same huge range.\n\
-Ask clarifying questions only when a requirement is truly ambiguous.";
+You cannot ask the user questions — if a requirement is truly ambiguous, \
+state the ambiguity and the candidate options in your final summary and let \
+the parent agent decide.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentType {
@@ -108,16 +112,29 @@ Use this exact path for local repository/workdir operations unless the task expl
             parts.push(format!("\n{PLAN_ROLE_RULES}"));
         }
     }
+    // 能力边界如实陈述（Hermes literal-truth 原则）：列出真实工具集并
+    // 明示不可再委派，避免模型臆造 bash/编辑能力或嵌套委派后撞工具错误。
+    // 只读探索工具天然独立，顺带告知可并行（与主会话 Workflow 节同源）。
+    let tools_line = definition.enabled_tools.join(", ");
+    parts.push(format!(
+        "\nTOOLS AVAILABLE TO YOU: {tools_line}. \
+You may issue several of them in one turn (they run in parallel). \
+There is no bash and no file editing unless listed above, and you cannot spawn \
+further subagents — do not attempt tools outside this list."
+    ));
     parts.push(
         "\nComplete this task using the tools available to you. \
+Never assume the repository lives at /workspace/ or any other container-style \
+path unless the task or context explicitly gives that path.\n\
 When finished, provide a clear, concise summary of:\n\
 - What you did\n\
 - What you found or accomplished\n\
 - Key file paths and symbols\n\
 - A concrete implementation plan the parent agent can execute (steps, files, risks)\n\
 - Any issues or unresolved questions\n\n\
-Be thorough but concise — your response is returned to the parent agent as a summary. \
-Do not ask the parent to switch modes; just deliver the plan."
+Lead with outcomes and prefer bullets over process narration — your response is \
+returned to the parent agent as a summary, and overlong summaries crowd out the \
+parent's context window. Do not ask the parent to switch modes; just deliver the plan."
             .to_string(),
     );
     parts.join("\n")
@@ -202,6 +219,8 @@ mod tests {
         );
         assert!(!def.enabled_tools.iter().any(|tool| tool == "task"));
         assert!(!def.enabled_tools.iter().any(|tool| tool == "todowrite"));
+        // question 是自毁按钮：子会话 interaction 无人应答，只会挂到 stall 判死。
+        assert!(!def.enabled_tools.iter().any(|tool| tool == "question"));
     }
 
     #[test]
@@ -217,9 +236,18 @@ mod tests {
         assert!(prompt.contains("YOUR TASK:\n调研会话创建"));
         assert!(prompt.contains("CONTEXT:\n只读，不要改文件"));
         assert!(prompt.contains("WORKSPACE PATH:\n/tmp/repo"));
-        assert!(prompt.contains("Start immediately with read/grep/find/ls"));
+        assert!(prompt.contains("Start exploring immediately"));
         assert!(prompt.contains("Context budget"));
         assert!(prompt.contains("returned to the parent agent as a summary"));
+        // 防臆造路径与摘要紧凑护栏。
+        assert!(prompt.contains("Never assume the repository lives at /workspace/"));
+        assert!(prompt.contains("overlong summaries crowd out the parent's context window"));
+        // 能力边界如实陈述：工具集 + 不可再委派。
+        assert!(prompt.contains("TOOLS AVAILABLE TO YOU: read, grep, find, ls, web_fetch, web_search"));
+        assert!(prompt.contains("you cannot spawn further subagents"));
+        // 歧义处理：不能提问（interaction 无人应答），带回摘要由父决策。
+        assert!(prompt.contains("You cannot ask the user questions"));
+        assert!(prompt.contains("state the ambiguity and the candidate options in your final summary"));
         assert!(!prompt.contains("todowrite"));
         assert!(!prompt.contains("switching to Build"));
     }
@@ -230,3 +258,4 @@ mod tests {
         assert!(resolve("").is_err());
     }
 }
+

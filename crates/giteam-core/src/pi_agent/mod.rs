@@ -1,4 +1,5 @@
 mod browser_controller;
+mod environment;
 mod events;
 mod https_egress;
 mod interactions;
@@ -33,7 +34,7 @@ pub use secrets::{
 };
 pub use service::{
     AgentEventReceiver, AgentEventSink, PiAgentError, PiAgentService, PiSessionConfig,
-    PiSessionSummary,
+    PiSessionSummary, SteerOutcome,
 };
 pub use subagents::{
     build_child_system_prompt, child_stall_secs, child_timeout_secs,

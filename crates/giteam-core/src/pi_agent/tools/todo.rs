@@ -31,7 +31,10 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create and update a structured task list for multi-step work. Each call replaces the previous list entirely, so always pass the full current list. Use statuses pending / in_progress / completed / cancelled, keep at most one item in_progress at a time, and give every item a stable id plus a short content. Call this at the start of non-trivial tasks and update statuses as you progress; skip it for trivial one-shot answers."
+        // 只写机制（全量替换语义/枚举/校验规则）；何时使用与状态机纪律
+        // 在 prompt.rs 工具清单与 Workflow 准则——本描述随 schema 每轮
+        // 发给模型，与清单条目是同一受众，重复必分叉。
+        "Create and update a structured task list for multi-step work. Each call replaces the previous list entirely, so always pass the full current list. Use statuses pending / in_progress / completed / cancelled, keep at most one item in_progress at a time, and give every item a stable id plus a short content."
     }
 
     fn parameters(&self) -> Value {
@@ -54,6 +57,10 @@ impl Tool for TodoTool {
                         },
                         "required": ["id", "content", "status"]
                     }
+                },
+                "note": {
+                    "type": "string",
+                    "description": "本次清单变更的简短说明：增删、重排或取消步骤时说明原因；常规状态推进可省略"
                 }
             },
             "required": ["todos"]
@@ -75,7 +82,13 @@ impl Tool for TodoTool {
             Ok(todos) => todos,
             Err(message) => return Ok(invalid_output(message)),
         };
-        Ok(todo_output(&todos))
+        let note = input
+            .get("note")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        Ok(todo_output(&todos, note.as_deref()))
     }
 }
 
@@ -142,7 +155,7 @@ fn parse_status(value: &str) -> Option<AgentTodoStatus> {
     }
 }
 
-fn todo_output(todos: &[AgentTodo]) -> ToolOutput {
+fn todo_output(todos: &[AgentTodo], note: Option<&str>) -> ToolOutput {
     let done = todos
         .iter()
         .filter(|todo| todo.status == AgentTodoStatus::Completed)
@@ -151,15 +164,20 @@ fn todo_output(todos: &[AgentTodo]) -> ToolOutput {
         .iter()
         .filter(|todo| todo.status == AgentTodoStatus::InProgress)
         .count();
-    let summary = format!(
+    let mut summary = format!(
         "已更新 {} 项任务：{} 项进行中、{} 项已完成。",
         todos.len(),
         active,
         done
     );
+    // 变更说明回显给模型：note 在调用点结构化（对照 Codex update_plan），
+    // 回显确认其已被记录，同时供 UI 从 details 读取展示。
+    if let Some(note) = note {
+        summary.push_str(&format!("变更说明：{note}。"));
+    }
     ToolOutput {
         content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(summary))],
-        details: Some(serde_json::json!({ "todos": todos })),
+        details: Some(serde_json::json!({ "todos": todos, "note": note })),
         is_error: false,
     }
 }
@@ -219,10 +237,31 @@ mod tests {
             status: AgentTodoStatus::Pending,
             priority: None,
         }];
-        let output = todo_output(&todos);
+        let output = todo_output(&todos, None);
         assert!(!output.is_error);
         let details = output.details.expect("details present");
         assert_eq!(details["todos"][0]["status"], "pending");
         assert_eq!(details["todos"][0]["id"], "t1");
+        assert!(details.get("note").is_some_and(serde_json::Value::is_null));
+    }
+
+    #[test]
+    fn todo_output_surfaces_note_in_summary_and_details() {
+        // note 是计划变更说明的调用点结构化通道（对照 Codex update_plan）：
+        // 回显进摘要文本（模型可见）并透传 details（UI 可展示）。
+        let todos = vec![AgentTodo {
+            id: "t1".to_string(),
+            content: "demo".to_string(),
+            status: AgentTodoStatus::Pending,
+            priority: None,
+        }];
+        let output = todo_output(&todos, Some("步骤 3 已由用户手动完成，移除"));
+        let text = match &output.content[0] {
+            pi::sdk::ContentBlock::Text(text) => text.text.clone(),
+            _ => panic!("expected text block"),
+        };
+        assert!(text.contains("变更说明：步骤 3 已由用户手动完成，移除"));
+        let details = output.details.expect("details present");
+        assert_eq!(details["note"], "步骤 3 已由用户手动完成，移除");
     }
 }

@@ -74,6 +74,9 @@ pub enum AgentEvent {
     MessageStarted {
         #[serde(rename = "messageId")]
         message_id: String,
+        /// user/assistant/…——前端只应把 assistant 的 started 绑到回复气泡；
+        /// user 的 MessageStart 若误绑，会把用户正文渲染成「助手在打字」。
+        role: super::messages::AgentRole,
     },
     #[serde(rename = "message.completed")]
     MessageCompleted { message: AgentMessage },
@@ -120,6 +123,16 @@ pub enum AgentEvent {
     Compaction {
         phase: String,
         error: Option<String>,
+    },
+    /// steer 已入队（run 进行中用户补充指令）：当前步骤/工具批完成后由
+    /// follow_up fetcher 注入同一 run（对齐 Codex pending_input，不跳过工具）。
+    /// 前端据此即时显示排队中的用户消息。
+    #[serde(rename = "runtime.steerQueued")]
+    SteerQueued {
+        /// 排队中的补充指令全文（前端渲染用户气泡用）。
+        message: String,
+        /// 队列中排在它后面的转向条数（含本条从 1 计）。
+        position: u32,
     },
     #[serde(rename = "runtime.retry")]
     Retry {
@@ -389,6 +402,7 @@ impl PiEventTranslator {
             }
             pi::sdk::AgentEvent::MessageStart { message } => Some(AgentEvent::MessageStarted {
                 message_id: pi_message_id(&message),
+                role: pi_message_role(&message),
             }),
             pi::sdk::AgentEvent::MessageUpdate {
                 message,
@@ -536,6 +550,15 @@ fn pi_message_id(message: &pi::sdk::Message) -> String {
         pi::sdk::Message::Assistant(message) => message_id("assistant", message.timestamp),
         pi::sdk::Message::ToolResult(message) => message_id("tool", message.timestamp),
         pi::sdk::Message::Custom(message) => message_id("custom", message.timestamp),
+    }
+}
+
+fn pi_message_role(message: &pi::sdk::Message) -> super::messages::AgentRole {
+    match message {
+        pi::sdk::Message::User(_) => super::messages::AgentRole::User,
+        pi::sdk::Message::Assistant(_) => super::messages::AgentRole::Assistant,
+        pi::sdk::Message::ToolResult(_) => super::messages::AgentRole::Tool,
+        pi::sdk::Message::Custom(_) => super::messages::AgentRole::Custom,
     }
 }
 

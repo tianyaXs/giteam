@@ -399,6 +399,7 @@ fn turn_and_message_boundaries_are_preserved() {
         message_start.event,
         AgentEvent::MessageStarted {
             message_id: "assistant-21".to_string(),
+            role: giteam_core::pi_agent::AgentRole::Assistant,
         }
     );
 }
