@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.33"
+version = "0.2.34"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -49,6 +49,7 @@ objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "objc2-core-fo
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
 
 [build-dependencies]

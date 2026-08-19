@@ -1502,6 +1502,10 @@ export function App() {
 
   useEffect(() => {
     if (!IS_TAURI) return;
+    // Overlay / 三色按钮只属 macOS；Windows 上勿调 setTitleBarStyle。
+    const isMac =
+      typeof navigator !== "undefined" && /Mac|Darwin/i.test(navigator.platform || navigator.userAgent);
+    if (!isMac) return;
     void import("@tauri-apps/api/window")
       .then(async ({ getCurrentWindow }) => {
         const win = getCurrentWindow() as unknown as { setTitleBarStyle?: (style: string) => Promise<void> | void };
@@ -1513,7 +1517,7 @@ export function App() {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("reposition_macos_traffic_lights");
         } catch {
-          /* noop on non-mac / older builds */
+          /* noop on older builds */
         }
       })
       .catch(() => {

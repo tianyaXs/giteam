@@ -153,109 +153,78 @@ mod macos_context_menu {
 }
 
 /// 把临时目录放到与应用同一卷，避免 updater `rename` 触发 EXDEV（os error 18）。
+///
+/// 仅 macOS：跨卷 `.app` 安装是 macOS updater 的坑。Windows 上改写 `TEMP`/`TMP`
+/// 会干扰 WebView2 / 托盘 / 安装器，极端情况下表现为启动时不断弹出新窗口。
 fn align_temp_dir_with_app_volume() {
-    let Ok(exe) = std::env::current_exe() else {
+    #[cfg(not(target_os = "macos"))]
+    {
         return;
-    };
-    let app_path = resolve_app_install_path(&exe);
-    let Ok(app_meta) = std::fs::metadata(&app_path) else {
-        return;
-    };
-
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(parent) = app_path.parent() {
-        candidates.push(parent.join(".giteam-updater-tmp"));
     }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        let home = std::path::PathBuf::from(home);
-        candidates.push(home.join(".giteam").join("updater-tmp"));
-        candidates.push(home.join("Library").join("Caches").join("giteam-updater"));
-    }
-
-    for candidate in candidates {
-        if std::fs::create_dir_all(&candidate).is_err() {
-            continue;
-        }
-        let Ok(tmp_meta) = std::fs::metadata(&candidate) else {
-            continue;
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
         };
-        if !same_fs_device(&app_path, &candidate, &app_meta, &tmp_meta) {
-            continue;
+        let app_path = resolve_app_install_path(&exe);
+        let Ok(app_meta) = std::fs::metadata(&app_path) else {
+            return;
+        };
+
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(parent) = app_path.parent() {
+            candidates.push(parent.join(".giteam-updater-tmp"));
         }
-        std::env::set_var("TMPDIR", &candidate);
-        #[cfg(windows)]
-        {
-            std::env::set_var("TEMP", &candidate);
-            std::env::set_var("TMP", &candidate);
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            candidates.push(home.join(".giteam").join("updater-tmp"));
+            candidates.push(home.join("Library").join("Caches").join("giteam-updater"));
         }
-        return;
+
+        for candidate in candidates {
+            if std::fs::create_dir_all(&candidate).is_err() {
+                continue;
+            }
+            let Ok(tmp_meta) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if !same_fs_device(&app_path, &candidate, &app_meta, &tmp_meta) {
+                continue;
+            }
+            std::env::set_var("TMPDIR", &candidate);
+            return;
+        }
     }
 }
 
+#[cfg(target_os = "macos")]
 fn resolve_app_install_path(exe: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        // …/App.app/Contents/MacOS/binary → App.app
-        if let (Some(macos), Some(contents), Some(bundle)) = (
-            exe.parent(),
-            exe.parent().and_then(|p| p.parent()),
-            exe.parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent()),
-        ) {
-            let _ = macos;
-            let _ = contents;
-            if bundle.extension().and_then(|ext| ext.to_str()) == Some("app") {
-                return bundle.to_path_buf();
-            }
+    // …/App.app/Contents/MacOS/binary → App.app
+    if let (Some(macos), Some(contents), Some(bundle)) = (
+        exe.parent(),
+        exe.parent().and_then(|p| p.parent()),
+        exe.parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent()),
+    ) {
+        let _ = macos;
+        let _ = contents;
+        if bundle.extension().and_then(|ext| ext.to_str()) == Some("app") {
+            return bundle.to_path_buf();
         }
     }
     exe.to_path_buf()
 }
 
+#[cfg(target_os = "macos")]
 fn same_fs_device(
-    a_path: &std::path::Path,
-    b_path: &std::path::Path,
+    _a_path: &std::path::Path,
+    _b_path: &std::path::Path,
     a: &std::fs::Metadata,
     b: &std::fs::Metadata,
 ) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let _ = (a_path, b_path);
-        return a.dev() == b.dev();
-    }
-    #[cfg(windows)]
-    {
-        // `MetadataExt::volume_serial_number` 仍是 unstable，稳定版用盘符/UNC 根比较。
-        let _ = (a, b);
-        fn volume_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
-            use std::path::{Component, PathBuf};
-            let abs = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir().ok()?.join(path)
-            };
-            let mut components = abs.components();
-            match components.next()? {
-                Component::Prefix(prefix) => {
-                    let mut root = PathBuf::new();
-                    root.push(Component::Prefix(prefix));
-                    if matches!(components.next(), Some(Component::RootDir)) {
-                        root.push(Component::RootDir);
-                    }
-                    Some(root)
-                }
-                _ => None,
-            }
-        }
-        return volume_root(a_path) == volume_root(b_path);
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (a_path, b_path, a, b);
-        true
-    }
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev()
 }
 
 fn main() {
@@ -267,6 +236,14 @@ fn main() {
         .manage(commands::watch::GitWorktreeWatcherState::default())
         // 窗口状态持久化：保存/恢复 size、position、maximized（首次启动用 tauri.conf 默认）。
         .plugin(tauri_plugin_window_state::Builder::default().build());
+
+    // 关到托盘后进程仍在；无单实例守卫时，再点快捷方式 / 安装器会再起一个进程 → 无限叠窗。
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }));
+    }
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
