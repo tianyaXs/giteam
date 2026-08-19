@@ -50,10 +50,10 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         ("find", "Find files by glob pattern (respects .gitignore)"),
         ("ls", "List directory contents"),
         ("hashline_edit", "Apply precise line-addressed edits using LINE#HASH tags from read or grep with hashline=true (best for large files)"),
-        // todowrite 由 Giteam 注册（非 pi 内置）。清单条目只留状态机纪律
-        // 与 note 指引；机制（全量替换/枚举/单 in_progress）在其 schema
-        // description（随每轮 API 调用发给模型），此处重复必分叉。
-        ("todowrite", "Create and update a structured task list for multi-step work. Move items strictly pending → in_progress → completed: never jump straight to completed, and never batch-complete items after the fact. When the plan changes mid-task (steps dropped, added, or reordered), say why in the note field of this call."),
+        // todowrite 由 Giteam 注册（非 pi 内置）。时机/禁令在 Workflow；
+        // 机制（全量替换/单 in_progress）在 schema description，此处不重复。
+        // 对齐 Codex update_plan：清单是进度展示，不是工作本身；允许多项一次标完成。
+        ("todowrite", "Keep a short step-by-step plan visible to the user for complex work. Prefer 5–7 word steps; keep exactly one in_progress until done; you may mark several steps completed in one call when a pass finishes them. When the plan changes mid-task, say why in the note field."),
         // question 由 Giteam 注册（非 pi 内置），模型可主动向用户提问澄清需求。
         ("question", "Clarify requirements or have the user choose between options. Prefer calling this tool over writing the questions as plain reply text when a task is too ambiguous to start safely, when choosing between approaches, or when a decision only the user can make is missing. Supports single/multi-choice and free-text answers; keep options to four or fewer."),
         // web_fetch / web_search 由 Giteam 注册（非 pi 内置）：抓取/搜索外部内容。
@@ -124,9 +124,9 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         );
     }
     if has_tool("todowrite") {
-        // 状态机细则（跳级禁令等）是 todowrite 工具描述的单一真相源。
+        // 对齐 Codex Planning：opt-in + 反填充 +「计划不能代替干活」，避免 todowrite 空转循环。
         workflow.push(
-            "For non-trivial multi-step tasks, lay out a todowrite list before you start and keep it current as you progress; skip it for trivial one-shot answers.",
+            "Use todowrite only when the work is meaningfully multi-step over a long horizon, has phases/dependencies, or the user asked for a plan/TODOs. Do not use it for simple or single-step requests you can execute immediately (including a short series of independent read-only commands), and do not pad with filler steps. A todowrite call is never a substitute for doing the work — after creating or updating the list, continue with the real tools in the same turn when possible. Do not restate the full plan after a todowrite call; the UI already shows it.",
         );
     }
     if has_tool("question") {
@@ -341,10 +341,11 @@ mod tests {
     #[test]
     fn prompt_carries_todo_state_machine_and_stop_loss_rules() {
         let prompt = default_system_prompt(None);
-        // todowrite 状态机契约 + 变更说明要求（指向 note 字段，schema 级机制）。
-        assert!(prompt.contains("never jump straight to completed"));
-        assert!(prompt.contains("never batch-complete items after the fact"));
-        assert!(prompt.contains("say why in the note field of this call"));
+        // todowrite：Codex 式 opt-in + 反空转（计划不能代替干活）。
+        assert!(prompt.contains("never a substitute for doing the work"));
+        assert!(prompt.contains("Do not use it for simple or single-step"));
+        assert!(prompt.contains("say why in the note field"));
+        assert!(prompt.contains("mark several steps completed in one call"));
         // 验证哲学：先窄后宽 + 无关失败不修。
         assert!(prompt.contains("go broader only as confidence builds"));
         assert!(prompt.contains("do not fix them in passing"));
@@ -467,8 +468,9 @@ mod tests {
         // 默认全量：GiteamToolFactory 默认注册 todowrite，提示词应描述它。
         let prompt = default_system_prompt(None);
         assert!(prompt.contains("- todowrite:"));
-        // 状态机细则在工具描述，Workflow 节只留时机语义。
-        assert!(prompt.contains("lay out a todowrite list before you start"));
+        // Workflow：opt-in + 计划不能代替干活（对齐 Codex）。
+        assert!(prompt.contains("never a substitute for doing the work"));
+        assert!(!prompt.contains("lay out a todowrite list before you start"));
 
         // 显式启用 todowrite：应描述。
         let tools = vec!["read".to_string(), "todowrite".to_string()];

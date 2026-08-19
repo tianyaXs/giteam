@@ -31,10 +31,8 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &str {
-        // 只写机制（全量替换语义/枚举/校验规则）；何时使用与状态机纪律
-        // 在 prompt.rs 工具清单与 Workflow 准则——本描述随 schema 每轮
-        // 发给模型，与清单条目是同一受众，重复必分叉。
-        "Create and update a structured task list for multi-step work. Each call replaces the previous list entirely, so always pass the full current list. Use statuses pending / in_progress / completed / cancelled, keep at most one item in_progress at a time, and give every item a stable id plus a short content."
+        // 机制 only（对齐 Codex update_plan schema）；何时用/何时禁在 prompt Workflow。
+        "Updates the task plan shown to the user. Each call replaces the previous list entirely, so always pass the full current list. Provide short steps with statuses pending / in_progress / completed / cancelled; at most one item may be in_progress. You may mark multiple items completed in a single call."
     }
 
     fn parameters(&self) -> Value {
