@@ -312,6 +312,22 @@ fn start_embedded_host(settings: control::ControlServerSettings) -> Result<u16, 
     control::control_bound_port().ok_or_else(|| "control server failed to bind".to_string())
 }
 
+/// 云中继必须有本机 Host 可转发；默认 enabled=false，新机（尤其 Windows）常忘开开关。
+/// 云已启用或即将拉隧道时，自动打开并启动内嵌 Host。
+fn ensure_host_running_for_cloud_relay() -> Result<u16, String> {
+    let mut settings = load_host_settings()?;
+    if !settings.enabled {
+        settings.enabled = true;
+        settings = control::persist_control_server_settings(settings)?;
+    }
+    if let Some(port) = control::control_bound_port() {
+        if control::control_is_running() {
+            return Ok(port);
+        }
+    }
+    start_embedded_host(settings)
+}
+
 fn stop_embedded_host() {
     stop_managed_giteam_service();
     control::stop_control_server();
@@ -422,18 +438,19 @@ pub fn giteam_cli_get_access_info() -> Result<control::ControlAccessInfo, String
 pub fn start_managed_mobile_service() {
     // Cloud tunnel 自动重连：桌面进程是 tunnel 归属方（owner=desktop）。
     ensure_desktop_tunnel_owner();
+    let cloud = giteam_core::cloud::get_cloud_link_settings();
+    let cloud_active = cloud.enabled && !cloud.device_token.trim().is_empty();
+    if cloud_active {
+        // 云扫码依赖本机 Host；勿仅在「用户手动开过开关」时才起服。
+        let port = ensure_host_running_for_cloud_relay().unwrap_or(0);
+        if port > 0 {
+            let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
+        }
+        return;
+    }
     if let Ok(cs) = load_host_settings() {
         if cs.enabled {
             let _ = start_embedded_host(cs);
-        }
-    }
-    let cloud = giteam_core::cloud::get_cloud_link_settings();
-    if cloud.enabled && !cloud.device_token.trim().is_empty() {
-        let port = control::control_bound_port()
-            .or_else(|| load_host_settings().ok().map(|s| s.port))
-            .unwrap_or(0);
-        if port > 0 {
-            let _ = giteam_core::cloud::start_cloud_tunnel_background(port);
         }
     }
 }
@@ -551,9 +568,8 @@ pub fn giteam_cloud_link(
         },
     )?;
     let _ = settings;
-    let port = control::control_bound_port()
-        .or_else(|| control::get_control_server_settings().ok().map(|s| s.port))
-        .unwrap_or(0);
+    // 先确保本机 Host 在听，再拉隧道；否则 Gateway 转发到死端口，手机「能进但没模型」。
+    let port = ensure_host_running_for_cloud_relay().unwrap_or(0);
     // Block until WS is up so create/switch returns with「中继已连接」.
     let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
         port,
@@ -624,9 +640,7 @@ pub fn giteam_cloud_use_key(access_key: String) -> Result<CloudLinkStatusView, S
         },
     )?;
     let _ = linked;
-    let port = control::control_bound_port()
-        .or_else(|| control::get_control_server_settings().ok().map(|s| s.port))
-        .unwrap_or(0);
+    let port = ensure_host_running_for_cloud_relay().unwrap_or(0);
     let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
         port,
         std::time::Duration::from_secs(6),

@@ -435,7 +435,10 @@ fn build_mobile_models_response() -> Result<Value, String> {
                 hidden.insert(h);
             }
             let enabled_list = json_string_list(obj.get("enabledModels"));
-            if obj.contains_key("enabledModels") {
+            // 空数组 = 桌面尚未勾选任何「打开的模型」，不能当成「全部关闭」。
+            // 否则新机（尤其 Windows）已配 API Key 但未在设置里逐个打开时，
+            // 手机会拿到恒空列表；Mac 老用户因 localStorage 已有勾选而不易复现。
+            if obj.contains_key("enabledModels") && !enabled_list.is_empty() {
                 enabled = Some(enabled_list.into_iter().collect());
             }
             available = json_string_list(obj.get("availableModels"))
@@ -586,16 +589,17 @@ fn read_persisted_bearer_token() -> String {
         .unwrap_or_else(generate_token)
 }
 
-/// Bearer used by cloud tunnel when proxying to the local Control Server.
+/// 云中继转发到本机 Control 时使用的 Bearer。
+/// 必须走 `current_bearer_token()`：仅读盘会在「Host 已起但从未写过 control-auth.json」
+/// （健康检查不鉴权、新机/Windows 常见）时返回 None，导致 /mobile/models 恒 401。
 pub fn loopback_bearer_token() -> Option<String> {
-    let path = control_auth_token_path()?;
-    let raw = fs::read_to_string(path).ok()?;
-    let parsed = serde_json::from_str::<Value>(&raw).ok()?;
-    parsed
-        .get("token")
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let token = current_bearer_token();
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn write_persisted_bearer_token(token: &str) {
@@ -2302,6 +2306,8 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
         stop_control_server();
         return Ok(());
     }
+    // 起服即落盘 Bearer，供云中继 loopback 转发与本机诊断（勿等首次鉴权请求）。
+    let _ = current_bearer_token();
     if let Ok(mut guard) = runtime_cell().lock() {
         if let Some(current) = guard.as_ref() {
             if current.settings.host == settings.host

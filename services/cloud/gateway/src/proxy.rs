@@ -46,6 +46,10 @@ pub fn is_allowed_path(method: &Method, path: &str) -> bool {
     if path_only == "/api/v1/repository/list" && *method == Method::GET {
         return true;
     }
+    // 手机 Composer 主路径：轻量模型清单（桌面内嵌 Host 提供，经云中继转发）。
+    if path_only == "/api/v1/mobile/models" && *method == Method::GET {
+        return true;
+    }
     // Mobile model catalog over cloud relay.
     if path_only == "/api/v1/admin/mobile/model-state" && *method == Method::GET {
         return true;

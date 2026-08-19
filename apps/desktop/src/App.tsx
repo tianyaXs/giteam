@@ -8286,7 +8286,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [selectedRepo?.id]);
 
   useEffect(() => {
-    if (!selectedRepo?.id && !repoPath) return;
+    // 全局可见性，不依赖当前是否选中仓库；否则未开仓库时手机永远读不到桌面勾选状态。
     const availableModels = agentSyncModelRefs;
     const modelLabels: Record<string, string> = {};
     for (const full of availableModels) {
@@ -8296,12 +8296,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         || agentModelNamesByProvider[parsed.provider]?.[parsed.model]
         || parsed.model;
     }
+    const enabledList = Array.from(agentEnabledModels);
     const payload = {
       repoId: "global",
-      repoPath,
+      repoPath: repoPath || "",
       availableModels,
       modelLabels,
-      enabledModels: Array.from(agentEnabledModels),
+      // 尚未勾选时不要写空 enabledModels，避免 Host 把「未配置」当成「全关」。
+      ...(enabledList.length > 0 ? { enabledModels: enabledList } : {}),
       hiddenModels: Array.from(agentHiddenModels),
       activeModel: activeAgentModel || agentConfig?.configuredModel || "",
       updatedAt: Date.now(),
@@ -8316,6 +8318,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     activeAgentModel,
     agentConfig?.configuredModel,
     agentConfiguredModelNamesByProvider,
+    agentEnabledModels,
     agentHiddenModels,
     agentModelNamesByProvider,
     agentSyncModelRefs,
