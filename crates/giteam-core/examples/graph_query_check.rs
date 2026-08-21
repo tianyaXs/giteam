@@ -26,7 +26,7 @@ fn main() {
         println!("  - {} | {}", h.node_id, h.label);
     }
     if let Some(center) = hits2.first().map(|h| h.node_id.clone()) {
-        let view = q.subgraph(&center, 1, 50);
+        let view = q.subgraph(&center, 1, 50, None);
         println!(
             "[subgraph] center={} nodes={} edges={}",
             view.center,

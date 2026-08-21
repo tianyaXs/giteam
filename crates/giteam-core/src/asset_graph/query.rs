@@ -114,6 +114,10 @@ pub struct SubgraphView {
     pub edges: Vec<SubgraphEdge>,
 }
 
+/// 时间范围过滤（闭区间，epoch ms；节点按 last_seen_ms、边按 timestamp_ms）。
+/// None = 不过滤（默认）。
+pub type TimeRange = (i64, i64);
+
 impl<'a> GraphQuery<'a> {
     #[must_use]
     pub fn new(db: &'a Connection) -> Self {
@@ -494,8 +498,16 @@ impl<'a> GraphQuery<'a> {
     /// 局部子图（可视化用）：从中心节点 BFS 展开 hops 跳（双向邻接），限幅。
     /// center 可以是节点 id（`file:abc…`）、label（文件路径等）、或 `type:key`。
     /// 布局坐标不在此层——由前端 d3-force 计算（设计文档 §4.3）。
+    /// `range`：时间过滤——非中心节点按 last_seen_ms、边按 timestamp_ms
+    /// 落在闭区间内才保留（中心节点始终保留，保证下钻不空）。
     #[must_use]
-    pub fn subgraph(&self, center: &str, hops: u32, limit: usize) -> SubgraphView {
+    pub fn subgraph(
+        &self,
+        center: &str,
+        hops: u32,
+        limit: usize,
+        range: Option<TimeRange>,
+    ) -> SubgraphView {
         let limit = limit.clamp(1, 300);
         let hops = hops.clamp(1, 3);
         let Some(center_row) = self.resolve_center(center) else {
@@ -541,6 +553,11 @@ impl<'a> GraphQuery<'a> {
         if nodes.is_empty() {
             return SubgraphView::default();
         }
+        // 时间过滤：非中心节点按 last_seen_ms 落在区间内才保留
+        // （BFS 展开不过滤——邻居的时间不应截断遍历路径，只影响最终渲染集）。
+        if let Some((from, to)) = range {
+            nodes.retain(|n| n.node_id == center_row || (n.last_seen_ms >= from && n.last_seen_ms <= to));
+        }
         // 子集内的边：按节点 id 分块 IN 过滤（节点集 ≤300，分块查询稳定，
         // 不依赖「全局最新 N 条」这种会漏旧会话边的截断）。
         let id_set: std::collections::HashSet<&str> =
@@ -571,6 +588,12 @@ impl<'a> GraphQuery<'a> {
             });
             if let Ok(rows) = mapped {
                 for (src, dst, edge_type, ts) in rows.flatten() {
+                    // 时间过滤：边按 timestamp_ms 落在区间内才保留。
+                    if let Some((from, to)) = range {
+                        if ts < from || ts > to {
+                            continue;
+                        }
+                    }
                     // OR 命中单端也要筛：仅保留两端都在集合内的边。
                     if id_set.contains(src.as_str()) && id_set.contains(dst.as_str()) {
                         edges.push(SubgraphEdge {
@@ -601,29 +624,37 @@ impl<'a> GraphQuery<'a> {
     /// has_turn + 91 in_run 对 931 节点），渲染即毛球。
     #[must_use]
     pub fn full_graph(&self, limit: usize) -> SubgraphView {
-        self.full_graph_with_mode(limit, true)
+        self.full_graph_with_mode(limit, true, None)
     }
 
-    /// 完整/聚合两种模式的总览图。
+    /// 完整/聚合两种模式的总览图。`range`：节点按 last_seen_ms、
+    /// 边按 timestamp_ms 落在闭区间内才保留（None = 不过滤）。
     #[must_use]
-    pub fn full_graph_with_mode(&self, limit: usize, compact: bool) -> SubgraphView {
+    pub fn full_graph_with_mode(
+        &self,
+        limit: usize,
+        compact: bool,
+        range: Option<TimeRange>,
+    ) -> SubgraphView {
         if compact {
-            return self.compact_graph(limit);
+            return self.compact_graph(limit, range);
         }
-        self.full_graph_raw(limit)
+        self.full_graph_raw(limit, range)
     }
 
     /// 聚合折叠总览：会话/文件/命令/错误/提交 + 语义实体。
-    fn compact_graph(&self, limit: usize) -> SubgraphView {
+    fn compact_graph(&self, limit: usize, range: Option<TimeRange>) -> SubgraphView {
         let limit = limit.clamp(1, 1000);
+        let (from, to) = range.unwrap_or((0, i64::MAX));
         // 1) 节点：剔除过程层（run/turn/message/tool_call）。
         let mut nodes: Vec<SubgraphNode> = Vec::new();
         if let Ok(mut stmt) = self.db.prepare(
             "SELECT id, type, label, props, last_seen_ms FROM nodes
              WHERE type NOT IN ('run', 'turn', 'message', 'tool_call', 'command')
+               AND last_seen_ms BETWEEN ?2 AND ?3
              ORDER BY last_seen_ms DESC LIMIT ?1",
         ) {
-            if let Ok(rows) = stmt.query_map([limit as i64], |row| {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![limit as i64, from, to], |row| {
                 Ok(SubgraphNode {
                     node_id: row.get(0)?,
                     node_type: row.get(1)?,
@@ -643,6 +674,8 @@ impl<'a> GraphQuery<'a> {
 
         // 2) 折叠边：会话 → 资产（modified/read/executed/produced/failed_with/
         //    resolved_by 经 turn→tool_call 三跳聚合，COUNT 入 props 可加权）。
+        //    时间过滤加在原始事件（e3）上：先过滤再聚合，语义才是
+        //    「区间内碰过」而非「最近一次碰在区间内」。
         let mut edges: Vec<SubgraphEdge> = Vec::new();
         if let Ok(mut stmt) = self.db.prepare(
             r#"
@@ -651,6 +684,7 @@ impl<'a> GraphQuery<'a> {
             JOIN edges e2 ON e2.src_id = e1.dst_id AND e2.type = 'used_tool'
             JOIN edges e3 ON e3.src_id = e2.dst_id
                 AND e3.type IN ('modified','produced','failed_with')
+                AND e3.timestamp_ms BETWEEN ?1 AND ?2
             JOIN nodes sess ON sess.id = e1.src_id AND sess.type = 'session'
             JOIN nodes asset ON asset.id = e3.dst_id
                 AND asset.type NOT IN ('run','turn','message','tool_call')
@@ -659,7 +693,7 @@ impl<'a> GraphQuery<'a> {
             LIMIT 600
             "#,
         ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![from, to], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -689,11 +723,11 @@ impl<'a> GraphQuery<'a> {
             JOIN edges ht ON ht.dst_id = used.src_id AND ht.type = 'has_turn'
             JOIN nodes sess ON sess.id = ht.src_id AND sess.type = 'session'
             JOIN nodes err ON err.id = res.src_id AND err.type = 'error'
-            WHERE res.type = 'resolved_by'
+            WHERE res.type = 'resolved_by' AND res.timestamp_ms BETWEEN ?1 AND ?2
             GROUP BY sess.id, err.id
             "#,
         ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![from, to], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
             }) {
                 for (src, dst, ts) in rows.flatten() {
@@ -711,9 +745,10 @@ impl<'a> GraphQuery<'a> {
         // 语义边（两端都在聚合节点集内）。
         if let Ok(mut stmt) = self.db.prepare(
             "SELECT src_id, dst_id, type, timestamp_ms FROM edges
-             WHERE type LIKE 'sem/%' OR type = 'extracted'",
+             WHERE (type LIKE 'sem/%' OR type = 'extracted')
+               AND timestamp_ms BETWEEN ?1 AND ?2",
         ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![from, to], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -734,14 +769,16 @@ impl<'a> GraphQuery<'a> {
 
     /// 原始全图（下钻前的完整细节，保留过程节点）。
     #[must_use]
-    pub fn full_graph_raw(&self, limit: usize) -> SubgraphView {
+    pub fn full_graph_raw(&self, limit: usize, range: Option<TimeRange>) -> SubgraphView {
         let limit = limit.clamp(1, 1000);
+        let (from, to) = range.unwrap_or((0, i64::MAX));
         let mut nodes: Vec<SubgraphNode> = Vec::new();
         if let Ok(mut stmt) = self.db.prepare(
             "SELECT id, type, label, props, last_seen_ms FROM nodes
+             WHERE last_seen_ms BETWEEN ?2 AND ?3
              ORDER BY last_seen_ms DESC LIMIT ?1",
         ) {
-            if let Ok(rows) = stmt.query_map([limit as i64], |row| {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![limit as i64, from, to], |row| {
                 Ok(SubgraphNode {
                     node_id: row.get(0)?,
                     node_type: row.get(1)?,
@@ -781,6 +818,9 @@ impl<'a> GraphQuery<'a> {
             });
             if let Ok(rows) = mapped {
                 for (src, dst, edge_type, ts) in rows.flatten() {
+                    if ts < from || ts > to {
+                        continue;
+                    }
                     if id_set.contains(src.as_str()) && id_set.contains(dst.as_str()) {
                         edges.push(SubgraphEdge {
                             src_id: src,
@@ -798,6 +838,21 @@ impl<'a> GraphQuery<'a> {
             nodes,
             edges,
         }
+    }
+
+    /// 按应用会话 id 反查会话节点 id（可视化「飞到当前会话」用）。
+    /// 会话节点 props.sessionId 在写入时保证存在（extract.rs upsert 注释）。
+    #[must_use]
+    pub fn session_node_id(&self, session_id: &str) -> Option<String> {
+        self.db
+            .query_row(
+                "SELECT id FROM nodes
+                 WHERE type = 'session' AND json_extract(props, '$.sessionId') = ?1
+                 ORDER BY last_seen_ms DESC LIMIT 1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
     }
 
     /// center 解析：节点 id → key 精确 → label 精确 → `type:key` 形式。
@@ -1262,7 +1317,7 @@ mod tests {
         let (_dir, db) = seeded();
         let q = GraphQuery::new(&db);
         // 以文件为中心：应命中文件 + 经 modified 边连到 tool_call + 会话。
-        let view = q.subgraph("src/login.rs", 2, 50);
+        let view = q.subgraph("src/login.rs", 2, 50, None);
         assert_eq!(view.nodes.len() >= 2, true, "nodes: {}", view.nodes.len());
         let types: Vec<&str> = view.nodes.iter().map(|n| n.node_type.as_str()).collect();
         assert!(types.contains(&"file"), "{types:?}");
@@ -1276,7 +1331,7 @@ mod tests {
             assert!(ids.contains(edge.dst_id.as_str()));
         }
         // 未命中中心 → 空视图。
-        let empty = q.subgraph("no-such-node", 2, 50);
+        let empty = q.subgraph("no-such-node", 2, 50, None);
         assert!(empty.nodes.is_empty());
     }
 
@@ -1308,7 +1363,7 @@ mod tests {
     fn full_graph_raw_keeps_process_nodes() {
         let (_dir, db) = seeded();
         let q = GraphQuery::new(&db);
-        let view = q.full_graph_raw(1000);
+        let view = q.full_graph_raw(1000, None);
         let types: std::collections::HashSet<&str> =
             view.nodes.iter().map(|n| n.node_type.as_str()).collect();
         for expected in ["session", "file", "error", "commit", "tool_call", "command"] {
@@ -1320,7 +1375,7 @@ mod tests {
     fn subgraph_respects_limit() {
         let (_dir, db) = seeded();
         let q = GraphQuery::new(&db);
-        let view = q.subgraph("src/login.rs", 3, 2);
+        let view = q.subgraph("src/login.rs", 3, 2, None);
         assert!(view.nodes.len() <= 2);
     }
 

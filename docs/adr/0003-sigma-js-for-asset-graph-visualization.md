@@ -10,9 +10,15 @@
 
 ## Decision
 
-资产图谱的可视化层锁定 **sigma.js**（WebGL 渲染）+ **graphology**（图数据结构）+ **graphology-layout-forceatlas2**（ForceAtlas2 布局，WebWorker 后台计算）。不上 D3，也不自研 Canvas 渲染。
+资产图谱的可视化层锁定 **sigma.js** + **graphology**，布局分两段：
 
-理由：sigma.js 自带 WebGL 渲染管线与 ForceAtlas2 布局生态，开箱即用、社区维护，满足零维护成本的目标。落地形态为 `apps/desktop/src/components/agent/AssetGraphPanel.tsx`，布局在 Worker 中运行不阻塞 UI，坐标缓存落库（`nodes.layout_x/layout_y`）避免每次重跑物理仿真。
+1. **冷启动**：`random` 播种 + **FA2 Worker** 有机聚簇  
+2. **交互**：冻结并快照 home；拖拽只动目标节点，松手阻尼弹簧回 home  
+3. **不在 FA2 之后接 ForceSupervisor**：FA2 坐标尺度下边拉力 ∝ distance，一拖就会把连通点吸成一团  
+
+不上 D3，也不自研 Canvas 渲染。
+
+理由：sigma.js 自带 WebGL 渲染管线与 graphology 布局生态，开箱即用、社区维护，满足零维护成本的目标。落地形态为 `apps/desktop/src/components/agent/AssetGraphPanel.tsx`，布局在 Worker 中运行不阻塞 UI，坐标缓存落库（`nodes.layout_x/layout_y`）避免每次重跑物理仿真。
 
 ## Alternatives Considered
 
@@ -33,7 +39,7 @@
 ### Positive
 
 - WebGL 渲染数千节点无压力（配合子图查询 `subgraph(center, hops, limit)` 控制规模上限）。
-- ForceAtlas2 Worker 布局不阻塞 UI，坐标缓存支持增量微调。
+- ForceSupervisor 持续布局 + 拖拽钉住回弹（官方范式 ①），Worker 不阻塞 UI。
 - 渲染、布局、交互均由上游社区维护，无自研图形代码。
 
 ### Negative

@@ -9906,7 +9906,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         <BrowserPanel url={browserPaneUrl} />
       ) : null}
       {rightPaneTab === "assetGraph" ? (
-        <AssetGraphPanel repoPath={repoPath} deferForContent={agentSessionLoading} />
+        <AssetGraphPanel repoPath={repoPath} deferForContent={agentSessionLoading} currentSessionId={activeAgentSessionId} />
       ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (

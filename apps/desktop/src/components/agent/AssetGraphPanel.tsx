@@ -17,13 +17,29 @@
  * - 主题兼容：深浅两套调色板（node 浅色版降亮度；边/标签/hover 卡分色），
  *   MutationObserver 监听 data-theme 切换即重建
  *
- * 布局：ForceAtlas2 Worker 持续动画（semantica FA2_SETTINGS），按节点位移
- * 检测收敛后停并自动 fit（20s 上限兜底）。
+ * 布局与拖拽（Obsidian 式单一力模型）：
+ * - 冷启动与保温共用同一个 d3-force 模拟：随机播种 → 强排斥 +
+ *   统一边长 + 大碰撞半径收敛出舒展布局（无 FA2 毛球构型残留）
+ * - alpha 冷却后模拟常驻，周期性轻加热维持自然扩散的呼吸感
+ * - 拖拽钉住目标节点 fx/fy 并 alphaTarget(0.3) 重新加热，
+ *   邻居被 link 弹簧拽动、被 charge 推开；
+ *   松手解钉 + alphaTarget(0)，整个邻域在力平衡下慢慢回位
  */
 
 import { useCallback, useEffect, useRef, useState, startTransition } from "react";
 import Graph from "graphology";
-import FA2Layout from "graphology-layout-forceatlas2/worker";
+import random from "graphology-layout/random";
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type Simulation,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from "d3-force";
 import Sigma from "sigma";
 import { NodeBorderProgram } from "@sigma/node-border";
 import { Loader2, RefreshCw, Search, Waypoints, X } from "lucide-react";
@@ -268,15 +284,21 @@ type SigmaSceneState = {
   zoomTier: ZoomTier;
 };
 
+/** 场景的命令式焦点接口：切会话时换金环 + 相机飞入，不重建场景。 */
+type GraphFocusApi = { setFocus: (nodeId: string | null) => void };
+
 function buildSigmaScene(options: {
   container: HTMLDivElement;
   view: SubgraphView;
   themeMode: GraphThemeMode;
+  /** 焦点节点（当前会话）ref：构建时读一次，之后经 focusApiRef.setFocus 更新 */
+  focusRef: React.MutableRefObject<string | null>;
+  focusApiRef: React.MutableRefObject<GraphFocusApi | null>;
   stateRef: React.MutableRefObject<SigmaSceneState>;
   selectCbRef: React.MutableRefObject<(node: SubgraphNode | null) => void>;
   setReady: (ready: boolean) => void;
 }): () => void {
-  const { container, view, themeMode, stateRef, selectCbRef, setReady } = options;
+  const { container, view, themeMode, focusRef, focusApiRef, stateRef, selectCbRef, setReady } = options;
   const theme = sceneTheme(themeMode);
   const palette = themeMode === "light" ? TYPE_COLORS_LIGHT : TYPE_COLORS_DARK;
   const colorOf = (type: string) => palette[type] ?? (themeMode === "light" ? "#64748b" : "#8a919e");
@@ -285,23 +307,26 @@ function buildSigmaScene(options: {
   const nodesById = new Map(view.nodes.map((n) => [n.nodeId, n]));
   const count = view.nodes.length;
   const isCenter = (id: string) => id === view.center;
+  const isFocus = (id: string) => !!focusRef.current && id === focusRef.current;
 
-  // 紧凑随机播种（高斯近似），FA2 从中聚簇。
-  const rand = () => (Math.random() + Math.random() + Math.random()) / 3 - 0.5;
+  // random 播种；随后由 d3-force 从随机云收敛出舒展布局（见 startSim）
   for (const node of view.nodes) {
+    const ringed = isCenter(node.nodeId) || isFocus(node.nodeId);
     graph.addNode(node.nodeId, {
-      x: rand() * 400,
-      y: rand() * 400,
+      x: 0,
+      y: 0,
       size: 4,
       color: colorOf(node.nodeType),
       label: node.label || TYPE_LABELS[node.nodeType] || node.nodeType,
       nodeType: node.nodeType,
       isCenter: isCenter(node.nodeId),
-      borderColor: isCenter(node.nodeId) ? RING_CENTER : theme.nodeOutline,
-      borderSize: isCenter(node.nodeId) ? 2.2 : 0,
+      isFocus: isFocus(node.nodeId),
+      borderColor: ringed ? RING_CENTER : theme.nodeOutline,
+      borderSize: ringed ? 2.2 : 0,
       lastSeenMs: node.lastSeenMs,
     });
   }
+  random.assign(graph, { scale: Math.max(40, Math.sqrt(Math.max(count, 1)) * 8) });
   for (const edge of view.edges) {
     if (!graph.hasNode(edge.srcId) || !graph.hasNode(edge.dstId)) continue;
     if (graph.hasEdge(edge.srcId, edge.dstId)) continue;
@@ -314,7 +339,8 @@ function buildSigmaScene(options: {
   }
   graph.forEachNode((node) => {
     const degree = graph.degree(node);
-    const centerBoost = graph.getNodeAttribute(node, "isCenter") ? 1.6 : 0;
+    const attrs = graph.getNodeAttributes(node);
+    const centerBoost = attrs.isCenter || attrs.isFocus ? 1.6 : 0;
     graph.setNodeAttribute(node, "size", 2.6 + Math.min(3.5, degree * 0.32) + centerBoost);
   });
 
@@ -400,7 +426,11 @@ function buildSigmaScene(options: {
   const applyState = () => {
     const focus = stateRef.current.selected ?? stateRef.current.hovered;
     sigma.setSetting("nodeReducer", (node, data) => {
-      if (!focus) return data;
+      // 无 hover/选中时：会话焦点节点标签常显 + 提层（金环之外的可辨识性）
+      if (!focus) {
+        if (focusRef.current === node) return { ...data, forceLabel: true, zIndex: 3 };
+        return data;
+      }
       if (node === focus) {
         return {
           ...data,
@@ -437,6 +467,8 @@ function buildSigmaScene(options: {
   sigma.on("enterNode", ({ node }) => {
     stateRef.current.hovered = node;
     applyState();
+    // 悬停轻加热：邻域微微浮动（Obsidian 手感），很快自行冷却
+    if (!draggedNode && sim && sim.alpha() < 0.06) sim.alpha(0.06).restart();
   });
   sigma.on("leaveNode", () => {
     stateRef.current.hovered = null;
@@ -446,14 +478,161 @@ function buildSigmaScene(options: {
   let draggedNode: string | null = null;
   let dragMoved = false;
   const mouseCaptor = sigma.getMouseCaptor();
+
+  /**
+   * Obsidian 式单一力模型：冷启动与保温共用同一个 d3-force 模拟。
+   * 平衡态模型（link 拉到目标长度即平衡），收敛/常驻/拖拽回位一体。
+   */
+  let fitTimer: number | null = null;
+  let syncDisposed = false;
+
+  const clearFit = () => {
+    if (fitTimer !== null) {
+      window.clearTimeout(fitTimer);
+      fitTimer = null;
+    }
+  };
+
+  // ---------- d3-force 常驻模拟（冷启动 + 保温一体） ----------
+
+  interface SimNode extends SimulationNodeDatum {
+    id: string;
+    size: number;
+  }
+
+  let sim: Simulation<SimNode, undefined> | null = null;
+  let simNodes: SimNode[] = [];
+  const simNodeById = new Map<string, SimNode>();
+  let reheatTimer: number | null = null;
+
+  const killSim = () => {
+    if (reheatTimer !== null) {
+      window.clearInterval(reheatTimer);
+      reheatTimer = null;
+    }
+    sim?.stop();
+    sim = null;
+    simNodes = [];
+    simNodeById.clear();
+  };
+
+  // Obsidian 手感参数：强排斥 + 统一边长 + 大私人空间 + 弱向心。
+  // 统一边长是关键——整图边长趋于一致，远看是均匀的网格状张力。
+  const LINK_DIST = 42;
+  const CHARGE = -40;
+
+  const startSim = () => {
+    killSim();
+    if (count <= 1 || syncDisposed) return;
+    simNodes = [];
+    graph.forEachNode((id, attrs) => {
+      simNodes.push({ id, x: attrs.x as number, y: attrs.y as number, size: attrs.size as number });
+    });
+    simNodes.forEach((n) => simNodeById.set(n.id, n));
+    const links: SimulationLinkDatum<SimNode>[] = [];
+    graph.forEachEdge((edge) => {
+      const [src, dst] = graph.extremities(edge);
+      links.push({ source: src, target: dst });
+    });
+
+    let fittedOnConverge = false;
+    const simInst = forceSimulation<SimNode>(simNodes)
+      .force(
+        "link",
+        forceLink<SimNode, SimulationLinkDatum<SimNode>>(links)
+          .id((d) => d.id)
+          .distance(LINK_DIST)
+          .strength(0.4)
+      )
+      .force("charge", forceManyBody<SimNode>().strength(CHARGE).distanceMax(LINK_DIST * 10))
+      .force("collide", forceCollide<SimNode>().radius((d) => d.size + 9))
+      .force("x", forceX<SimNode>(0).strength(0.04))
+      .force("y", forceY<SimNode>(0).strength(0.04))
+      .alpha(1)
+      .alphaMin(0.0015)
+      .alphaDecay(0.025)
+      .velocityDecay(0.42)
+      .on("tick", () => {
+        if (syncDisposed) return;
+        for (const n of simNodes) {
+          graph.setNodeAttribute(n.id, "x", n.x as number);
+          graph.setNodeAttribute(n.id, "y", n.y as number);
+        }
+        sigma.refresh();
+        // 收敛后自动 fit 一次（之后的周期性呼吸不再打扰视角）
+        if (!fittedOnConverge && simInst.alpha() < 0.06) {
+          fittedOnConverge = true;
+          scheduleCameraFit(120);
+        }
+      });
+    sim = simInst;
+    // 周期性轻加热：闲时在平衡位置附近缓慢扩散（Obsidian 呼吸感）。
+    // alpha 低于 alphaMin 后 d3 自动停 tick，不会常驻烧 CPU。
+    reheatTimer = window.setInterval(() => {
+      if (syncDisposed || !sim || draggedNode) return;
+      if (sim.alpha() < 0.02) sim.alpha(0.03).restart();
+    }, 7000);
+    // 开场先 fit 到初始随机云（不看焦点——此时坐标还是随机的，
+    // 飞了也没意义；收敛后再飞），收敛后再 fit 一次终态
+    scheduleCameraFit(200, false);
+  };
+
+  const scheduleCameraFit = (delayMs = 200, preferFocus = true) => {
+    clearFit();
+    fitTimer = window.setTimeout(() => {
+      fitTimer = null;
+      if (syncDisposed || draggedNode) return;
+      // 有焦点节点（当前会话）且在本视图内：相机飞到它附近的近景，
+      // 让邻域成为初始视角中心；不在（被过滤/未收录）则回退 fit 全图。
+      // ratio 0.5 = inspection 档：焦点及邻域标签全部显示。
+      const focusId = focusRef.current;
+      if (preferFocus && focusId && graph.hasNode(focusId)) {
+        const pos = sigma.getNodeDisplayData(focusId);
+        if (pos) {
+          sigma.setCustomBBox(null);
+          sigma.getCamera().animate({ x: pos.x, y: pos.y, ratio: 0.5 }, { duration: 620 });
+          return;
+        }
+      }
+      sigma.setCustomBBox(null);
+      sigma.getCamera().animatedReset({ duration: 420 });
+    }, delayMs);
+  };
+
+  /**
+   * 切会话跟随：金环换到新会话节点 + 相机飞过去。
+   * 纯属性/相机操作，不重建场景、不重新布局。
+   */
+  const setFocus = (nodeId: string | null) => {
+    graph.forEachNode((n) => {
+      const attrs = graph.getNodeAttributes(n);
+      const ringed = Boolean(attrs.isCenter) || (!!nodeId && n === nodeId);
+      const wantBorderColor = ringed ? RING_CENTER : theme.nodeOutline;
+      const wantBorderSize = ringed ? 2.2 : 0;
+      const wantSize = 2.6 + Math.min(3.5, graph.degree(n) * 0.32) + (ringed ? 1.6 : 0);
+      if (attrs.borderColor !== wantBorderColor) graph.setNodeAttribute(n, "borderColor", wantBorderColor);
+      if (attrs.borderSize !== wantBorderSize) graph.setNodeAttribute(n, "borderSize", wantBorderSize);
+      if (attrs.size !== wantSize) graph.setNodeAttribute(n, "size", wantSize);
+    });
+    sigma.refresh();
+    if (!nodeId || draggedNode || !graph.hasNode(nodeId)) return;
+    const pos = sigma.getNodeDisplayData(nodeId);
+    if (pos) sigma.getCamera().animate({ x: pos.x, y: pos.y, ratio: 0.5 }, { duration: 620 });
+  };
+  focusApiRef.current = { setFocus };
+
   const onDownNode = ({ node, event }: { node: string; event: { preventSigmaDefault(): void } }) => {
     event.preventSigmaDefault();
     draggedNode = node;
     dragMoved = false;
-    graph.setNodeAttribute(node, "fixed", true);
     container.style.cursor = "grabbing";
-    if (!sigma.getCustomBBox()) {
-      sigma.setCustomBBox(sigma.getBBox());
+    sigma.getCamera().disable();
+    // 钉住目标节点并重新加热：link 弹簧拽邻居、charge 推开周围
+    const simNode = simNodeById.get(node);
+    if (sim && simNode) {
+      simNode.fx = graph.getNodeAttribute(node, "x") as number;
+      simNode.fy = graph.getNodeAttribute(node, "y") as number;
+      sim.alphaTarget(0.3).restart();
     }
   };
   const onMoveBody = (event: {
@@ -466,6 +645,12 @@ function buildSigmaScene(options: {
     const pos = sigma.viewportToGraph({ x: event.x, y: event.y });
     graph.setNodeAttribute(draggedNode, "x", pos.x);
     graph.setNodeAttribute(draggedNode, "y", pos.y);
+    // d3 看到 fx/fy 会钉住该点，link 力在每帧 tick 里自动拽动邻居
+    const simNode = simNodeById.get(draggedNode);
+    if (simNode) {
+      simNode.fx = pos.x;
+      simNode.fy = pos.y;
+    }
     dragMoved = true;
     event.preventSigmaDefault();
     event.original.preventDefault();
@@ -474,8 +659,17 @@ function buildSigmaScene(options: {
   };
   const onUp = () => {
     if (!draggedNode) return;
+    const node = draggedNode;
     draggedNode = null;
     container.style.cursor = "";
+    sigma.getCamera().enable();
+    // 解钉 + 停止加热：整个邻域在 link/向心力平衡下慢慢回到该处的位置
+    const simNode = simNodeById.get(node);
+    if (simNode) {
+      simNode.fx = null;
+      simNode.fy = null;
+    }
+    sim?.alphaTarget(0);
   };
   sigma.on("downNode", onDownNode);
   mouseCaptor.on("mousemovebody", onMoveBody);
@@ -506,77 +700,24 @@ function buildSigmaScene(options: {
     container.dispatchEvent(new CustomEvent("asset-graph-drill", { detail: { node } }));
   });
 
-  const FA2_SETTINGS = {
-    barnesHutOptimize: true,
-    barnesHutTheta: 0.5,
-    adjustSizes: false,
-    gravity: 0.06,
-    scalingRatio: 40,
-    edgeWeightInfluence: 0.3,
-    linLogMode: true,
-    strongGravityMode: false,
-    slowDown: 8,
-  };
-  let fa2: InstanceType<typeof FA2Layout> | null = null;
-  let settlePoll: number | null = null;
-  let syncFrame: number | null = null;
-  let syncDisposed = false;
-  if (count > 1) {
-    fa2 = new FA2Layout(graph, { settings: FA2_SETTINGS });
-    fa2.start();
-    let lastPositions: Float64Array | null = null;
-    let stableRounds = 0;
-    const startedAt = Date.now();
-    settlePoll = window.setInterval(() => {
-      if (draggedNode) return;
-      const positions = new Float64Array(count * 2);
-      let i = 0;
-      graph.forEachNode((_, attrs) => {
-        positions[i++] = attrs.x as number;
-        positions[i++] = attrs.y as number;
-      });
-      if (lastPositions) {
-        let maxDelta = 0;
-        for (let j = 0; j < positions.length; j++) {
-          const delta = Math.abs(positions[j] - lastPositions[j]);
-          if (delta > maxDelta) maxDelta = delta;
-        }
-        stableRounds = maxDelta < 1 ? stableRounds + 1 : 0;
-      }
-      lastPositions = positions;
-      if (stableRounds >= 3 || Date.now() - startedAt > 20_000) {
-        if (settlePoll !== null) window.clearInterval(settlePoll);
-        settlePoll = null;
-        fa2?.stop();
-        // 布局停后不再刷屏；之后靠 sigma 自身事件刷新
-        if (syncFrame !== null) {
-          window.clearTimeout(syncFrame);
-          syncFrame = null;
-        }
-        sigma.refresh();
-        sigma.getCamera().animatedReset({ duration: 400 });
-      }
-    }, 400);
-    const sync = () => {
-      if (syncDisposed) return;
-      sigma.refresh();
-      // 布局期 ~20fps 刷新即可，避免与侧栏 React 更新抢主线程
-      syncFrame = window.setTimeout(sync, 50);
-    };
-    syncFrame = window.setTimeout(sync, 50);
+  // 单节点无需模拟；多节点直接由 d3-force 从随机云收敛出布局
+  if (count <= 1) {
+    scheduleCameraFit(80);
+  } else {
+    startSim();
   }
 
   setReady(true);
   return () => {
     syncDisposed = true;
-    if (syncFrame !== null) window.clearTimeout(syncFrame);
-    if (settlePoll !== null) window.clearInterval(settlePoll);
+    clearFit();
+    killSim();
+    focusApiRef.current = null;
+    sigma.getCamera().enable();
     sigma.getCamera().removeListener("updated", onCameraUpdated);
     sigma.off("downNode", onDownNode);
     mouseCaptor.off("mousemovebody", onMoveBody);
     mouseCaptor.off("mouseup", onUp);
-    fa2?.stop();
-    fa2?.kill();
     sigma.kill();
     container.style.cursor = "";
     setReady(false);
@@ -587,6 +728,8 @@ function useSigmaScene(
   containerRef: React.RefObject<HTMLDivElement | null>,
   view: SubgraphView | null,
   themeMode: GraphThemeMode,
+  focusRef: React.MutableRefObject<string | null>,
+  focusApiRef: React.MutableRefObject<GraphFocusApi | null>,
   onSelectNode: (node: SubgraphNode | null) => void
 ): { ready: boolean } {
   const [ready, setReady] = useState(false);
@@ -632,6 +775,8 @@ function useSigmaScene(
         container: containerRef.current,
         view,
         themeMode,
+        focusRef,
+        focusApiRef,
         stateRef,
         selectCbRef,
         setReady,
@@ -649,7 +794,7 @@ function useSigmaScene(
       cleanupScene?.();
       setReady(false);
     };
-  }, [containerRef, view, pendingSize, themeMode]);
+  }, [containerRef, view, pendingSize, themeMode, focusRef, focusApiRef]);
 
   return { ready };
 }
@@ -660,9 +805,50 @@ type AssetGraphPanelProps = {
   repoPath: string;
   /** 会话消息正在 hydration/加载时，自动拉图让路，避免与 getMessages 抢 IPC/主线程 */
   deferForContent?: boolean;
+  /** 当前会话 id：打开图谱时视角优先落在它的节点附近（金环 + 相机飞入） */
+  currentSessionId?: string;
 };
 
-export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGraphPanelProps) {
+// ---------- 日期筛选 ----------
+
+type DatePreset = "all" | "today" | "3d" | "7d" | "custom";
+
+const DATE_PRESETS: Array<{ key: DatePreset; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "today", label: "今天" },
+  { key: "3d", label: "近三天" },
+  { key: "7d", label: "近一周" },
+  { key: "custom", label: "自定义" },
+];
+
+type DateRange = { fromMs?: number; toMs?: number };
+
+/** 预设 → 闭区间 epoch ms；自定义缺任一端视为不筛选（与后端 time_range 语义一致）。 */
+function computeDateRange(preset: DatePreset, customFrom: string, customTo: string): DateRange {
+  const now = Date.now();
+  switch (preset) {
+    case "today": {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      return { fromMs: start.getTime(), toMs: now };
+    }
+    case "3d":
+      return { fromMs: now - 3 * 86_400_000, toMs: now };
+    case "7d":
+      return { fromMs: now - 7 * 86_400_000, toMs: now };
+    case "custom": {
+      if (!customFrom || !customTo) return {};
+      return {
+        fromMs: new Date(`${customFrom}T00:00:00`).getTime(),
+        toMs: new Date(`${customTo}T23:59:59.999`).getTime(),
+      };
+    }
+    default:
+      return {};
+  }
+}
+
+export function AssetGraphPanel({ repoPath, deferForContent = false, currentSessionId }: AssetGraphPanelProps) {
   const [counts, setCounts] = useState<GraphCounts | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [hits, setHits] = useState<NodeHit[]>([]);
@@ -670,6 +856,8 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
   const [loadingView, setLoadingView] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [detail, setDetail] = useState<SubgraphNode | null>(null);
+  /** 当前会话在图中的节点 id（金环 + 初始相机焦点）；未收录/被过滤时为 null */
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
 
   const themeMode = useGraphThemeMode();
   const palette = themeMode === "light" ? TYPE_COLORS_LIGHT : TYPE_COLORS_DARK;
@@ -678,12 +866,27 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
     [palette, themeMode]
   );
 
+  // 日期筛选：默认「全部」不过滤；区间经 ref 透传给 invoke（不触发 callback 重建）
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const dateRangeRef = useRef<DateRange>({});
+  dateRangeRef.current = computeDateRange(datePreset, customFrom, customTo);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SubgraphView | null>(null);
   viewRef.current = view;
   const repoPathRef = useRef(repoPath);
   repoPathRef.current = repoPath;
+  // 会话 id 走 ref 供 loadLatest 读取（避免 loadLatest 身份随会话切换变化）；
+  // 视角跟随由下方两个 effect 完成（setFocus 纯相机/属性操作，不重拉图）。
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
   const [drilled, setDrilled] = useState<string | null>(null);
+  /** 场景命令式焦点接口（场景构建时填充）；focusRef 始终反映最新焦点 */
+  const focusApiRef = useRef<GraphFocusApi | null>(null);
+  const focusRef = useRef<string | null>(null);
+  focusRef.current = drilled ? null : focusNodeId;
   /** idle=加载中；ready=已有数据或已确认空 */
   const [loadPhase, setLoadPhase] = useState<"idle" | "ready">("idle");
   /** 仓路径变化后需要拉图；会话内容忙完才真正执行，避免同仓切会话误触发重载 */
@@ -704,6 +907,8 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
       try {
         const result = await invoke<SubgraphView>("asset_graph_subgraph", {
           repoPath: pathAtRequest, center, hops: 2, limit: 150,
+          fromMs: dateRangeRef.current.fromMs ?? null,
+          toMs: dateRangeRef.current.toMs ?? null,
         });
         if (repoPathRef.current !== pathAtRequest) return;
         const normalized: SubgraphView = {
@@ -729,6 +934,8 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
     try {
       const result = await invoke<SubgraphView>("asset_graph_full", {
         repoPath: pathAtRequest, limit: 1000, compact: true,
+        fromMs: dateRangeRef.current.fromMs ?? null,
+        toMs: dateRangeRef.current.toMs ?? null,
       });
       if (repoPathRef.current !== pathAtRequest) return;
       const normalized: SubgraphView = {
@@ -758,6 +965,21 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
         viewRef.current = null;
         setLoadPhase("ready");
         return;
+      }
+      // 先解析当前会话的焦点节点，再拉图——保证场景构建时焦点已就位
+      const sessionId = currentSessionIdRef.current;
+      if (sessionId) {
+        try {
+          const focus = await invoke<{ nodeId: string | null }>("asset_graph_session_node", {
+            repoPath: pathAtRequest, sessionId,
+          });
+          if (repoPathRef.current !== pathAtRequest) return;
+          setFocusNodeId(focus?.nodeId ?? null);
+        } catch {
+          setFocusNodeId(null);
+        }
+      } else {
+        setFocusNodeId(null);
       }
       await openFull();
       if (repoPathRef.current === pathAtRequest) setLoadPhase("ready");
@@ -790,6 +1012,7 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
     setDetail(null);
     setDrilled(null);
     setSearchQuery("");
+    setFocusNodeId(null);
   }, [repoPath]);
 
   useEffect(() => {
@@ -815,7 +1038,57 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
     }, { timeout: 1200, delay: 64 });
   }, [view, deferForContent, repoPath]);
 
-  const { ready } = useSigmaScene(containerRef, sceneView, themeMode, setDetail);
+  // 日期筛选变化 → 按当前视图（下钻/全图）重载。
+  // 用 key 对比而不是直接挂在依赖上：repoPath 变化导致 openFull/openSubgraph
+  // 身份变化时不误触发（那一路由 loadLatest 负责）。
+  const lastDateKeyRef = useRef("");
+  useEffect(() => {
+    const key = `${datePreset}|${customFrom}|${customTo}`;
+    if (!lastDateKeyRef.current) {
+      lastDateKeyRef.current = key;
+      return;
+    }
+    if (lastDateKeyRef.current === key) return;
+    lastDateKeyRef.current = key;
+    if (!IS_TAURI || !repoPathRef.current) return;
+    if (drilled) void openSubgraph(drilled);
+    else void openFull();
+  }, [datePreset, customFrom, customTo, drilled, openSubgraph, openFull]);
+
+  // 会话切换 → 解析新会话的图节点（不重拉图；视角跟随由下方 setFocus effect 完成）。
+  // 挂载时也会跑一次：首次打开的初始焦点，比 loadLatest 里的解析更早到位。
+  useEffect(() => {
+    if (!IS_TAURI || !repoPath) return;
+    const pathAtRequest = repoPath;
+    if (!currentSessionId) {
+      setFocusNodeId(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<{ nodeId: string | null }>("asset_graph_session_node", {
+      repoPath: pathAtRequest,
+      sessionId: currentSessionId,
+    })
+      .then((r) => {
+        if (!cancelled && repoPathRef.current === pathAtRequest) {
+          setFocusNodeId(r?.nodeId ?? null);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSessionId, repoPath]);
+
+  // 焦点变化 → 场景内换金环 + 相机飞入；场景未建好/正在下钻时由
+  // 构建路径读 focusRef 兜底（下钻视图有自己的 center 金环，不跟随会话）。
+  useEffect(() => {
+    if (drilled) return;
+    focusApiRef.current?.setFocus(focusNodeId);
+  }, [focusNodeId, drilled]);
+
+  // 下钻视图有自己的 center 金环，会话焦点只在全图生效
+  const { ready } = useSigmaScene(containerRef, sceneView, themeMode, focusRef, focusApiRef, setDetail);
 
   // 双击下钻（sigma 场景内经 DOM 事件转发）。
   useEffect(() => {
@@ -918,6 +1191,45 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
                 className="h-8 rounded-md border-border/50 bg-background/80 pl-7 text-xs shadow-sm backdrop-blur"
               />
             </form>
+            {/* 日期筛选：默认全部；自定义展开起止日期（闭区间） */}
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {DATE_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setDatePreset(p.key)}
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] backdrop-blur transition-colors ${
+                    datePreset === p.key
+                      ? "border-border bg-background/90 text-foreground shadow-sm"
+                      : "border-border/40 bg-background/50 text-muted-foreground hover:bg-background/80"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {datePreset === "custom" && (
+              <div
+                className="mt-1 flex items-center gap-1 rounded-md border border-border/50 bg-background/80 px-1.5 py-1 shadow-sm backdrop-blur"
+                style={{ colorScheme: themeMode }}
+              >
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="h-5 min-w-0 flex-1 bg-transparent text-[10px] text-foreground outline-none"
+                  aria-label="开始日期"
+                />
+                <span className="shrink-0 text-[10px] text-muted-foreground">至</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="h-5 min-w-0 flex-1 bg-transparent text-[10px] text-foreground outline-none"
+                  aria-label="结束日期"
+                />
+              </div>
+            )}
             <div className="mt-1">
               {drilled && (
                 <button
@@ -964,21 +1276,6 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
             {loadingView ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
           </Button>
 
-          {/* 类型图例：悬浮右下 */}
-          {ready && (
-            <div className="pointer-events-none absolute bottom-2 right-2 max-w-[280px] rounded-md border border-border/60 bg-background/80 px-2 py-1.5 text-[10px] text-muted-foreground opacity-70 backdrop-blur transition-opacity hover:opacity-100">
-              <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-                {Object.entries(TYPE_LABELS).map(([type, label]) => (
-                  <span key={type} className="flex items-center gap-1">
-                    <span className="inline-block size-1.5 rounded-full" style={{ backgroundColor: colorOf(type) }} />
-                    {label}
-                  </span>
-                ))}
-              </div>
-              <p className="mt-1 text-[9px] text-muted-foreground/70">拖拽节点 · 双击下钻 · 单击详情</p>
-            </div>
-          )}
-
           {/* Inspector：刷新按钮下方 */}
           {detail && (
             <div className="absolute right-2 top-12 z-10 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-background/95 p-2.5 shadow-md backdrop-blur">
@@ -1024,10 +1321,21 @@ export function AssetGraphPanel({ repoPath, deferForContent = false }: AssetGrap
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
           ) : !ready ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
-              <p className="text-xs text-muted-foreground">暂无可视数据</p>
-              <p className="text-[10px] text-muted-foreground/60">尝试右上角刷新或扫描存量会话</p>
-            </div>
+            // 有数据但场景未就绪（idle 调度窗口 + WebGL 构建 + 布局收敛）
+            // → 显示加载态；只有确认无数据时才显示空态，避免打开瞬间误闪「暂无」
+            view && view.nodes.length > 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                <p className="text-[10px] text-muted-foreground/70">图谱构建中…</p>
+              </div>
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
+                <p className="text-xs text-muted-foreground">暂无可视数据</p>
+                <p className="text-[10px] text-muted-foreground/60">
+                  尝试调整日期筛选、右上角刷新或扫描存量会话
+                </p>
+              </div>
+            )
           ) : null}
         </div>
       )}

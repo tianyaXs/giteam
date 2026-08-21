@@ -1428,7 +1428,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .get("limit")
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(150);
-        let view = graph.query().subgraph(center, hops, limit);
+        let view = graph.query().subgraph(center, hops, limit, None);
         return (
             200,
             serde_json::json!({
@@ -1456,7 +1456,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .get("compact")
             .map(|v| v != "false" && v != "0")
             .unwrap_or(true);
-        let view = graph.query().full_graph_with_mode(limit, compact);
+        let view = graph.query().full_graph_with_mode(limit, compact, None);
         return (
             200,
             serde_json::json!({

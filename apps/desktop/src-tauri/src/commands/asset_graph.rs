@@ -86,6 +86,8 @@ pub async fn asset_graph_subgraph(
     center: String,
     hops: Option<u32>,
     limit: Option<usize>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
 ) -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(graph) = giteam_core::asset_graph::attached(std::path::Path::new(&repo_path))
@@ -95,9 +97,12 @@ pub async fn asset_graph_subgraph(
         let Ok(graph) = graph.lock() else {
             return serde_json::json!({ "center": "", "nodes": [], "edges": [] });
         };
-        let view = graph
-            .query()
-            .subgraph(&center, hops.unwrap_or(2), limit.unwrap_or(150));
+        let view = graph.query().subgraph(
+            &center,
+            hops.unwrap_or(2),
+            limit.unwrap_or(150),
+            time_range(from_ms, to_ms),
+        );
         serde_json::json!({
             "center": view.center,
             "nodes": view.nodes,
@@ -106,6 +111,27 @@ pub async fn asset_graph_subgraph(
     })
     .await
     .unwrap_or_else(|_| serde_json::json!({ "center": "", "nodes": [], "edges": [] }))
+}
+
+/// 按应用会话 id 反查会话节点 id：面板打开时相机飞到当前会话附近用。
+/// 未挂载/未收录该会话时返回 null（前端回退到全图 fit）。
+#[tauri::command]
+pub async fn asset_graph_session_node(
+    repo_path: String,
+    session_id: String,
+) -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(graph) = giteam_core::asset_graph::attached(std::path::Path::new(&repo_path))
+        else {
+            return serde_json::json!({ "nodeId": null });
+        };
+        let Ok(graph) = graph.lock() else {
+            return serde_json::json!({ "nodeId": null });
+        };
+        serde_json::json!({ "nodeId": graph.query().session_node_id(&session_id) })
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "nodeId": null }))
 }
 
 #[tauri::command]
@@ -129,6 +155,8 @@ pub async fn asset_graph_full(
     repo_path: String,
     limit: Option<usize>,
     compact: Option<bool>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
 ) -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(graph) = giteam_core::asset_graph::attached(std::path::Path::new(&repo_path))
@@ -138,9 +166,11 @@ pub async fn asset_graph_full(
         let Ok(graph) = graph.lock() else {
             return serde_json::json!({ "center": "", "nodes": [], "edges": [] });
         };
-        let view = graph
-            .query()
-            .full_graph_with_mode(limit.unwrap_or(1000), compact.unwrap_or(true));
+        let view = graph.query().full_graph_with_mode(
+            limit.unwrap_or(1000),
+            compact.unwrap_or(true),
+            time_range(from_ms, to_ms),
+        );
         serde_json::json!({
             "center": view.center,
             "nodes": view.nodes,
@@ -149,6 +179,14 @@ pub async fn asset_graph_full(
     })
     .await
     .unwrap_or_else(|_| serde_json::json!({ "center": "", "nodes": [], "edges": [] }))
+}
+
+/// from/to 同时存在才构成过滤区间；缺任一视为不筛选（默认）。
+fn time_range(from_ms: Option<i64>, to_ms: Option<i64>) -> Option<(i64, i64)> {
+    match (from_ms, to_ms) {
+        (Some(from), Some(to)) => Some((from.min(to), from.max(to))),
+        _ => None,
+    }
 }
 
 /// 手动触发存量回放（面板「重建索引」按钮；会话创建时也会自动增量回放）。

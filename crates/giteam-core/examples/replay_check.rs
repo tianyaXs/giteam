@@ -57,7 +57,7 @@ fn main() {
     // id 与 key 双 hash 不一致，resolve_center 必须走 key 通道命中。
     println!("\n--- sessionKey-as-center regression ---");
     if let Some(latest) = query.recent_sessions(1).first() {
-        let by_key = query.subgraph(&latest.session_key, 2, 60);
+        let by_key = query.subgraph(&latest.session_key, 2, 60, None);
         println!(
             "center via sessionKey: nodes={} edges={}",
             by_key.nodes.len(),
@@ -71,7 +71,7 @@ fn main() {
 
     // 子图（可视化数据路径）：以会话为中心展开。
     println!("\n--- subgraph probe ---");
-    let view = query.subgraph("docs/desktop-user-guide.html", 2, 60);
+    let view = query.subgraph("docs/desktop-user-guide.html", 2, 60, None);
     println!(
         "center={} nodes={} edges={}",
         view.center,

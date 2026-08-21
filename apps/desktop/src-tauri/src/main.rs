@@ -378,6 +378,7 @@ fn main() {
             commands::asset_graph::asset_graph_search,
             commands::asset_graph::asset_graph_subgraph,
             commands::asset_graph::asset_graph_full,
+            commands::asset_graph::asset_graph_session_node,
             commands::asset_graph::asset_graph_sessions,
             commands::asset_graph::asset_graph_rebuild,
             commands::pi_agent::agent_runtime_info,

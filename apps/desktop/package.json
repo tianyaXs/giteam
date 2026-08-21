@@ -1,6 +1,6 @@
 {
   "name": "giteam-desktop",
-  "version": "0.2.37",
+  "version": "0.2.38",
   "private": true,
   "type": "module",
   "scripts": {
@@ -46,6 +46,7 @@
     "d3-force": "^3.0.0",
     "docx-preview": "^0.3.7",
     "graphology": "^0.26.0",
+    "graphology-layout": "^0.6.1",
     "graphology-layout-forceatlas2": "^0.10.1",
     "katex": "^0.17.0",
     "lenis": "^1.3.23",
