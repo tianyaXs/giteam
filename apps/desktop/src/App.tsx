@@ -28,6 +28,7 @@ import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentC
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
+import { AssetGraphPanel } from "./components/agent/AssetGraphPanel";
 import { SearchPanel } from "./components/search/SearchPanel";
 import type { SearchHit, SearchScope } from "./lib/sessionSearch";
 import { AgentTodoProgressCard } from "./components/agent/AgentTodoProgressCard";
@@ -3472,8 +3473,10 @@ export function App() {
     try {
       const rows = (await agentClient.listSessions())
         .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg))
-        .slice(0, limit + 1)
-        .map(agentSummaryToChatSummary);
+        .map(agentSummaryToChatSummary)
+        // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
+        .sort(compareAgentSessionActivity)
+        .slice(0, limit + 1);
       if (sidebarAgentSessionRequestSeqRef.current[repoId] !== requestSeq) return;
       const sorted = sortAgentSessionSummaries(filterVisibleAgentSessionsForRepo(repoId, rows || []));
       const hasMore = sorted.length > limit;
@@ -3537,8 +3540,10 @@ export function App() {
     appendAgentDebugLog("session.list requested");
     const rows = (await agentClient.listSessions())
       .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath))
-      .slice(0, limit)
-      .map(agentSummaryToChatSummary);
+      .map(agentSummaryToChatSummary)
+      // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
+      .sort(compareAgentSessionActivity)
+      .slice(0, limit);
     const visibleRows = filterVisibleAgentSessionsForRepo(repoIdAtRequest, rows || []);
     if (!visibleRows || visibleRows.length === 0) {
       appendAgentDebugLog("session.list empty");
@@ -5759,7 +5764,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           if (type === "text" || type === "reasoning") {
             return Boolean(String((part as { text?: string }).text || "").trim());
           }
-          return type === "toolCall" || type === "runtime.failure" || type === "runtime.retry";
+          return type === "toolCall" || type === "runtime.failure" || type === "runtime.retry" || type === "runtime.memory";
         });
         // 只 remap 本地 assistant-* 占位。工具轮完成态常无 content（正文在下一轮），
         // 若把已有服务端 id 的空泡 remap 成下一条 text assistant，completed 还会在末尾
@@ -6007,10 +6012,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             next.push(part);
           }
         }
-        // 保留流式期写入的重试/失败事件（history message.parts 不含这些 ephemeral 类型）
+        // 保留流式期写入的重试/失败/记忆事件（history message.parts 不含这些 ephemeral 类型）
         for (const part of current) {
           const type = String((part as { type?: string }).type || "");
-          if (type !== "runtime.retry" && type !== "runtime.failure") continue;
+          if (type !== "runtime.retry" && type !== "runtime.failure" && type !== "runtime.memory") continue;
           const id = String((part as { id?: string }).id || "").trim();
           if (!id) continue;
           if (next.some((item) => String((item as { id?: string }).id || "") === id)) continue;
@@ -6418,6 +6423,48 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 : `请求重试失败${event.error ? `: ${event.error}` : ""}`
               : `请求失败，正在自动重试 (${attempt || "?"}/${maxAttempts})${event.error ? `: ${event.error}` : ""}`
           );
+          break;
+        }
+        case "memory.extraction.started":
+        case "memory.extraction.completed":
+        case "memory.extraction.failed": {
+          const extractionId = String(event.extractionId || "").trim() || "memory";
+          if (!currentServerAssistantId && currentLocalAssistantId) {
+            currentServerAssistantId = `memory-pending:${runId}`;
+            localAssistantByMessageId.set(currentServerAssistantId, currentLocalAssistantId);
+            commitAgentServerMessageIdByLocalId((prev) => ({
+              ...prev,
+              [currentLocalAssistantId]: currentServerAssistantId
+            }));
+          }
+          if (!currentServerAssistantId) break;
+          const phase =
+            event.type === "memory.extraction.started"
+              ? "started"
+              : event.type === "memory.extraction.failed"
+                ? "failed"
+                : "completed";
+          const entities = Array.isArray(event.entities)
+            ? event.entities
+              .map((row) => ({
+                type: String((row as { type?: string })?.type || "").trim(),
+                title: String((row as { title?: string })?.title || "").trim()
+              }))
+              .filter((row) => row.title)
+            : [];
+          upsertAgentLivePart(currentServerAssistantId, {
+            id: `runtime.memory:${extractionId}`,
+            type: "runtime.memory",
+            extractionId,
+            phase,
+            entityCount: Number(event.entityCount) || 0,
+            relationCount: Number(event.relationCount) || 0,
+            intent: String(event.intent || "").trim(),
+            entities,
+            error: String(event.error || "").trim(),
+            elapsedMs: Number(event.elapsedMs) || 0,
+            status: phase === "started" ? "running" : phase === "failed" ? "error" : "completed"
+          });
           break;
         }
         case "runtime.compaction":
@@ -9849,7 +9896,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   const rightPane = (
     <RightSidebarPanel
       ref={agentRightPaneRef}
-      variant={rightPaneTab === "changes" || rightPaneTab === "worktree"
+      variant={rightPaneTab === "changes" || rightPaneTab === "worktree" || rightPaneTab === "assetGraph"
         ? "workspace"
         : rightPaneTab === "terminal"
           ? "terminal"
@@ -9857,6 +9904,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     >
       {rightPaneTab === "browser" ? (
         <BrowserPanel url={browserPaneUrl} />
+      ) : null}
+      {rightPaneTab === "assetGraph" ? (
+        <AssetGraphPanel repoPath={repoPath} deferForContent={agentSessionLoading} />
       ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (
@@ -10137,6 +10187,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         remoteRepos: "远程仓库",
         skills: appText.skills,
         browser: "浏览器",
+        assetGraph: "记忆",
       }}
       fileTabLabel={standaloneRightFileTab?.label}
       closeFileLabel={appText.closeFileView}

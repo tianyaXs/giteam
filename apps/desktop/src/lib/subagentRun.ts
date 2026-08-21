@@ -134,6 +134,13 @@ export function isVisibleSubagentTaskPart(
   if (normalizeText((part as { toolName?: string }).toolName) !== "task") return false;
   const id = partToolCallId(part);
   if (!id) return false;
+  // 旁路记忆抽取曾误投影为 task；新路径已发 memory.extraction.*，旧卡仍隐藏。
+  if (id.startsWith("asset-graph-extract-")) return false;
+  const subagentType = normalizeText(
+    (part as { subagentType?: string }).subagentType
+    || String((((part as { input?: Record<string, unknown> }).input || {}) as Record<string, unknown>).subagent_type || "")
+  ).toLowerCase();
+  if (subagentType === "extract") return false;
 
   const indexedChildren = siblings.filter((candidate) => {
     const indexed = parseIndexedParentToolCallId(partToolCallId(candidate));

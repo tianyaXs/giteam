@@ -112,7 +112,7 @@ const COLLAPSE_CHAR_LIMIT = 420;
 
 type AgentDisplayTimelineGroup =
   | AgentAssistantRenderGroup
-  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser" | "task"; parts: AgentDetailedPart[] };
+  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall"; parts: AgentDetailedPart[] };
 
 function formatContextCount(count: number, noun: string): string {
   return count > 0 ? `${count}次${noun}` : "";
@@ -126,6 +126,28 @@ function summarizeContextCounts(counts: { read: number; search: number; list: nu
   ].filter(Boolean).join("，");
 }
 
+/** 时间线条目标签共用字宽锚点，避免「已探索 / 已回忆」等汉字实际宽度差拉开后续计数列。 */
+const TIMELINE_STATUS_WIDTH_ANCHORS = [
+  "探索中",
+  "已探索",
+  "回忆中",
+  "已回忆",
+  "思考中",
+  "已思考",
+  "运行中",
+  "已运行",
+  "编辑中",
+  "已编辑",
+  "查询中",
+  "已查询",
+  "浏览中",
+  "已浏览",
+  "执行中",
+  "已完成",
+  "记录中",
+  "已记录"
+] as const;
+
 /** 状态文案固定占位，避免「探索中/已探索」等切换或计数变化撑动整行。 */
 function ActivityStatus({
   active,
@@ -138,6 +160,9 @@ function ActivityStatus({
   doneLabel: string;
   className?: string;
 }) {
+  const widthAnchors = Array.from(
+    new Set<string>([activeLabel, doneLabel, ...TIMELINE_STATUS_WIDTH_ANCHORS])
+  );
   return (
     <span
       className={cn(
@@ -146,16 +171,46 @@ function ActivityStatus({
         className
       )}
     >
-      {/* 双层叠字：用较长文案撑宽，当前文案可见，切换时宽度不变 */}
-      <span className="invisible col-start-1 row-start-1 whitespace-nowrap" aria-hidden>
-        {activeLabel.length >= doneLabel.length ? activeLabel : doneLabel}
-      </span>
+      {/* 叠放全部时间线文案撑宽：按像素取最大，跨组对齐计数列 */}
+      {widthAnchors.map((label) => (
+        <span key={label} className="invisible col-start-1 row-start-1 whitespace-nowrap" aria-hidden>
+          {label}
+        </span>
+      ))}
       <span className={cn("col-start-1 row-start-1 whitespace-nowrap", active && "animate-pulse")}>
         {active ? activeLabel : doneLabel}
       </span>
     </span>
   );
 }
+
+/** 时间线折叠标签共用外壳：固定行高 + 收起不挂载，保证「已探索 / 已回忆」行距一致。 */
+function TimelineFoldGroup({
+  open,
+  onOpenChange,
+  label,
+  children
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  label: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="min-w-0 max-w-full">
+      <button
+        type="button"
+        aria-expanded={open}
+        className="flex h-10 w-full min-w-0 appearance-none items-center overflow-hidden border-0 bg-transparent px-0 text-left hover:bg-transparent"
+        onClick={() => onOpenChange(!open)}
+      >
+        {label}
+      </button>
+      {open ? <div className="min-w-0">{children}</div> : null}
+    </div>
+  );
+}
+
 
 function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   // todowrite 只驱动右侧进度卡、不进主时间线；有进度时主区不应继续写「思考中」，
@@ -167,11 +222,9 @@ function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   const hasTodos = (todoItems || []).length > 0;
   const label = hasTodos ? "执行中" : "思考中";
   const doneLabel = hasTodos ? "已执行" : "已思考";
-  // py-2.5(10px) 与 ReasoningGroup 收起态的标签基准对齐（其外层 py-1 + Button py-1.5 = 10px，
-  // 组件高 40px）。无 part 占位 → reasoning 到达时 hasTimeline 翻 true，占位换成 ReasoningGroup；
-  // 基准对齐后标签 y 与 item 高度都不变，消除「思考内容出现后整行下移」的跳变。
+  // h-10 与 TimelineFoldGroup 收起态标签行对齐，避免「思考中」占位与推理组切换时高度跳变。
   return (
-    <div className="flex w-full min-w-0 items-center justify-start gap-2 py-2.5" aria-live="polite" aria-label={label}>
+    <div className="flex h-10 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
       <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
       {activeTodo ? (
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
@@ -284,9 +337,10 @@ function getToolName(part: AgentDetailedPart): string {
   return String((part as any)?.toolName || "").trim();
 }
 
-function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "task" | "" {
+function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "" {
   if (group.kind !== "part") return "";
   const type = String((group.part as any)?.type || "");
+  if (type === "runtime.memory") return "memory";
   if (type !== "toolCall") return "";
   const tool = getToolName(group.part);
   if (tool === "task") return "task";
@@ -294,6 +348,7 @@ function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web
   if (tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch") return "edit";
   if (tool === "web_fetch" || tool === "web_search") return "web";
   if (tool === "browser_use") return "browser";
+  if (tool === "asset_context" || tool === "asset_search" || tool === "asset_precedents") return "recall";
   return "";
 }
 
@@ -324,7 +379,7 @@ function rowMatchesMessageId(row: AgentMessageRenderRow, messageId: string): boo
 
 function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentDisplayTimelineGroup[] {
   const out: AgentDisplayTimelineGroup[] = [];
-  let pendingKind: "shell" | "edit" | "web" | "browser" | "task" | "" = "";
+  let pendingKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "" = "";
   let pending: AgentAssistantRenderGroup[] = [];
 
   const flush = () => {
@@ -541,26 +596,48 @@ function ToolBatchGroup({
   const web = group.batchKind === "web";
   const browser = group.batchKind === "browser";
   const task = group.batchKind === "task";
+  const memory = group.batchKind === "memory";
+  const recall = group.batchKind === "recall";
   // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
-  const activeLabel = task
-    ? "执行中"
-    : shell
-      ? "运行中"
-      : web
-        ? "查询中"
-        : browser
-          ? "浏览中"
-          : "编辑中";
-  const doneLabel = task
-    ? "已完成"
-    : shell
-      ? "已运行"
-      : web
-        ? "已查询"
-        : browser
-          ? "已浏览"
-          : "已编辑";
-  const noun = task ? "个子任务" : shell ? "条命令" : web ? "次" : browser ? "次" : "个文件";
+  const activeLabel = memory
+    ? "记录中"
+    : recall
+      ? "回忆中"
+      : task
+        ? "执行中"
+        : shell
+          ? "运行中"
+          : web
+            ? "查询中"
+            : browser
+              ? "浏览中"
+              : "编辑中";
+  const doneLabel = memory
+    ? "已记录"
+    : recall
+      ? "已回忆"
+      : task
+        ? "已完成"
+        : shell
+          ? "已运行"
+          : web
+            ? "已查询"
+            : browser
+              ? "已浏览"
+              : "已编辑";
+  const noun = memory
+    ? "次写入"
+    : recall
+      ? "次"
+      : task
+        ? "个子任务"
+        : shell
+          ? "条命令"
+          : web
+            ? "次"
+            : browser
+              ? "次"
+              : "个文件";
   const resolvedOpen = open;
 
   // 只显示真实子 agent 行，并去掉父壳/空壳造成的重复卡。
@@ -568,6 +645,12 @@ function ToolBatchGroup({
     ? dedupeVisibleSubagentTaskParts(group.parts)
     : group.parts;
   if (task && visibleTaskParts.length === 0) return null;
+
+  // 与「已探索 2次搜索」同形：回忆/查询类数字与量词紧贴，避免「1 次」多出空格
+  const countCompact = recall || web || browser;
+  const countLabel = countCompact
+    ? `${visibleTaskParts.length}${noun}`
+    : `${visibleTaskParts.length} ${noun}`;
 
   // 子任务组摘要：运行中显示当前活跃标题，完成态显示计数即可。
   const taskDetail = (() => {
@@ -581,48 +664,87 @@ function ToolBatchGroup({
     return resolveTaskCardTitle(runningPart, group.parts) || extractTaskDescription(runningPart);
   })();
 
+  const memoryDetail = (() => {
+    if (!memory) return "";
+    const entities = visibleTaskParts.reduce(
+      (sum, part) => sum + (Number((part as { entityCount?: number }).entityCount) || 0),
+      0
+    );
+    const relations = visibleTaskParts.reduce(
+      (sum, part) => sum + (Number((part as { relationCount?: number }).relationCount) || 0),
+      0
+    );
+    if (entities > 0 || relations > 0) {
+      return `${entities} 个实体 · ${relations} 条关系`;
+    }
+    const intent = visibleTaskParts
+      .map((part) => String((part as { intent?: string }).intent || "").trim())
+      .find(Boolean);
+    return intent || "";
+  })();
+
+  const recallDetail = (() => {
+    if (!recall || !running) return "";
+    const runningPart = visibleTaskParts.find((part) => {
+      const status = String((part as { status?: string }).status || "").toLowerCase();
+      return status === "running" || status === "pending";
+    });
+    const part = runningPart || visibleTaskParts[visibleTaskParts.length - 1];
+    if (!part) return "";
+    const tool = String((part as { toolName?: string }).toolName || "");
+    const input = ((part as { input?: Record<string, unknown> }).input || {}) as Record<string, unknown>;
+    const taskText = String(input.task || input.query || input.error || "").trim();
+    const short = taskText.length > 48 ? `${taskText.slice(0, 48).trimEnd()}…` : taskText;
+    if (tool === "asset_context") return short ? `上下文 · ${short}` : "上下文";
+    if (tool === "asset_search") return short ? `检索 · ${short}` : "检索";
+    if (tool === "asset_precedents") return short ? `先例 · ${short}` : "先例";
+    return short;
+  })();
+
   return (
-    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={resolvedOpen} onOpenChange={onOpenChange}>
-      <CollapsibleTrigger asChild>
-        <Button className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
-          <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-            <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
-            <span className="inline-grid shrink-0 grid-cols-1 grid-rows-1 text-xs font-medium text-muted-foreground">
-              <span className="invisible col-start-1 row-start-1 tabular-nums" aria-hidden>
-                99 {noun}
-              </span>
-              <span className="col-start-1 row-start-1 tabular-nums">
-                {visibleTaskParts.length} {noun}
-              </span>
-            </span>
-            {taskDetail ? (
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
-            ) : null}
-          </span>
-        </Button>
-      </CollapsibleTrigger>
-      <AnimatedCollapsibleContent open={resolvedOpen}>
-        {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
-        <div className={cn("pb-1.5 pl-3", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
-          <div className="flex flex-col gap-0.5">
-            {visibleTaskParts.map((part, partIndex) => (
-              renderTimelineToolPart({
-                timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
-                part,
-                listItem: true,
-                siblingParts: group.parts,
-                settled: forceInactive,
-                shellToolPartsExpanded,
-                editToolPartsExpanded,
-                onOpenTaskSession,
-                onOpenToolFile,
-                onOpenBrowserUrl
-              })
-            ))}
-          </div>
+    <TimelineFoldGroup
+      open={resolvedOpen}
+      onOpenChange={onOpenChange}
+      label={
+        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+          <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
+          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
+          {taskDetail ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
+          ) : null}
+          {!taskDetail && memoryDetail ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {memoryDetail}</span>
+          ) : null}
+          {!taskDetail && !memoryDetail && recallDetail ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {recallDetail}</span>
+          ) : null}
+        </span>
+      }
+    >
+      {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
+      <div className={cn("pb-1.5 pl-3", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
+        <div className="flex flex-col gap-0.5">
+          {visibleTaskParts.map((part, partIndex) => {
+            const timelineKeyItem = `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`;
+            if (memory || String((part as { type?: string }).type || "") === "runtime.memory") {
+              return <MemoryExtractionPart key={timelineKeyItem} part={part} listItem />;
+            }
+            return renderTimelineToolPart({
+              timelineKey: timelineKeyItem,
+              part,
+              listItem: true,
+              siblingParts: group.parts,
+              settled: forceInactive,
+              shellToolPartsExpanded,
+              editToolPartsExpanded,
+              onOpenTaskSession,
+              onOpenToolFile,
+              onOpenBrowserUrl
+            });
+          })}
         </div>
-      </AnimatedCollapsibleContent>
-    </Collapsible>
+      </div>
+    </TimelineFoldGroup>
   );
 }
 
@@ -663,40 +785,35 @@ function ContextGroup({
   const detail = active ? progress.detail || lastDetailRef.current : "";
 
   return (
-    <Collapsible className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1" open={open} onOpenChange={onOpenChange}>
-      <CollapsibleTrigger asChild>
-        <Button className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
-          <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-            <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
-            <span className="inline-grid shrink-0 grid-cols-1 grid-rows-1 text-xs text-muted-foreground">
-              {/* 用上限文案撑住计数区宽度，避免 1→2 次 / 增减类型时整行横跳 */}
-              <span className="invisible col-start-1 row-start-1 tabular-nums" aria-hidden>
-                99次读取，99次搜索，99次列出
-              </span>
-              <span className="col-start-1 row-start-1 tabular-nums">{summary || "已收集上下文"}</span>
-            </span>
-            {detail ? (
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {detail}</span>
-            ) : null}
+    <TimelineFoldGroup
+      open={open}
+      onOpenChange={onOpenChange}
+      label={
+        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+          <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
+          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
+            {summary || "已收集上下文"}
           </span>
-        </Button>
-      </CollapsibleTrigger>
-      <AnimatedCollapsibleContent open={open}>
-        <div className="flex flex-col gap-0.5 pb-1.5 pl-3">
-          {group.parts.map((part, partIndex) => (
-            renderTimelineToolPart({
-              timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
-              part,
-              listItem: true,
-              shellToolPartsExpanded,
-              editToolPartsExpanded,
-              onOpenTaskSession,
-              onOpenToolFile
-            })
-          ))}
-        </div>
-      </AnimatedCollapsibleContent>
-    </Collapsible>
+          {detail ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {detail}</span>
+          ) : null}
+        </span>
+      }
+    >
+      <div className="flex flex-col gap-0.5 pb-1.5 pl-3">
+        {group.parts.map((part, partIndex) => (
+          renderTimelineToolPart({
+            timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
+            part,
+            listItem: true,
+            shellToolPartsExpanded,
+            editToolPartsExpanded,
+            onOpenTaskSession,
+            onOpenToolFile
+          })
+        ))}
+      </div>
+    </TimelineFoldGroup>
   );
 }
 
@@ -727,27 +844,24 @@ function ReasoningGroup({
 
   // 默认始终收起：过程中与结束后都不自动展开，避免高度变化抖动；仅手动点击展开
   return (
-    <Collapsible
-      className="grid min-w-0 max-w-full gap-1 overflow-hidden py-1"
+    <TimelineFoldGroup
       open={open}
       onOpenChange={onOpenChange}
-    >
-      <CollapsibleTrigger asChild>
-        <Button className="h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 py-1.5 text-left hover:bg-transparent hover:text-foreground" variant="ghost">
+      label={
+        <>
           <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 text-sm" />
           {open ? null : (
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
           )}
-        </Button>
-      </CollapsibleTrigger>
-      <AnimatedCollapsibleContent open={open}>
-        <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
-          <div className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]">
-            {renderMarkdown(text, active)}
-          </div>
+        </>
+      }
+    >
+      <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+        <div className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]">
+          {renderMarkdown(text, active)}
         </div>
-      </AnimatedCollapsibleContent>
-    </Collapsible>
+      </div>
+    </TimelineFoldGroup>
   );
 }
 
@@ -761,7 +875,12 @@ function AssistantTextBlock({
   renderMarkdown: RenderMarkdown;
 }) {
   return (
-    <div className="min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]">
+    <div
+      className={cn(
+        "min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]",
+        streaming && "agent-stream-fade"
+      )}
+    >
       {renderMarkdown(text, streaming)}
     </div>
   );
@@ -859,7 +978,7 @@ function AssistantTimeline({
   // 都单调 true→false，从根上消除频闪。
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1 overflow-hidden">
+    <div className="flex min-w-0 max-w-full flex-col gap-1.5 overflow-hidden">
       {displayTimelineGroups.map((group, index) => {
         const timelineKey = stableGroupKeys[index];
         // 非流式、或后方已有更新组（含「曾出现过」的防回退判定）→ 强制已完成态
@@ -926,6 +1045,9 @@ function AssistantTimeline({
         const type = String((group.part as { type?: string }).type || "");
         if (type === "runtime.retry") {
           return <RuntimeRetryPart key={timelineKey} part={group.part} />;
+        }
+        if (type === "runtime.memory") {
+          return <MemoryExtractionPart key={timelineKey} part={group.part} />;
         }
         if (type === "runtime.failure") {
           const message = String((group.part as { error?: string; text?: string }).error
@@ -1165,7 +1287,7 @@ function isFailureOnlyAssistantRow(row: AgentMessageRenderRow): boolean {
   if (row.fallbackReply.trim()) return false;
   const substantive = row.renderParts.some((part) => {
     const type = String((part as { type?: string }).type || "");
-    return type !== "runtime.failure" && type !== "runtime.retry" && type !== "turn-boundary";
+    return type !== "runtime.failure" && type !== "runtime.retry" && type !== "runtime.memory" && type !== "turn-boundary";
   });
   if (substantive) return false;
   return Boolean(row.errorMessage.trim() || renderPartsHasFailure(row.renderParts));
@@ -1356,6 +1478,132 @@ function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
           </p>
         </div>
       </AnimatedCollapsibleContent>
+    </Collapsible>
+  );
+}
+
+const MEMORY_ENTITY_TYPE_LABELS: Record<string, string> = {
+  decision: "决策",
+  feature: "功能",
+  module: "模块",
+  tech_concept: "技术",
+  error_pattern: "错误模式",
+  api: "接口",
+  tradeoff: "取舍",
+  open_task: "待办"
+};
+
+function MemoryExtractionPart({
+  part,
+  listItem = false
+}: {
+  part: AgentDetailedPart;
+  listItem?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const phase = String((part as { phase?: string }).phase || "").trim();
+  const entityCount = Number((part as { entityCount?: number }).entityCount) || 0;
+  const relationCount = Number((part as { relationCount?: number }).relationCount) || 0;
+  const intent = String((part as { intent?: string }).intent || "").trim();
+  const error = String((part as { error?: string }).error || "").trim();
+  const entities = Array.isArray((part as { entities?: unknown }).entities)
+    ? ((part as { entities: Array<{ type?: string; title?: string }> }).entities)
+    : [];
+  const running = phase === "started";
+  const failed = phase === "failed";
+  const empty = !running && !failed && entityCount === 0 && relationCount === 0;
+  const doneLabel = failed ? "记忆写入失败" : empty ? "记忆未更新" : "已写入记忆";
+  const countPreview =
+    entityCount > 0 || relationCount > 0
+      ? `${entityCount} 个实体 · ${relationCount} 条关系`
+      : "";
+  const preview = failed
+    ? (error.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || error || "抽取失败")
+    : countPreview || intent || (running ? "沉淀本轮决策与实体" : empty ? "本轮无新实体" : "");
+  const canExpand = entities.length > 0 || Boolean(error);
+
+  const header = (
+    <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+      <ActivityStatus
+        active={running}
+        activeLabel="写入记忆中"
+        doneLabel={doneLabel}
+        className={cn("text-sm", !running && failed && "text-destructive")}
+      />
+      {!open && preview ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {preview}</span>
+      ) : null}
+    </span>
+  );
+
+  const body = (
+    <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+      {intent ? (
+        <p className="mb-2 min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]">
+          {intent}
+        </p>
+      ) : null}
+      {entities.length > 0 ? (
+        <ul className="grid gap-1">
+          {entities.map((entity, index) => {
+            const typeKey = String(entity.type || "").trim();
+            const typeLabel = MEMORY_ENTITY_TYPE_LABELS[typeKey] || typeKey || "实体";
+            const title = String(entity.title || "").trim();
+            if (!title) return null;
+            return (
+              <li
+                key={`${typeKey}:${title}:${index}`}
+                className="flex min-w-0 items-baseline gap-2 text-xs"
+              >
+                <span className="shrink-0 text-muted-foreground/80">{typeLabel}</span>
+                <span className="min-w-0 flex-1 select-text truncate text-foreground/90">{title}</span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {error ? (
+        <p className="min-w-0 max-w-full select-text whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  if (!canExpand) {
+    return (
+      <div
+        className={cn(
+          "grid min-w-0 max-w-full gap-1 overflow-hidden",
+          listItem ? "py-0.5" : "py-1"
+        )}
+        aria-live="polite"
+      >
+        <div className={cn("flex min-w-0 items-center overflow-hidden px-0", listItem ? "py-1" : "py-1.5")}>
+          {header}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Collapsible
+      className={cn("grid min-w-0 max-w-full gap-1 overflow-hidden", listItem ? "py-0.5" : "py-1")}
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <CollapsibleTrigger asChild>
+        <Button
+          className={cn(
+            "h-auto w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
+            listItem ? "py-1" : "py-1.5"
+          )}
+          variant="ghost"
+        >
+          {header}
+        </Button>
+      </CollapsibleTrigger>
+      <AnimatedCollapsibleContent open={open}>{body}</AnimatedCollapsibleContent>
     </Collapsible>
   );
 }
@@ -1747,7 +1995,39 @@ export function AgentMessageStream({
         rebuildTimeline(last);
         return out;
       }
-      // 仅空占位/失败卡才跨 assistant 拼接。工具轮与正文轮保持独立单元格（Codex exec cell → agent cell）。
+      // 相邻「仅工具时间线」assistant 合并成同一单元格，避免已探索/已回忆被消息 pb-4 拆开行距。
+      // 「工具轮 ↔ 正文轮」仍保持独立（任一侧含 text/fallback 则不合并）。
+      const lastTimelineOnly =
+        last.hasTimeline
+        && !last.fallbackReply.trim()
+        && !last.errorMessage
+        && !last.renderParts.some((part) => {
+          const type = String((part as { type?: string }).type || "");
+          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+        });
+      const rowTimelineOnly =
+        row.hasTimeline
+        && !row.fallbackReply.trim()
+        && !row.errorMessage
+        && !row.renderParts.some((part) => {
+          const type = String((part as { type?: string }).type || "");
+          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+        });
+      if (lastTimelineOnly && rowTimelineOnly) {
+        last.isStreaming = last.isStreaming || row.isStreaming;
+        last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+        last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
+        last.detailsLoading = last.detailsLoading || row.detailsLoading;
+        if (row.todoItems.length > 0) last.todoItems = row.todoItems;
+        last.msg = {
+          ...last.msg,
+          id: `${last.msg.id}:${row.msg.id}`,
+          error: last.msg.error || row.msg.error
+        };
+        rebuildTimeline(last);
+        return out;
+      }
+      // 工具轮与正文轮保持独立单元格（Codex exec cell → agent cell）。
       if (last.hasTimeline || row.hasTimeline || last.fallbackReply || row.fallbackReply) {
         // 插话收尾常见：状态层残留两条同文 assistant（磁盘仅一条）。展示层折叠，保留较完整的一条。
         const lastText = (last.fallbackReply || last.msg.content || "").trim();

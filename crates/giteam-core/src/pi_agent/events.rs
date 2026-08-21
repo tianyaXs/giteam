@@ -221,6 +221,48 @@ pub enum AgentEvent {
         #[serde(rename = "childSessionId")]
         child_session_id: String,
     },
+    /// 旁路记忆抽取开始（资产图谱语义层；非用户可见的 task 子代理）。
+    /// 挂父 run 流，前端渲染为「写入记忆中」时间线条目，与 runtime.retry 同级。
+    #[serde(rename = "memory.extraction.started")]
+    MemoryExtractionStarted {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+    },
+    /// 旁路记忆抽取完成：实体/关系已入图（可为空批次）。
+    #[serde(rename = "memory.extraction.completed")]
+    MemoryExtractionCompleted {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+        #[serde(rename = "entityCount")]
+        entity_count: u32,
+        #[serde(rename = "relationCount")]
+        relation_count: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+        /// 入图实体摘要（type + title），供时间线展开预览；上限由发送方截断。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        entities: Vec<MemoryExtractionEntity>,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    /// 旁路记忆抽取失败（LLM/解析/写库）；主流程不受影响。
+    #[serde(rename = "memory.extraction.failed")]
+    MemoryExtractionFailed {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+        error: String,
+        #[serde(rename = "elapsedMs", default)]
+        elapsed_ms: u64,
+    },
+}
+
+/// 记忆抽取入图实体的轻量摘要（UI 预览用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExtractionEntity {
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub title: String,
 }
 
 pub type EventSubscriberKey = (String, String);
@@ -300,9 +342,17 @@ pub fn publish_event(
             }
         }
     }
-    if let Some(hook) = UI_EVENT_HOOK.get() {
-        hook(event);
+    // extract 子会话（资产图谱语义抽取）是后台旁路：其事件不进 UI 通道，
+    // 否则前端 remote-live 会为每个抽取子会话幻影建行，把真实会话挤出列表。
+    // task 工具的 plan 子代理不受影响（其进度经父 run 的 subagent.* 投影上屏）。
+    if !crate::asset_graph::extraction::is_extract_session(&event.session_id) {
+        if let Some(hook) = UI_EVENT_HOOK.get() {
+            hook(event);
+        }
     }
+    // 资产图谱旁路消费：completed 级事件进图，任何失败（含 panic）静默隔离，
+    // 绝不影响 agent 主流程（设计文档 docs/repo-asset-graph-agent.md §7）。
+    crate::asset_graph::on_event_published(event);
 }
 
 /// 取出 sequence > after_seq 的缓冲事件（不含 live 通道）。

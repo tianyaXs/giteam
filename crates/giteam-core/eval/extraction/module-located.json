@@ -1,0 +1,24 @@
+{
+  "name": "module-located",
+  "note": "跨文件结构概念 + located_in 到多个文件",
+  "input": {
+    "user_text": "事件分发这条链路现在太绕了，帮我梳理一下它到底横跨了哪些文件。",
+    "assistant_text": "事件分发链路横跨三个文件：crates/giteam-core/src/pi_agent/events.rs 负责 ring buffer 与订阅分发，crates/giteam-core/src/pi_agent/service.rs 负责 run 级投影，crates/giteam-core/src/control.rs 负责 HTTP 端点透出。",
+    "file_paths": [
+      "crates/giteam-core/src/pi_agent/events.rs",
+      "crates/giteam-core/src/pi_agent/service.rs",
+      "crates/giteam-core/src/control.rs"
+    ]
+  },
+  "expect": {
+    "entities": [
+      { "type": "module", "slug_contains": "event" }
+    ],
+    "relations": [
+      { "type": "located_in", "subject_contains": "event", "object_contains": "events.rs" },
+      { "type": "located_in", "subject_contains": "event", "object_contains": "service.rs" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

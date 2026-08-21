@@ -1,0 +1,12 @@
+{
+  "name": "chitchat-gate",
+  "note": "门控：user_text ≤ 4 字符时不应触发抽取（不调 LLM）",
+  "input": {
+    "user_text": "在吗",
+    "assistant_text": "在的，有什么可以帮你？"
+  },
+  "expect": {
+    "gate": false,
+    "max_entities": 0
+  }
+}

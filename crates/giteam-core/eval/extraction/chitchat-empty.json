@@ -1,0 +1,12 @@
+{
+  "name": "chitchat-empty",
+  "note": "闲聊过了门控也必须返回空实体（NEVER invent 服从度）",
+  "input": {
+    "user_text": "谢谢，今天辛苦啦，回复得真快",
+    "assistant_text": "不客气，随时找我。"
+  },
+  "expect": {
+    "gate": true,
+    "max_entities": 0
+  }
+}

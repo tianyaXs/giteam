@@ -1,0 +1,19 @@
+{
+  "name": "merge-slug-a",
+  "note": "slug 稳定性 A：与 merge-slug-b 同一概念不同措辞，必须产出同一个 sem key",
+  "input": {
+    "user_text": "图谱存储这件事我们决定用 SQLite，不再讨论了。",
+    "assistant_text": "明白，存储层已定 SQLite。"
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "decision",
+        "slug_contains": "sqlite",
+        "slug_group": "graph-store"
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

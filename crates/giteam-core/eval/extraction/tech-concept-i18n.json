@@ -1,0 +1,16 @@
+{
+  "name": "tech-concept-i18n",
+  "note": "中英混合输入：tech_concept 抽取与 slug 规范（小写连字符）",
+  "input": {
+    "user_text": "树图渲染太慢了，调研一下能不能把 sigma.js 换成 WebGL 原生的方案，或者上 pixi.js。",
+    "assistant_text": "调研结论：sigma.js 本身已是 WebGL 渲染，瓶颈在 ForceAtlas2 布局的 CPU 计算。建议保留 sigma.js，把布局迁到 Worker；pixi.js 不解决布局瓶颈，不推荐。",
+    "file_paths": []
+  },
+  "expect": {
+    "entities": [
+      { "type": "tech_concept", "slug_contains": "sigma" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

@@ -5,6 +5,7 @@ import {
   compactPath,
   getToolResultPreview,
   isContextTool,
+  isRecallTool,
   parseUnifiedDiff,
   redactSecrets,
   toolDisplayName,
@@ -20,7 +21,7 @@ import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
-import { FilePen, Folder, Globe, MessageCircleQuestionMark, MousePointerClick, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
+import { BookMarked, FilePen, Folder, Globe, MessageCircleQuestionMark, MousePointerClick, Search, Terminal, Wrench, type LucideIcon } from "lucide-react";
 
 export type AgentToolFileTarget = {
   filePath: string;
@@ -57,6 +58,7 @@ function toolKindIcon(tool: string): LucideIcon {
   if (tool === "browser_use") return MousePointerClick;
   if (tool === "ls") return Folder;
   if (tool === "question") return MessageCircleQuestionMark;
+  if (isRecallTool(tool)) return BookMarked;
   return Wrench;
 }
 
@@ -336,7 +338,8 @@ export function AgentExecutionPartView({
   const details = (part as any).details as Record<string, unknown> | undefined;
   const outputText = redactSecrets(truncateRichText(normalizeText((part as any).output))) || toDisplayJson((part as any).output, 2200);
   const subtitle = toolHeadlineTarget(tool, input);
-  const contextTool = isContextTool(tool);
+  // 回忆工具在批组内按探索条目标签渲染（左对齐、无详情卡）
+  const contextTool = isContextTool(tool) || isRecallTool(tool);
   const preview = getToolResultPreview(tool, input, outputText, details);
   const shellTool = tool === "bash";
   const editTool = tool === "write" || tool === "edit" || tool === "hashline_edit" || tool === "apply_patch";
@@ -556,7 +559,8 @@ export function AgentExecutionPartView({
     return (
       <Collapsible
         className={cn(
-          "min-w-0 max-w-full overflow-hidden rounded-xl border transition-[border-color,background-color] duration-200",
+          "min-w-0 max-w-full overflow-hidden border transition-[border-color,background-color] duration-200",
+          listItem ? "rounded-md" : "rounded-xl",
           integratedCard
             ? isError
               ? "border-destructive/30 bg-card"
@@ -568,7 +572,11 @@ export function AgentExecutionPartView({
       >
         <CollapsibleTrigger asChild>
           <Button
-            className="h-auto w-full justify-start rounded-none px-3 py-2 hover:bg-transparent hover:text-foreground"
+            className={cn(
+              "h-auto w-full justify-start hover:bg-transparent hover:text-foreground",
+              // 批组内条目与「探索」一致：左对齐；独立事件卡才用 px-3
+              listItem ? "rounded-md px-0 py-1" : "rounded-none px-3 py-2"
+            )}
             variant="ghost"
           >
             {headline}

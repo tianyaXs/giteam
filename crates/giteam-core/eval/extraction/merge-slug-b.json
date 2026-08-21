@@ -1,0 +1,19 @@
+{
+  "name": "merge-slug-b",
+  "note": "slug 稳定性 B：与 merge-slug-a 同一概念不同措辞，必须产出同一个 sem key",
+  "input": {
+    "user_text": "资产图谱的底层存储就定 SQLite 了，写进架构文档。",
+    "assistant_text": "已把『资产图谱采用 SQLite 作为底层存储』写入 ARCHITECTURE.md。"
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "decision",
+        "slug_contains": "sqlite",
+        "slug_group": "graph-store"
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

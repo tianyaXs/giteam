@@ -1381,6 +1381,110 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         );
     }
 
+    // ── 仓库资产图谱（只读可视化端点，设计文档 §4.3）──
+    // repoPath 定位图谱实例（未挂载返回 404 提示先创建会话触发挂载）。
+    if req.method == "GET" && req.path == "/api/v1/graph/summary" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        return (200, serde_json::to_value(graph.query().counts()).unwrap_or(Value::Null));
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/search" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let q = req.query.get("q").map(String::as_str).unwrap_or("");
+        let node_type = req.query.get("type").map(String::as_str);
+        let hits = graph.query().search(q, node_type, 30);
+        return (
+            200,
+            serde_json::json!({ "query": q, "hits": hits }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/subgraph" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let center = req.query.get("center").map(String::as_str).unwrap_or("");
+        let hops = req
+            .query
+            .get("hops")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(2);
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(150);
+        let view = graph.query().subgraph(center, hops, limit);
+        return (
+            200,
+            serde_json::json!({
+                "center": view.center,
+                "nodes": view.nodes,
+                "edges": view.edges,
+            }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/full" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1000);
+        let compact = req
+            .query
+            .get("compact")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(true);
+        let view = graph.query().full_graph_with_mode(limit, compact);
+        return (
+            200,
+            serde_json::json!({
+                "center": view.center,
+                "nodes": view.nodes,
+                "edges": view.edges,
+            }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/sessions" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(20);
+        return (
+            200,
+            serde_json::json!({ "sessions": graph.query().recent_sessions(limit) }),
+        );
+    }
+
     if req.method == "POST" && req.path == "/api/v1/pair/request" {
         if let Err(resp) = ensure_loopback(remote_ip, "pair.request") {
             return resp;
@@ -1593,6 +1697,25 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 500,
                 serde_json::json!({ "error": format!("create Pi session directory failed: {error}") }),
             );
+        }
+        // 仓库资产图谱：会话创建即挂载（打开 + 增量回放存量会话）。
+        // service.create_session 内已有同款挂载（带子代理宿主），此处是
+        // 兜底（图谱被 detach 后的路径）；同样注入宿主启用语义抽取。
+        // 失败只记日志——图谱是旁路能力，绝不阻塞会话创建。
+        if crate::asset_graph::attached(Path::new(&repo_path)).is_none() {
+            let attach_result = match PiAgentService::global().asset_graph_subagent_host() {
+                Some(host) => crate::asset_graph::attach_repo_with_extraction(
+                    Path::new(&repo_path),
+                    host,
+                ),
+                None => crate::asset_graph::attach_repo(Path::new(&repo_path)),
+            };
+            match attach_result {
+                Ok((indexed, skipped)) => {
+                    eprintln!("[asset-graph] attached {repo_path}: replayed {indexed}, unchanged {skipped}");
+                }
+                Err(error) => eprintln!("[asset-graph] attach {repo_path} failed: {error}"),
+            }
         }
         let config = PiSessionConfig {
             repo_path: PathBuf::from(repo_path),
@@ -2443,4 +2566,76 @@ pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
         pair_code_ttl_mode: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()),
         no_auth: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! 资产图谱 HTTP 端点的路由级冒烟测试：构造 HttpRequest 直接打
+    //! handle_api_request，验证 404（未挂载）/ 200（挂载后）与载荷形状。
+
+    use super::*;
+
+    fn get(path: &str, query: &[(&str, &str)]) -> HttpRequest {
+        let mut q = HashMap::new();
+        for (k, v) in query {
+            q.insert((*k).to_string(), (*v).to_string());
+        }
+        HttpRequest {
+            method: "GET".into(),
+            path: path.into(),
+            query: q,
+            headers: HashMap::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn graph_endpoints_route_and_respond() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        let repo_str = repo.to_string_lossy().to_string();
+
+        // 未挂载：summary/search/subgraph 均 404。
+        let (status, _) = handle_api_request(
+            get("/api/v1/graph/summary", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 404);
+        let (status, _) = handle_api_request(
+            get("/api/v1/graph/search", &[("repoPath", repo_str.as_str()), ("q", "x")]),
+            None,
+        );
+        assert_eq!(status, 404);
+
+        // 挂载（空图）→ 200 + 计数载荷。
+        crate::asset_graph::attach_repo(&repo).expect("attach");
+        let (status, body) = handle_api_request(
+            get("/api/v1/graph/summary", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["nodes"], serde_json::json!(0));
+
+        // sessions 端点形状。
+        let (status, body) = handle_api_request(
+            get("/api/v1/graph/sessions", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 200);
+        assert!(body["sessions"].is_array());
+
+        // subgraph：空中心 → 空视图（200 而非 404）。
+        let (status, body) = handle_api_request(
+            get(
+                "/api/v1/graph/subgraph",
+                &[("repoPath", repo_str.as_str()), ("center", "nothing")],
+            ),
+            None,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["nodes"].as_array().map(Vec::len), Some(0));
+
+        crate::asset_graph::detach(&repo);
+    }
 }

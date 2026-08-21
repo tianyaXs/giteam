@@ -155,7 +155,7 @@ export function isAgentRenderablePart(p: AgentDetailedPart | undefined | null): 
   if (t === "reasoning") return !!String((p as any)?.text ?? "").trim();
   // 跨 assistant 回合分隔：不可见，但阻止 shell/explore 批组跨回合合并。
   if (t === "turn-boundary") return true;
-  if (t === "runtime.retry" || t === "runtime.failure") return true;
+  if (t === "runtime.retry" || t === "runtime.failure" || t === "runtime.memory") return true;
   if (t === "step-start" || t === "step-finish" || t === "patch") return false;
   if (t === "toolCall") {
     // toolName 尚未到达（toolCall.started 常先于 tool.started、初始为空）时不渲染：空 toolName 的

@@ -1,0 +1,25 @@
+{
+  "name": "decision-basic",
+  "note": "决策三要素 + affects 文件边",
+  "input": {
+    "user_text": "资产图谱的存储我们定一下：用 SQLite，不上 Neo4j。理由是我们要零运维，团队没人愿意维护一个图数据库，而且 rusqlite 已经捆绑进二进制了。",
+    "assistant_text": "已按该决策落地：在 crates/giteam-core/src/asset_graph/store.rs 用 rusqlite 实现属性图 schema，开启 WAL 模式。",
+    "file_paths": ["crates/giteam-core/src/asset_graph/store.rs"],
+    "commands": ["cargo test -p giteam-core"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "decision",
+        "slug_contains": "sqlite",
+        "props_required": ["category", "reasoning", "evidence"],
+        "slug_group": "graph-store"
+      }
+    ],
+    "relations": [
+      { "type": "affects", "subject_contains": "sqlite", "object_contains": "store.rs" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

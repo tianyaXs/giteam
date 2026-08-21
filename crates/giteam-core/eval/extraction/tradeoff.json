@@ -1,0 +1,20 @@
+{
+  "name": "tradeoff",
+  "note": "显式权衡：chose/rejected/because 三字段必须齐全",
+  "input": {
+    "user_text": "缓存层我们考虑过 Redis，最后决定用进程内的 moka。因为不想给桌面端多引入一个外部服务依赖，部署复杂度优先于缓存容量。",
+    "assistant_text": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存，容量 512 条，TTL 10 分钟。Redis 方案归档，后续有需要再评估。",
+    "file_paths": ["src/cache/mod.rs"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type_any": ["tradeoff", "decision"],
+        "slug_contains": "cache",
+        "props_required": ["chose", "rejected", "because", "evidence"]
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

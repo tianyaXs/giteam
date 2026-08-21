@@ -1,0 +1,16 @@
+{
+  "name": "open-task",
+  "note": "未完成事项 / 已知问题",
+  "input": {
+    "user_text": "今天先到这里吧，收个尾。",
+    "assistant_text": "好的。本轮完成了桌面端图谱面板的主题适配。遗留两件事：移动端的图谱适配还没做；rebuild 后偶发的 SQLite busy 错误还没根治，下次继续。",
+    "file_paths": ["apps/desktop/src/components/agent/AssetGraphPanel.tsx"]
+  },
+  "expect": {
+    "entities": [
+      { "type": "open_task", "slug_contains": "mobile" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

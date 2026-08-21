@@ -1,0 +1,20 @@
+{
+  "name": "feature-implements",
+  "note": "功能实体 + implements 边连到真实改动文件",
+  "input": {
+    "user_text": "给登录页加上配对重试：断连后自动重试 3 次，间隔指数退避，失败后给出明确提示。",
+    "assistant_text": "已完成配对重试功能：在 src/pairing/retry.ts 实现指数退避重试（最多 3 次），并在 src/ui/login.tsx 接入失败提示。",
+    "file_paths": ["src/pairing/retry.ts", "src/ui/login.tsx"],
+    "commands": ["pnpm test"]
+  },
+  "expect": {
+    "entities": [
+      { "type": "feature", "slug_contains": "retry" }
+    ],
+    "relations": [
+      { "type": "implements", "subject_contains": "retry", "object_contains": "retry.ts" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

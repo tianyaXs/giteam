@@ -1,0 +1,18 @@
+{
+  "name": "steer-continue",
+  "note": "短 steer 消息（worth_extracting 新逻辑）：用户只说『继续』，但助手有实质产出且动了文件 → 必须抽",
+  "input": {
+    "user_text": "继续",
+    "assistant_text": "已按上一轮的方案完成剩余工作：在 src/cache/mod.rs 实现了基于 moka 的 LRU 缓存，容量 512 条、TTL 10 分钟，并补了单元测试，cargo test 全部通过。",
+    "file_paths": ["src/cache/mod.rs"],
+    "commands": ["cargo test"]
+  },
+  "expect": {
+    "gate": true,
+    "entities": [
+      { "type_any": ["feature", "decision", "module"], "slug_contains": "cache", "props_required": ["evidence"] }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

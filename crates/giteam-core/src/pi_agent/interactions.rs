@@ -60,7 +60,9 @@ impl InteractionRisk {
         match tool {
             // task：启动子 session 本身不写盘（子内写操作仍走 Approval）。
             "read" | "grep" | "find" | "ls" | "bash_output" | "task" | "todowrite"
-            | "question" => Self::Read,
+            | "question"
+            // 资产图谱三件套：只读 SQLite，无副作用。
+            | "asset_context" | "asset_search" | "asset_precedents" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
             "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,

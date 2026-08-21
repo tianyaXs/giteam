@@ -9,3 +9,26 @@
     transform: translateY(0) scale(1);
   }
 }
+
+/* 流式正文首次出现：轻淡入 + 微上移，token 续写期间不重复触发 */
+@keyframes agent-stream-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent-stream-fade {
+  animation: agent-stream-fade 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-stream-fade {
+    animation: none;
+  }
+}

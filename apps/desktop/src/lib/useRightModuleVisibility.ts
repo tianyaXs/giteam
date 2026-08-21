@@ -13,6 +13,7 @@ const RIGHT_PANE_TABS: RightPaneTab[] = ([
   "remoteRepos",
   "skills",
   "browser",
+  "assetGraph",
 ] as RightPaneTab[]).filter((tab) =>
   tab === "remoteRepos" ? REMOTE_REPO_MODULE_ENABLED : true
 );
@@ -23,7 +24,8 @@ const DEFAULT_RIGHT_MODULE_VISIBILITY: Record<RightPaneTab, boolean> = {
   terminal: true,
   remoteRepos: true,
   skills: true,
-  browser: true
+  browser: true,
+  assetGraph: true
 };
 
 export function useRightModuleVisibility(

@@ -27,6 +27,9 @@ export function toolDisplayName(tool: string): string {
   if (tool === "web_search") return "查询";
   if (tool === "browser_use") return "浏览器";
   if (tool === "question") return "提问";
+  if (tool === "asset_context") return "上下文";
+  if (tool === "asset_search") return "检索";
+  if (tool === "asset_precedents") return "先例";
   return tool || "tool";
 }
 
@@ -47,6 +50,11 @@ export function toolMode(tool: string): string {
 /** 读取类上下文工具（时间线批组归类用）。 */
 export function isContextTool(tool: string): boolean {
   return tool === "read" || tool === "grep" || tool === "find" || tool === "ls";
+}
+
+/** 记忆回忆类工具（批组内展示对齐探索条目）。 */
+export function isRecallTool(tool: string): boolean {
+  return tool === "asset_context" || tool === "asset_search" || tool === "asset_precedents";
 }
 
 function normalizeText(value: unknown): string {
@@ -138,6 +146,9 @@ export function toolHeadlineTarget(tool: string, input: PiToolInput): string {
     }
     if (labels.length === 1) return labels[0];
     return `${labels[0]} 等 ${labels.length} 项`;
+  }
+  if (tool === "asset_context" || tool === "asset_search" || tool === "asset_precedents") {
+    return normalizeText(input.task) || normalizeText(input.query) || normalizeText(input.error);
   }
   return compactPath(input.path);
 }

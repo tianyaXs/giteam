@@ -68,6 +68,11 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         // task 同为 Giteam 注册：参数模式与子代理隔离机制在其 schema
         // description；清单条目只留取舍（USE FOR / DO NOT USE）与父验证纪律。
         ("task", "Delegate research or planning to subagents. USE FOR: exploring unfamiliar areas before non-trivial changes, or several independent questions in parallel. DO NOT USE FOR: single mechanical steps or one tool call — do them directly; anything requiring user interaction — subagents cannot ask questions. Child summaries are self-reports, not verified facts — verify key results yourself (fetch the URL, stat the file) before telling the user."),
+        // 资产图谱三件套由 Giteam 注册：跨会话仓库记忆（谁改过、为何改、
+        // 错误怎么修）。何时用/禁在描述；反模式（不要 grep 翻会话文件）在此。
+        ("asset_context", "Cross-session repository memory in ONE call: which sessions touched files related to your task, each session's original intent, produced commits, and how similar errors were fixed. Call BEFORE editing any file with prior history and WHENEVER you hit an error — the fix may already exist in a past session. Do NOT grep/read raw session JSONL files under .giteam or ~/.giteam — the graph query is faster, deduplicated, and intent-linked."),
+        ("asset_search", "Locate asset-graph nodes (files, commands, errors, sessions, commits) by text. Use it to pin down exact names before asset_context when your task description is vague."),
+        ("asset_precedents", "Find how similar errors were resolved in past sessions (error text in, fix action + session intent out). Error numbers are normalized, so line numbers do not need to match."),
     ];
 
     // question / todowrite / web_* / task 是否启用：默认全量时启用，或用户显式包含（与 GiteamToolFactory 判断一致）。
@@ -78,6 +83,8 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
     let web_search_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "web_search");
     let browser_use_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "browser_use");
     let task_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "task");
+    let asset_graph_enabled =
+        enabled_tools.is_none() || tools.iter().any(|tool| tool == "asset_context");
     let bash_background_enabled = enabled_tools.is_none() || tools.iter().any(|tool| tool == "bash");
     let has_tool = |name: &str| {
         if name == "question" {
@@ -92,6 +99,8 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
             browser_use_enabled
         } else if name == "task" {
             task_enabled
+        } else if name == "asset_context" || name == "asset_search" || name == "asset_precedents" {
+            asset_graph_enabled
         } else if name == "bash_output" || name == "kill_shell" {
             bash_background_enabled
         } else {

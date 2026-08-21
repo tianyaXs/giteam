@@ -1,0 +1,19 @@
+{
+  "name": "api-exposes",
+  "note": "接口面实体（Tauri 命令）+ exposes 边",
+  "input": {
+    "user_text": "前端面板需要一个能查子图的接口，双击节点下钻要用。",
+    "assistant_text": "已新增 Tauri 命令 asset_graph_subgraph，定义在 apps/desktop/src-tauri/src/commands/asset_graph.rs，入参 center/hops/limit，返回以某节点为中心的两跳子图。",
+    "file_paths": ["apps/desktop/src-tauri/src/commands/asset_graph.rs"]
+  },
+  "expect": {
+    "entities": [
+      { "type": "api", "slug_contains": "subgraph" }
+    ],
+    "relations": [
+      { "type": "exposes", "subject_contains": "asset_graph", "object_contains": "subgraph" }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

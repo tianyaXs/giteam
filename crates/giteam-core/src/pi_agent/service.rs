@@ -140,6 +140,13 @@ impl PiSessionConfig {
         if let Some(memory) = wrap_project_memory(&self.repo_path) {
             append_parts.push(memory);
         }
+        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
+        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
+        if self.session_kind != "subagent" {
+            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
+                append_parts.push(digest);
+            }
+        }
         append_parts.push(super::environment::build_workspace_context(
             &self.repo_path,
             can_execute,
@@ -177,6 +184,15 @@ impl PiSessionConfig {
             ..SessionOptions::default()
         }
     }
+}
+
+/// 资产图谱近期变更摘要（跨会话感知的被动注入层）。
+/// 图谱未挂载或图为空时返回 None（零成本跳过）。
+fn wrap_asset_graph_digest(repo_path: &std::path::Path) -> Option<String> {
+    let graph = crate::asset_graph::attached(repo_path)?;
+    let graph = graph.lock().ok()?;
+    let digest = graph.query().recent_changes_digest(8);
+    (!digest.is_empty()).then_some(digest)
 }
 
 /// 读取项目记忆（仅 GITEAM.md）并用「项目记忆」小节包裹，供 append 段拼接。
@@ -334,6 +350,8 @@ pub struct PiAgentService {
     browser_controller: Mutex<super::browser_controller::SharedBrowserController>,
     /// `global()` / `bind_arc` 写入，供 TaskTool 的 SubagentHost 升级回 Arc。
     self_weak: Mutex<Option<Weak<PiAgentService>>>,
+    /// 旁路抽取串行锁：parent_session_id → 锁。同父多轮抽取排队，避免并发打爆 provider。
+    extract_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Default for PiAgentService {
@@ -349,6 +367,11 @@ impl PiAgentService {
         SERVICE.get_or_init(|| {
             let arc = Arc::new(Self::new_with_catalog(true));
             arc.bind_arc();
+            // 登记资产图谱全局抽取宿主：图谱挂载可能早于首个会话创建（面板
+            // rebuild 路径），host 可用性不能依赖挂载时机。
+            if let Some(host) = arc.asset_graph_subagent_host() {
+                crate::asset_graph::set_extraction_host(host);
+            }
             arc
         })
     }
@@ -401,6 +424,7 @@ impl PiAgentService {
             secrets,
             browser_controller: Mutex::new(None),
             self_weak: Mutex::new(None),
+            extract_locks: Mutex::new(HashMap::new()),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -597,6 +621,29 @@ impl PiAgentService {
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(repo_path.clone());
+        // 仓库资产图谱：会话创建即挂载（打开 + 增量回放存量会话），并注入
+        // 子代理宿主启用 turn 级语义抽取（继承会话 provider/model；host 不可用
+        // 时退化为仅过程层）。等待挂载完成再建会话，保证首个 turn 的事件不丢；
+        // 失败只记日志——图谱是旁路能力，绝不阻塞会话创建。
+        if crate::asset_graph::attached(&repo_path).is_none() {
+            let host = self.subagent_host_for(&session_kind);
+            let graph_repo = repo_path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let result = match host {
+                    Some(host) => {
+                        crate::asset_graph::attach_repo_with_extraction(&graph_repo, host)
+                    }
+                    None => crate::asset_graph::attach_repo(&graph_repo),
+                };
+                match result {
+                    Ok((indexed, skipped)) => {
+                        eprintln!("[asset-graph] attached {}: replayed {indexed}, unchanged {skipped}", graph_repo.display());
+                    }
+                    Err(error) => eprintln!("[asset-graph] attach {} failed: {error}", graph_repo.display()),
+                }
+            })
+            .await;
+        }
         let mut handle = create_agent_session(sdk_options_with_factory(
             config,
             &hub,
@@ -707,8 +754,37 @@ impl PiAgentService {
             .keys()
             .cloned()
             .collect();
+        // 恢复失败分类：文件已丢失（Session not found）→ 记录是陈旧残留，
+        // 自动清出 catalog（否则每次列表都刷一条错误）；provider/model 失效
+        // → 保留记录，降级为 catalog 元数据行，会话不因 provider 暂时不可用
+        // 而从列表消失。
+        let mut catalog_dirty = false;
+        let mut degraded_session_ids: Vec<String> = Vec::new();
         for session_id in record_ids {
-            let _ = self.get_session(&session_id).await;
+            match self.get_session(&session_id).await {
+                Ok(_) => {}
+                Err(error) => {
+                    let message = error.to_string();
+                    if message.contains("Session not found") {
+                        if let Ok(mut records) = self.records.lock() {
+                            if records.remove(&session_id).is_some() {
+                                catalog_dirty = true;
+                                eprintln!(
+                                    "[pi-agent] pruned stale catalog record (session file missing): {session_id}"
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
+                        );
+                        degraded_session_ids.push(session_id);
+                    }
+                }
+            }
+        }
+        if catalog_dirty {
+            let _ = self.persist_catalog();
         }
         // 保留 map 键：busy 时拿不到 handle.state()，只能靠 session_id + catalog/snapshot。
         let sessions: Vec<(String, Arc<ManagedSession>)> = self
@@ -722,8 +798,12 @@ impl PiAgentService {
         let mut titles_to_cache: Vec<(String, String)> = Vec::new();
         for (session_id, session) in sessions {
             // 子 agent：靠 kind 或 parent 标记排除，不进主列表（UI 靠 subagent.* 事件）。
+            // extract 子代理是 ephemeral 无记录会话：靠注册表排除（运行中的瞬态窗口）。
             let kind = self.record_session_kind(&session_id);
-            if kind == "subagent" || self.record_parent_session_id(&session_id).is_some() {
+            if kind == "subagent"
+                || self.record_parent_session_id(&session_id).is_some()
+                || crate::asset_graph::extraction::is_extract_session(&session_id)
+            {
                 continue;
             }
 
@@ -788,7 +868,38 @@ impl PiAgentService {
             }
             let _ = self.persist_catalog();
         }
-        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        // 最近活跃优先（updatedAtMs 降序，同刻按 id 保持确定性）。消费方
+        // （桌面/移动/Web）都是「取前 N 条」分页：按 id 字典序返回会让
+        // 字母序靠后的最新会话永远进不了第一页（表现为「重启后看不到
+        // 刚聊过的会话」）。
+        // provider/model 失效的会话：以 catalog 元数据降级入列（kind/parent
+        // 过滤照常），记录保留——provider 修复后 get_session 恢复完整能力。
+        for session_id in &degraded_session_ids {
+            let Some(record) = self.records.lock().ok().and_then(|records| records.get(session_id).cloned()) else {
+                continue;
+            };
+            if record.session_kind == "subagent" || record.parent_session_id.is_some() {
+                continue;
+            }
+            summaries.push(PiSessionSummary {
+                session_id: record.session_id.clone(),
+                repo_path: record.repo_path.clone(),
+                provider: record.provider.clone(),
+                model: record.model.clone(),
+                message_count: 0,
+                updated_at_ms: record.updated_at_ms,
+                title: record.title.clone().filter(|t| !t.trim().is_empty()),
+                session_kind: record.session_kind.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+                parent_tool_call_id: record.parent_tool_call_id.clone(),
+            });
+        }
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
         Ok(summaries)
     }
 
@@ -1364,6 +1475,31 @@ impl PiAgentService {
 
         // 终态已入环，短暂保留供 SSE 重连补洞；延迟清理避免无限堆积。
         self.schedule_clear_event_buffer(session_id, run_id);
+
+        // run 收尾刷新会话活跃时间：列表「最近活跃优先」排序的数据源，
+        // 否则 updated_at 停在创建时刻，重聊旧会话不会浮到列表顶部。
+        let touched = now_ms();
+        let activity_dirty = self
+            .records
+            .lock()
+            .map(|mut records| {
+                records
+                    .get_mut(session_id)
+                    .map(|record| {
+                        if record.updated_at_ms < touched {
+                            record.updated_at_ms = touched;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if activity_dirty {
+            let _ = self.persist_catalog();
+        }
+
         result
             .map(|message| AgentMessage::from_pi_assistant(message, Some(run_id.to_string())))
             .map_err(|error| PiAgentError::Sdk(error.to_string()))
@@ -1873,8 +2009,20 @@ impl PiAgentService {
                 parent_tool_call_id: record.parent_tool_call_id.clone(),
             })
             .collect();
-        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        // 与 list_sessions 一致：最近活跃优先，分页消费方才能取到最新会话。
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
         summaries
+    }
+
+    /// 资产图谱语义抽取用的子代理宿主（主会话级 host；服务不可用时 None）。
+    #[must_use]
+    pub fn asset_graph_subagent_host(&self) -> Option<Arc<dyn SubagentHost>> {
+        self.subagent_host_for("primary")
     }
 
     /// 主会话注入 SubagentHost；子 agent（session_kind=subagent）不注入，禁止再委派。
@@ -1991,7 +2139,6 @@ impl PiAgentService {
                         elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
                     });
                 }
-                // 避免把子终态 run.*/session.status 原样当成父终态；仍以 childEvent 投影。
                 parent_run.publish(AgentEvent::SubagentChildEvent {
                     parent_tool_call_id: parent_tool_call_id.clone(),
                     child_session_id: child_session_id.clone(),
@@ -2000,7 +2147,6 @@ impl PiAgentService {
             })
         };
 
-        // 墙钟作绝对上限；stall 检测无工具/无流式输出的挂起（常见于超大上下文下一轮 LLM）。
         let prompt_future = self.prompt(
             &child_session_id,
             &child_run_id,
@@ -2100,6 +2246,143 @@ impl PiAgentService {
             }
         }
     }
+
+    /// 旁路语义抽取：ephemeral 无工具 session + 单次 prompt。
+    /// 不进 catalog、不投影 subagent.*；slug 稳定靠 prompt 注入已有实体。
+    pub async fn run_extraction_completion(
+        &self,
+        request: super::subagents::ExtractionCompletionRequest,
+    ) -> Result<super::subagents::ExtractionCompletionResult, PiAgentError> {
+        let started = Instant::now();
+        ensure_agent_http_timeout();
+
+        let extract_lock = self
+            .extract_locks
+            .lock()
+            .ok()
+            .map(|mut map| {
+                Arc::clone(
+                    map.entry(request.parent_session_id.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+                )
+            })
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        let _queue_guard = extract_lock.lock().await;
+
+        let parent_meta = {
+            let records = self
+                .records
+                .lock()
+                .map_err(|error| PiAgentError::State(error.to_string()))?;
+            let record = records
+                .get(&request.parent_session_id)
+                .ok_or_else(|| {
+                    PiAgentError::SessionNotFound(request.parent_session_id.clone())
+                })?;
+            (
+                record.repo_path.clone(),
+                record.session_dir.clone(),
+                (!record.provider.is_empty()).then_some(record.provider.clone()),
+                (!record.model.is_empty()).then_some(record.model.clone()),
+                record.thinking.clone(),
+            )
+        };
+        let (repo_path, session_dir, provider, model, thinking) = parent_meta;
+
+        let mut config = PiSessionConfig::persistent(repo_path.clone(), session_dir);
+        config.no_session = true;
+        config.session_path = None;
+        config.provider = provider;
+        config.model = model;
+        config.thinking = thinking;
+        config.enabled_tools = Some(Vec::new());
+        config.max_tool_iterations = Some(1);
+        config.system_prompt = Some(super::subagents::build_extract_system_prompt(Some(
+            repo_path.to_string_lossy().as_ref(),
+        )));
+        config.append_system_prompt = None;
+        config.parent_session_id = Some(request.parent_session_id.clone());
+        config.parent_tool_call_id = Some(request.extraction_id.clone());
+        config.session_kind = "subagent".to_string();
+
+        let child = self.create_session(config).await?;
+        let child_session_id = child.session_id.clone();
+        crate::asset_graph::extraction::register_extract_session(&child_session_id);
+        eprintln!(
+            "[pi-agent] extract completion: parent {} → ephemeral {child_session_id}",
+            request.parent_session_id
+        );
+
+        let child_run_id = format!(
+            "extract-{}-{}",
+            sanitize_run_id_fragment(&request.extraction_id),
+            now_ms()
+        );
+        let last_progress = Arc::new(Mutex::new(Instant::now()));
+        let sink: AgentEventSink = {
+            let last_progress = Arc::clone(&last_progress);
+            Arc::new(move |envelope: AgentEventEnvelope| {
+                if marks_subagent_progress(&envelope.event) {
+                    if let Ok(mut guard) = last_progress.lock() {
+                        *guard = Instant::now();
+                    }
+                }
+            })
+        };
+
+        let prompt_future = self.prompt(
+            &child_session_id,
+            &child_run_id,
+            request.prompt.clone(),
+            Vec::new(),
+            sink,
+        );
+        let wall = super::subagents::extract_timeout_secs();
+        let result = {
+            tokio::pin!(prompt_future);
+            loop {
+                tokio::select! {
+                    inner = &mut prompt_future => break inner,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                        let idle = last_progress
+                            .lock()
+                            .map(|guard| guard.elapsed())
+                            .unwrap_or_default();
+                        let stalled = idle >= Duration::from_secs(30);
+                        let wall_hit = wall.is_some_and(|limit| started.elapsed() >= limit);
+                        if !stalled && !wall_hit {
+                            continue;
+                        }
+                        let _ = self.abort(&child_run_id);
+                        let message = if stalled {
+                            "Extraction completion stalled for 30s with no stream progress."
+                                .to_string()
+                        } else {
+                            let secs = wall.map(|d| d.as_secs()).unwrap_or(0);
+                            format!(
+                                "Extraction completion timed out after {secs}s. \
+                                 Raise GITEAM_EXTRACT_TIMEOUT_SECS if needed."
+                            )
+                        };
+                        let _ = self.delete_session(&child_session_id);
+                        return Err(PiAgentError::Sdk(message));
+                    }
+                }
+            }
+        };
+
+        let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let outcome = match result {
+            Ok(message) => Ok(super::subagents::ExtractionCompletionResult {
+                summary: assistant_text_summary(&message),
+                elapsed_ms,
+            }),
+            Err(error) => Err(error),
+        };
+        let _ = self.delete_session(&child_session_id);
+        outcome
+    }
+
 
     async fn get_session(&self, session_id: &str) -> Result<Arc<ManagedSession>, PiAgentError> {
         if let Some(session) = self
@@ -2504,6 +2787,37 @@ impl SubagentHost for ServiceSubagentHost {
             .run_subagent(request)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    async fn run_extraction_completion(
+        &self,
+        request: super::subagents::ExtractionCompletionRequest,
+    ) -> Result<super::subagents::ExtractionCompletionResult, String> {
+        let service = self
+            .weak
+            .upgrade()
+            .ok_or_else(|| "agent service dropped".to_string())?;
+        service
+            .run_extraction_completion(request)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    fn memory_extraction_publisher(
+        &self,
+        parent_session_id: &str,
+        extraction_id: &str,
+    ) -> Option<super::subagents::MemoryExtractionPublisher> {
+        let service = self.weak.upgrade()?;
+        let session = {
+            let sessions = service.sessions.lock().ok()?;
+            sessions.get(parent_session_id).cloned()
+        }?;
+        let context = session.hub.run_context()?;
+        Some(super::subagents::MemoryExtractionPublisher::new(
+            context,
+            extraction_id,
+        ))
     }
 }
 

@@ -256,7 +256,8 @@ pub fn ensure_pi_retry_settings(dir: &Path, max_retries: u32) {
 /// 默认：   ~/.giteam/
 /// 覆盖：   $GITEAM_HOME（若设置且非空）
 /// ```
-/// 子目录约定：`pi-agent/`（auth/models）、`pi-sessions/`（catalog + 按仓库会话正文）、根级 `client.db` / `theme`。
+/// 子目录约定：`pi-agent/`（auth/models）、`pi-sessions/`（catalog + 按仓库会话正文）、
+/// `memory/repos/<key>/`（按仓库记忆库）、根级 `client.db` / `theme`。
 ///
 /// 注意：仓库内的 `<repo>/.giteam/` 仅保留**项目级**附件等（如 `prompt-attachments/`），
 /// Agent 会话 JSONL **不**再写入仓库旁，统一落在本全局根下。
@@ -459,6 +460,25 @@ pub fn repo_sessions_key(repo_path: &Path) -> String {
         slug
     };
     format!("{slug}-{digest:016x}")
+}
+
+/// 仓库记忆库路径：`~/.giteam/memory/repos/<key>/memory.db`（或 `$GITEAM_HOME/...`）。
+#[must_use]
+pub fn memory_db_path_for_repo(repo_path: &Path) -> Option<PathBuf> {
+    Some(
+        default_data_dir()?
+            .join("memory")
+            .join("repos")
+            .join(repo_sessions_key(repo_path))
+            .join("memory.db"),
+    )
+}
+
+/// 旧版仓库旁记忆库：`<repo>/.giteam/asset-graph.db`（打开时会迁到用户目录）。
+#[must_use]
+pub fn legacy_repo_memory_db_path(repo_path: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    canonical.join(".giteam").join("asset-graph.db")
 }
 
 /// 用户目录下按仓库隔离的会话目录：`~/.giteam/pi-sessions/repos/<key>/`。

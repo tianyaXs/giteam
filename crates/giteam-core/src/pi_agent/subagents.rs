@@ -45,9 +45,102 @@ You cannot ask the user questions — if a requirement is truly ambiguous, \
 state the ambiguity and the candidate options in your final summary and let \
 the parent agent decide.";
 
+/// Extract 角色：从一轮会话记录中抽取语义实体/关系，输出严格 JSON。
+/// 实体边界参照 semantica（NER 类型 + 决策智能字段）并适配代码仓库域。
+pub const EXTRACT_ROLE_RULES: &str = "\
+You are a knowledge-graph extraction subagent. You receive one turn of a coding \
+agent session (user intent, assistant conclusion, tool actions) and must extract \
+semantic entities and relations into STRICT JSON. \
+Do NOT explore the repository. Do NOT call any tools. Answer with the JSON object \
+and nothing else — no prose, no markdown fence. \
+\
+Entity types (extract ONLY these): \
+- decision: a technical choice that was made (fields: title, category \
+  [architecture|library|api|data|process|ui], scenario, reasoning, outcome, \
+  confidence 0.0-1.0) \
+- feature: a product capability or requirement being built/tracked \
+- module: a code structural concept spanning files (e.g. \"pairing flow\", \
+  \"event dispatch\") \
+- tech_concept: a named technology or standard (Tauri, SQLite, MCP, tree-sitter…) \
+- error_pattern: a semantic error class (borrow-checker failure, TS type \
+  mismatch, network timeout) — NOT a raw message \
+- api: an interface surface (HTTP endpoint, Tauri command, function contract) \
+- tradeoff: an explicit alternative weighed and rejected (fields: chose, \
+  rejected, because) \
+- open_task: unfinished work, known issue, or TODO surfaced in the turn \
+\
+Relation types (subject and object must both appear in your entities or be a \
+file path / session reference given in the input): \
+decided, rationale, affects, implements, located_in, involves, pattern_of, \
+exposes, blocked_by, similar_to, supersedes \
+\
+Rules: \
+- Extract only what the text supports; NEVER invent. When nothing meaningful \
+  is present, return {\"entities\":[],\"relations\":[]}. \
+- Prefer 3-8 high-value entities over many weak ones. \
+- When a new decision explicitly REPLACES an earlier one (\"改用X，弃用之前的Y\", \
+  \"switch from Y to X\"), emit {\"type\":\"supersedes\",\"subject\":<new>,\"object\":<old>} \
+  so the graph can retire the outdated decision. Also emit the new decision entity. \
+- Every entity and relation MUST include \"confidence\" (0.0-1.0); omit guesses \
+  below 0.4 entirely instead of emitting them. \
+- Every entity and relation MUST include \"evidence\": a short verbatim quote \
+  (<= 100 chars) copied EXACTLY from the input text that supports it — never \
+  paraphrase evidence; entries with fabricated evidence are discarded. \
+- Entity id = a short stable slug (lowercase ASCII hyphens, e.g. \"sqlite-asset-graph\"). \
+  Reuse an Existing-entities id when the same concept appears — do not invent \
+  a parallel slug. \
+- Every entity MUST have a human-readable \"title\" in the same language as the \
+  user (Chinese if the user wrote Chinese). NEVER use the id/slug as the title. \
+  For tradeoff, title MUST summarize the choice \
+  (e.g. \"选用 moka，弃用 Redis\" / \"Chose moka over Redis\"). \
+- Emit dense typed relations for entities you keep — aim for roughly as many \
+  relations as entities when files/alternatives are present: \
+  decision→tech_concept decided; tradeoff→decision rationale; \
+  feature|module→file implements or located_in; error_pattern→file pattern_of; \
+  decision|feature→file affects; api→file|module exposes. \
+- File references use the repo-relative path given in tool actions.";
+
+/// 旁路抽取的墙钟超时（秒）。无工具，比 plan 子代理短；`GITEAM_EXTRACT_TIMEOUT_SECS` 可覆盖，`0`=不限。
+pub const DEFAULT_EXTRACT_TIMEOUT_SECS: u64 = 120;
+
+#[must_use]
+pub fn extract_timeout_secs() -> Option<std::time::Duration> {
+    let raw = std::env::var("GITEAM_EXTRACT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_EXTRACT_TIMEOUT_SECS);
+    if raw == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs(raw))
+    }
+}
+
+/// 旁路抽取专用系统提示（无工具、严格 JSON）。
+#[must_use]
+pub fn build_extract_system_prompt(workspace: Option<&str>) -> String {
+    let mut parts = vec![
+        "You are a focused knowledge-graph extraction worker.".to_string(),
+        String::new(),
+        EXTRACT_ROLE_RULES.to_string(),
+    ];
+    if let Some(path) = workspace.map(str::trim).filter(|text| !text.is_empty()) {
+        parts.push(format!(
+            "\nWORKSPACE PATH:\n{path}\n\
+File paths in the input are relative to this workspace unless absolute."
+        ));
+    }
+    parts.push(
+        "\nTOOLS AVAILABLE TO YOU: (none). \
+Do not attempt tool calls. Reply with the JSON object only.".to_string(),
+    );
+    parts.join("")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentType {
     Plan,
+    Extract,
 }
 
 impl SubagentType {
@@ -55,6 +148,7 @@ impl SubagentType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
+            Self::Extract => "extract",
         }
     }
 }
@@ -76,9 +170,14 @@ pub fn resolve(subagent_type: &str) -> Result<SubagentDefinition, String> {
                 .map(|name| (*name).to_string())
                 .collect(),
         }),
-        "" => Err("subagent_type is required (supported: plan)".to_string()),
+        "extract" => Ok(SubagentDefinition {
+            subagent_type: SubagentType::Extract,
+            // 纯抽取：无工具——prompt 已带全部上下文，模型只输出 JSON。
+            enabled_tools: Vec::new(),
+        }),
+        "" => Err("subagent_type is required (supported: plan, extract)".to_string()),
         other => Err(format!(
-            "unknown subagent_type '{other}' (supported: plan)"
+            "unknown subagent_type '{other}' (supported: plan, extract)"
         )),
     }
 }
@@ -110,6 +209,9 @@ Use this exact path for local repository/workdir operations unless the task expl
     match definition.subagent_type {
         SubagentType::Plan => {
             parts.push(format!("\n{PLAN_ROLE_RULES}"));
+        }
+        SubagentType::Extract => {
+            parts.push(format!("\n{EXTRACT_ROLE_RULES}"));
         }
     }
     // 能力边界如实陈述（Hermes literal-truth 原则）：列出真实工具集并
@@ -193,6 +295,84 @@ pub struct SubagentSpawnResult {
     pub elapsed_ms: u64,
 }
 
+/// 旁路语义抽取 completion 请求（无子会话投影、无工具、一次 LLM 调用）。
+#[derive(Debug, Clone)]
+pub struct ExtractionCompletionRequest {
+    pub parent_session_id: String,
+    pub extraction_id: String,
+    /// 用户消息：ExtractionInput.build_prompt()（可含 known entities 段）。
+    pub prompt: String,
+}
+
+/// 旁路抽取 completion 结果。
+#[derive(Debug, Clone)]
+pub struct ExtractionCompletionResult {
+    pub summary: String,
+    pub elapsed_ms: u64,
+}
+
+/// 旁路记忆抽取的父 run 事件发布句柄。
+///
+/// 在抽取开始时从父 hub 克隆 run context，贯穿整个异步抽取生命周期——
+/// 即使主 turn / run 随后结束，仍能把 `memory.extraction.*` 推到原订阅流。
+pub struct MemoryExtractionPublisher {
+    context: crate::pi_agent::interactions::InteractionRunContext,
+    extraction_id: String,
+}
+
+impl MemoryExtractionPublisher {
+    #[must_use]
+    pub fn new(
+        context: crate::pi_agent::interactions::InteractionRunContext,
+        extraction_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            context,
+            extraction_id: extraction_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn extraction_id(&self) -> &str {
+        &self.extraction_id
+    }
+
+    pub fn started(&self) {
+        self.context
+            .publish(crate::pi_agent::AgentEvent::MemoryExtractionStarted {
+                extraction_id: self.extraction_id.clone(),
+            });
+    }
+
+    pub fn completed(
+        &self,
+        entity_count: u32,
+        relation_count: u32,
+        intent: Option<String>,
+        entities: Vec<crate::pi_agent::MemoryExtractionEntity>,
+        elapsed_ms: u64,
+    ) {
+        self.context
+            .publish(crate::pi_agent::AgentEvent::MemoryExtractionCompleted {
+                extraction_id: self.extraction_id.clone(),
+                entity_count,
+                relation_count,
+                intent,
+                entities,
+                elapsed_ms,
+            });
+    }
+
+    pub fn failed(&self, error: impl Into<String>, elapsed_ms: u64) {
+        self.context
+            .publish(crate::pi_agent::AgentEvent::MemoryExtractionFailed {
+                extraction_id: self.extraction_id.clone(),
+                error: error.into(),
+                elapsed_ms,
+            });
+    }
+}
+
 /// 由 service 实现；TaskTool 只依赖此 trait，避免工具层直接耦合 service 细节。
 #[async_trait]
 pub trait SubagentHost: Send + Sync {
@@ -200,6 +380,21 @@ pub trait SubagentHost: Send + Sync {
         &self,
         request: SubagentSpawnRequest,
     ) -> Result<SubagentSpawnResult, String>;
+
+    /// 旁路语义抽取：ephemeral 无工具 session + 单次 prompt，不投影 subagent.*。
+    async fn run_extraction_completion(
+        &self,
+        request: ExtractionCompletionRequest,
+    ) -> Result<ExtractionCompletionResult, String>;
+
+    /// 为旁路记忆抽取绑定父 run 发布器；无活跃父 run 时返回 None（抽取仍可跑，只是无 UI 事件）。
+    fn memory_extraction_publisher(
+        &self,
+        _parent_session_id: &str,
+        _extraction_id: &str,
+    ) -> Option<MemoryExtractionPublisher> {
+        None
+    }
 }
 
 #[cfg(test)]

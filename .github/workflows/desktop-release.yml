@@ -120,11 +120,12 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 服务设置与云中继
+            ## 记忆（仓库资产图谱）
 
-            - 设置改为「服务」：云端 / 局域网 / 私有三种服务类型，云端与私有支持 API Key 控制台（生效中 / 已保存、创建、重命名、删除与切换）
-            - 补齐云中继桌面侧 key 管理与默认 Gateway 配置示例
-            - 修复 macOS Overlay 标题栏三色按钮在 unstable 多 webview 下偏移，并与左侧边栏顶栏对齐
+            - 右侧新增「记忆」面板：跨会话抽取仓库实体/关系，sigma.js 可视化（拖拽、搜索、下钻）
+            - Agent 旁路抽取与回忆工具（asset_context / asset_search / asset_precedents），时间线批组为「回忆」
+            - 切项目时图谱让路给会话消息加载；空闲再建 WebGL，减轻卡顿
+            - 流式助手回复增加淡入；探索/回忆工具行距与批组展示优化
 
             ## 说明
 

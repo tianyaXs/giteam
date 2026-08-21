@@ -15,6 +15,7 @@ import {
   Sparkles,
   SquarePen,
   SquareTerminal,
+  Waypoints,
 } from "lucide-react";
 import Lenis from "lenis";
 import { motion, useReducedMotion } from "motion/react";
@@ -120,11 +121,14 @@ type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;
   icon: React.ComponentType<{ className?: string }>;
-  labelKey: keyof Pick<AppText, "worktree" | "terminal" | "skills">;
+  labelKey?: keyof Pick<AppText, "worktree" | "terminal" | "skills">;
+  /** labelKey 覆盖不到的 pane 用固定文案（对齐 tabLabels 的「远程仓库」做法）。 */
+  label?: string;
 }> = [
   { tab: "worktree", icon: GitBranch, labelKey: "worktree" },
   { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
-  { tab: "skills", icon: Sparkles, labelKey: "skills" }
+  { tab: "skills", icon: Sparkles, labelKey: "skills" },
+  { tab: "assetGraph", icon: Waypoints, label: "记忆" }
 ];
 
 const SIDEBAR_SCROLL_EDGE_EPSILON = 1;
@@ -285,12 +289,12 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
               onClick={onOpenRemoteRepos}
             />
           ) : null}
-          {LEFT_NAV_PANES.map(({ tab, icon, labelKey }) =>
+          {LEFT_NAV_PANES.map(({ tab, icon, labelKey, label: fixedLabel }) =>
             rightModules[tab] ? (
               <NavItem
                 key={tab}
                 icon={icon}
-                label={text[labelKey]}
+                label={fixedLabel ?? text[labelKey ?? "worktree"]}
                 isActive={rightDrawerOpen && rightOptionalTabs.includes(tab) && rightPaneTab === tab}
                 onClick={() => onOpenRightPane(tab)}
               />

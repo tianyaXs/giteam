@@ -18,7 +18,8 @@ mod types;
 
 pub use browser_controller::{BrowserAction, BrowserActionResult, BrowserController};
 pub use events::{
-    set_ui_event_hook, AgentEvent, AgentEventEnvelope, PiEventTranslator, AGENT_EVENT_SCHEMA_VERSION,
+    set_ui_event_hook, AgentEvent, AgentEventEnvelope, MemoryExtractionEntity, PiEventTranslator,
+    AGENT_EVENT_SCHEMA_VERSION,
 };
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
 pub use prompt::default_system_prompt;
@@ -28,18 +29,21 @@ pub use providers::{
 pub use secrets::{
     default_data_dir, default_pi_agent_dir, ensure_data_dir, ensure_pi_agent_dir_env,
     ensure_pi_retry_settings, ensure_repo_pi_sessions_dir, ensure_workspace_giteam_gitignore,
-    legacy_platform_data_dir, legacy_repo_pi_sessions_dir, legacy_tauri_bundle_data_dir,
-    migrate_legacy_tauri_data_into_canonical, migrate_session_file_bundle, pi_sessions_dir_for_repo,
-    pi_sessions_root, remap_legacy_session_path, repo_sessions_key, SecretStore,
+    legacy_platform_data_dir, legacy_repo_memory_db_path, legacy_repo_pi_sessions_dir,
+    legacy_tauri_bundle_data_dir, memory_db_path_for_repo, migrate_legacy_tauri_data_into_canonical,
+    migrate_session_file_bundle, pi_sessions_dir_for_repo, pi_sessions_root,
+    remap_legacy_session_path, repo_sessions_key, SecretStore,
 };
 pub use service::{
     AgentEventReceiver, AgentEventSink, PiAgentError, PiAgentService, PiSessionConfig,
     PiSessionSummary, SteerOutcome,
 };
 pub use subagents::{
-    build_child_system_prompt, child_stall_secs, child_timeout_secs,
-    resolve as resolve_subagent_type, SubagentDefinition, SubagentHost, SubagentSpawnRequest,
-    SubagentSpawnResult, SubagentType, DEFAULT_CHILD_STALL_SECS, DEFAULT_CHILD_TIMEOUT_SECS,
+    build_child_system_prompt, build_extract_system_prompt, child_stall_secs, child_timeout_secs,
+    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionRequest,
+    ExtractionCompletionResult, MemoryExtractionPublisher, SubagentDefinition, SubagentHost,
+    SubagentSpawnRequest, SubagentSpawnResult, SubagentType, DEFAULT_CHILD_STALL_SECS,
+    DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS, EXTRACT_ROLE_RULES,
     MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
 };
 pub use skills::{

@@ -1,4 +1,5 @@
 pub mod db;
+pub mod asset_graph;
 pub mod browser_controller;
 pub mod browser_panel;
 pub mod chromiumoxide_controller;

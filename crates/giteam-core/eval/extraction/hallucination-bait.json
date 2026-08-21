@@ -1,0 +1,19 @@
+{
+  "name": "hallucination-bait",
+  "note": "幻觉诱导：文件列表有 auth.rs 但文本没提 → 不得连边；人名不得成实体",
+  "input": {
+    "user_text": "张伟说登录页打开有点慢，你帮忙看看卡在哪。",
+    "assistant_text": "定位到了：src/ui/login.tsx 每次渲染都重新构造 sigma 实例，图谱数据没变时也全量重建。已用 useRef 缓存实例，首屏耗时从 2.1s 降到 0.4s。src/api/auth.ts 只是被顺带读过，没有改动。",
+    "file_paths": ["src/ui/login.tsx", "src/api/auth.ts"],
+    "commands": ["pnpm dev", "curl -o /dev/null -s -w '%{time_total}' http://localhost:5173/login"]
+  },
+  "expect": {
+    "entities": [
+      { "type_any": ["feature", "module", "error_pattern"], "slug_contains": "login" }
+    ],
+    "forbidden_types": ["person"],
+    "forbidden_relation_objects": ["auth.ts"],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

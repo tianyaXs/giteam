@@ -1,0 +1,22 @@
+{
+  "name": "error-pattern",
+  "note": "抽象成语义错误类，不得把原始报错行当实体",
+  "input": {
+    "user_text": "cargo build 又挂了，还是上次那个借用检查的问题，帮我根治一下。",
+    "assistant_text": "根因是 SessionAccumulator 在遍历 tool_timeline 时同时可变借用 self，典型的 Rust 借用检查冲突。已先把 timeline take 出来再遍历，修复完成，cargo build 通过。",
+    "file_paths": ["crates/giteam-core/src/asset_graph/extract.rs"],
+    "commands": ["cargo build"],
+    "error_lines": ["error[E0502]: cannot borrow `self.tool_timeline` as mutable because it is also borrowed as immutable"]
+  },
+  "expect": {
+    "entities": [
+      { "type": "error_pattern", "slug_contains": "borrow", "props_required": ["evidence"] }
+    ],
+    "relations": [
+      { "type": "pattern_of", "subject_contains": "borrow", "object_contains": "extract.rs" }
+    ],
+    "forbidden_label_contains": ["E0502", "cannot borrow"],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

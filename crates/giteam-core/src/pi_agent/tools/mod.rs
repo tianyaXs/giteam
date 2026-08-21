@@ -5,6 +5,7 @@
 //! 并带长驻命令前台护栏，避免再起服务挂死会话。
 
 mod approval;
+mod asset_graph_tools;
 mod background;
 mod browser_use;
 mod command_safety;
@@ -31,6 +32,7 @@ pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
 pub use task::TaskTool;
+pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool};
 pub use todo::TodoTool;
 pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
@@ -60,6 +62,9 @@ pub struct GiteamToolFactory {
     subagent_host: Option<Arc<dyn SubagentHost>>,
     /// 工具结果预算（截断/落盘）；子 agent 用紧预算。
     tool_budget: Arc<ToolBudgetConfig>,
+    /// 资产图谱工具（asset_context 等）：enabled_tools 未显式指定（默认全量）
+    /// 或显式包含 "asset_context" 时为 true。子 agent 同样可用（只读）。
+    asset_graph_enabled: bool,
 }
 
 impl GiteamToolFactory {
@@ -84,7 +89,10 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
         let task_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
+        let asset_graph_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
         Self {
+            asset_graph_enabled,
             hub,
             question_enabled,
             todo_enabled,
@@ -165,6 +173,14 @@ impl ToolFactory for GiteamToolFactory {
         if self.question_enabled || wants_question {
             registry.push(Box::new(QuestionTool::new(Arc::clone(&self.hub))));
         }
+        // 资产图谱三件套：只读（InteractionRisk::Read，免审批）、自带 8KB
+        // 输出限幅；与 Todo/Question 同模式不经 wrap（ToolBudget 面向大输出
+        // 工具如 read/bash，这里无需再套）。
+        if self.asset_graph_enabled {
+            registry.push(Box::new(AssetContextTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetSearchTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetPrecedentsTool::new(cwd.to_path_buf())));
+        }
         if self.todo_enabled || wants_todo {
             registry.push(Box::new(TodoTool::new()));
         }
@@ -205,6 +221,13 @@ mod tests {
             &self,
             _request: SubagentSpawnRequest,
         ) -> std::result::Result<SubagentSpawnResult, String> {
+            Err("stub".to_string())
+        }
+
+        async fn run_extraction_completion(
+            &self,
+            _request: crate::pi_agent::ExtractionCompletionRequest,
+        ) -> std::result::Result<crate::pi_agent::ExtractionCompletionResult, String> {
             Err("stub".to_string())
         }
     }

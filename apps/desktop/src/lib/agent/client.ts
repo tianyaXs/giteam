@@ -200,6 +200,12 @@ export type AgentEvent = {
     summary?: string;
     /** subagent.childEvent 内嵌的子事件。 */
     event?: AgentEvent["event"];
+    /** memory.extraction.* */
+    extractionId?: string;
+    entityCount?: number;
+    relationCount?: number;
+    intent?: string;
+    entities?: Array<{ type?: string; title?: string }>;
   };
 };
 
