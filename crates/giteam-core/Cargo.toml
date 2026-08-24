@@ -31,6 +31,7 @@ uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 which = "6"
 html2text = "0.17.1"
+mcpstore = { version = "2.0.9", default-features = false, features = ["light"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
