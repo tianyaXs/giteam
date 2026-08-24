@@ -3,6 +3,7 @@ mod environment;
 mod events;
 mod https_egress;
 mod interactions;
+mod mcp;
 mod messages;
 mod permissions;
 mod project_memory;
@@ -22,6 +23,12 @@ pub use events::{
     AGENT_EVENT_SCHEMA_VERSION,
 };
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
+pub use mcp::{
+    add_service as mcp_add_service, load_for_repo as mcp_load_for_repo,
+    parse_opencode_entry as mcp_parse_opencode_entry, refresh_tools as mcp_refresh_tools,
+    remove_service as mcp_remove_service, repo_config_path as mcp_repo_config_path, McpError,
+    McpRuntime, McpServiceInput, McpToolSpec,
+};
 pub use prompt::default_system_prompt;
 pub use providers::{
     AgentModelCost, AgentModelInfo, AgentProviderInfo, CustomProviderInput, ProviderCatalog,
