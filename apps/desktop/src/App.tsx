@@ -10927,6 +10927,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         {showSettings ? (
           <SettingsDialog
             theme={theme}
+            repoPath={repoPath}
             initialSection={settingsInitialSection}
             runtimeStatus={runtimeStatus}
             onClose={() => void closeSettingsModal()}
@@ -11519,7 +11520,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         <AgentModulePanel
           open={showAgentModulePanel}
           activeTab={agentModuleTab}
-          repoPath={repoPath}
           agentSearch={agentAgentSearch}
           agentsLoading={agentDefinitionsLoading}
           agentsError={agentDefinitionsError}

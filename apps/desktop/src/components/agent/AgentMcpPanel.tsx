@@ -122,8 +122,8 @@ export function AgentMcpSection({ repoPath }: { repoPath: string }) {
   }, [tools]);
 
   const runAction = useCallback(
-    async (key: string, action: () => Promise<unknown>, doneNotice: string) => {
-      if (busy) return;
+    async (key: string, action: () => Promise<unknown>, doneNotice: string): Promise<boolean> => {
+      if (busy) return false;
       setBusy(key);
       setError("");
       setNotice("");
@@ -131,8 +131,10 @@ export function AgentMcpSection({ repoPath }: { repoPath: string }) {
         await action();
         setNotice(doneNotice);
         await refresh();
+        return true;
       } catch (cause) {
         setError(String(cause));
+        return false;
       } finally {
         setBusy("");
       }
@@ -168,7 +170,8 @@ export function AgentMcpSection({ repoPath }: { repoPath: string }) {
       "add",
       () => addMcpService(repoPath, input),
       `已添加 ${name}；变更仅对新会话生效`
-    ).then(() => {
+    ).then((ok) => {
+      if (!ok) return;
       setAddOpen(false);
       setForm(EMPTY_FORM);
       setFormError("");
@@ -308,7 +311,7 @@ export function AgentMcpSection({ repoPath }: { repoPath: string }) {
       ) : null}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="z-[2701] sm:max-w-lg" overlayClassName="z-[2700]">
           <DialogHeader>
             <DialogTitle>添加 MCP 服务</DialogTitle>
             <DialogDescription>

@@ -8,8 +8,6 @@ import {
 import type { AgentDefinition } from "../../lib/agentDefinitions";
 import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
 import { AGENT_RECOMMENDED_SKILLS, type AgentSkillSearchResult } from "../../lib/agentSkillMarketplace";
-import { MCP_MODULE_ENABLED } from "../../lib/featureFlags";
-import { AgentMcpSection } from "./AgentMcpPanel";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -35,12 +33,11 @@ import { Switch } from "../ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { cn } from "../../lib/utils";
 
-export type AgentModuleTab = "agents" | "permissions" | "skills" | "mcp";
+export type AgentModuleTab = "agents" | "permissions" | "skills";
 
 type AgentModulePanelProps = {
   open: boolean;
   activeTab: AgentModuleTab;
-  repoPath: string;
   agentSearch: string;
   agentsLoading: boolean;
   agentsError: string;
@@ -122,8 +119,7 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
             {([
               ["agents", "Agents"],
               ["permissions", `权限${props.activePermissions.length ? ` (${props.activePermissions.length})` : ""}`],
-              ["skills", "Skills"],
-              ...(MCP_MODULE_ENABLED ? ([["mcp", "MCP"]] as Array<[AgentModuleTab, string]>) : [])
+              ["skills", "Skills"]
             ] as Array<[AgentModuleTab, string]>).map(([tab, label]) => (
               <ToggleGroupItem key={tab} value={tab}>{label}</ToggleGroupItem>
             ))}
@@ -133,7 +129,6 @@ export function AgentModulePanel(props: AgentModulePanelProps) {
           {props.activeTab === "agents" ? <AgentsSection {...props} /> : null}
           {props.activeTab === "permissions" ? <PermissionsSection {...props} /> : null}
           {props.activeTab === "skills" ? <SkillsSection {...props} /> : null}
-          {props.activeTab === "mcp" && MCP_MODULE_ENABLED ? <AgentMcpSection repoPath={props.repoPath} /> : null}
         </div>
       </DialogContent>
     </Dialog>
