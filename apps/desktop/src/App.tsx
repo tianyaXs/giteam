@@ -11519,6 +11519,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         <AgentModulePanel
           open={showAgentModulePanel}
           activeTab={agentModuleTab}
+          repoPath={repoPath}
           agentSearch={agentAgentSearch}
           agentsLoading={agentDefinitionsLoading}
           agentsError={agentDefinitionsError}

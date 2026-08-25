@@ -7,3 +7,9 @@
  * 与 components/remote-repo/* 全部组件文件均保留，模块完整后将此处置为 true 即恢复。
  */
 export const REMOTE_REPO_MODULE_ENABLED = false;
+
+/**
+ * MCP 模块（仓库级 MCP 服务管理，agent_mcp_* RPC + mcpstore 后端）。
+ * 置 false 可整体隐藏 Agent 模块面板中的 MCP 标签页。
+ */
+export const MCP_MODULE_ENABLED = true;
