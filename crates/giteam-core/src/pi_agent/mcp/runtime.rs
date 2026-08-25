@@ -16,8 +16,8 @@ use super::config::McpServiceInput;
 use super::naming::qualified_name;
 use super::McpError;
 
-/// 连接单个 MCP 服务并完成工具发现的等待上限。
-const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// 连接单个 MCP 服务并完成工具发现的等待上限（管理面连接/重连共用）。
+pub const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Pi 可见的 MCP 工具快照。调用时用 `instance_id + tool_name` 定位真实工具，
 /// 不依赖 `exposed_name` 反查。
@@ -75,6 +75,11 @@ pub async fn load_with_base(base: &Path, repo_path: &Path) -> Result<Arc<McpRunt
         store: Some(JsonStoreConfig::memory()),
         ..StoreOptions::default()
     })?;
+    // Local 源模式 setup 不回放配置文件（文件是 write-through 记录，跨进程
+    // 恢复仅 Db 模式实现）；显式 load_from_source 把 mcpstore.json 重放进
+    // 注册表并重连服务。注意不能走 add_service 重放：Local 模式 add 对文件
+    // 中已存在的服务名报 "already exists"。
+    store.load_from_source().await?;
     let scope = store.for_store();
     let (tools, service_errors) = discover(&scope).await;
     Ok(Arc::new(McpRuntime {
@@ -101,7 +106,7 @@ async fn discover(scope: &ScopeContext) -> (Vec<McpToolSpec>, Vec<(String, Strin
             .await
             .ok()
             .and_then(|info| {
-                info.get("name")
+                info.get("service_name")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string)
             })

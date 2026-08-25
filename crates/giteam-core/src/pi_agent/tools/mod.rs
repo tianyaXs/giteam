@@ -11,6 +11,7 @@ mod browser_use;
 mod command_safety;
 mod shell_resolver;
 mod edit_guard;
+mod mcp;
 mod question;
 mod task;
 mod todo;
@@ -30,6 +31,7 @@ pub use approval::ApprovalTool;
 pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, KillShellTool};
 pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
+pub use mcp::McpTool;
 pub use question::QuestionTool;
 pub use task::TaskTool;
 pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool};
@@ -65,6 +67,10 @@ pub struct GiteamToolFactory {
     /// 资产图谱工具（asset_context 等）：enabled_tools 未显式指定（默认全量）
     /// 或显式包含 "asset_context" 时为 true。子 agent 同样可用（只读）。
     asset_graph_enabled: bool,
+    /// 仓库级 MCP 运行时：快照工具全部注册（enabled 只控制服务层）。
+    /// 经 wrap 链：ToolBudget + Approval（mcp__* 归 Write，fail-closed）。
+    /// 配置变化只对新会话生效（load_for_repo 在 create_session 异步边界）。
+    mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
 }
 
 impl GiteamToolFactory {
@@ -76,6 +82,7 @@ impl GiteamToolFactory {
         browser_controller: SharedBrowserController,
         subagent_host: Option<Arc<dyn SubagentHost>>,
         tool_budget: ToolBudgetConfig,
+        mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
     ) -> Self {
         let question_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
@@ -104,6 +111,7 @@ impl GiteamToolFactory {
             session_dir,
             subagent_host,
             tool_budget: Arc::new(tool_budget),
+            mcp_runtime,
         }
     }
 }
@@ -200,6 +208,16 @@ impl ToolFactory for GiteamToolFactory {
             let host = Arc::clone(self.subagent_host.as_ref().expect("checked above"));
             registry.push(Box::new(TaskTool::new(Arc::clone(&self.hub), host)));
         }
+        // MCP 快照工具：全部注册（enabled 只控制服务层）；经 wrap 自动获得
+        // ToolBudget + Approval（未知工具 fail-closed 归 Write）。
+        if let Some(runtime) = &self.mcp_runtime {
+            for spec in runtime.tools.iter() {
+                registry.push(wrap(Box::new(McpTool::new(
+                    spec.clone(),
+                    Arc::clone(runtime),
+                ))));
+            }
+        }
         registry
     }
 }
@@ -241,6 +259,7 @@ mod tests {
             None,
             None,
             ToolBudgetConfig::for_primary(None),
+            None,
         )
     }
 
@@ -254,6 +273,7 @@ mod tests {
             None,
             Some(host),
             ToolBudgetConfig::for_primary(None),
+            None,
         )
     }
 

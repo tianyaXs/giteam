@@ -24,10 +24,16 @@ pub use events::{
 };
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
 pub use mcp::{
-    add_service as mcp_add_service, load_for_repo as mcp_load_for_repo,
-    parse_opencode_entry as mcp_parse_opencode_entry, refresh_tools as mcp_refresh_tools,
-    remove_service as mcp_remove_service, repo_config_path as mcp_repo_config_path, McpError,
-    McpRuntime, McpServiceInput, McpToolSpec,
+    add_service as mcp_add_service, admin_add_service as mcp_admin_add_service,
+    admin_authenticate_service as mcp_admin_authenticate_service,
+    admin_connect_service as mcp_admin_connect_service,
+    admin_disconnect_service as mcp_admin_disconnect_service,
+    admin_list_services as mcp_admin_list_services, admin_list_tools as mcp_admin_list_tools,
+    admin_remove_service as mcp_admin_remove_service, load_for_repo as mcp_load_for_repo,
+    load_with_base as mcp_load_with_base, parse_opencode_entry as mcp_parse_opencode_entry,
+    refresh_tools as mcp_refresh_tools, remove_service as mcp_remove_service,
+    repo_config_path as mcp_repo_config_path, McpError, McpMutationResult, McpRuntime,
+    McpServiceError, McpServiceInput, McpServiceStatus, McpToolInfo, McpToolSpec, McpToolsSnapshot,
 };
 pub use prompt::default_system_prompt;
 pub use providers::{
