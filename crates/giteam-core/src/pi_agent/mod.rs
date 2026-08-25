@@ -40,7 +40,8 @@ pub use service::{
 };
 pub use subagents::{
     build_child_system_prompt, build_extract_system_prompt, child_stall_secs, child_timeout_secs,
-    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionRequest,
+    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionFallback,
+    ExtractionCompletionRequest,
     ExtractionCompletionResult, MemoryExtractionPublisher, SubagentDefinition, SubagentHost,
     SubagentSpawnRequest, SubagentSpawnResult, SubagentType, DEFAULT_CHILD_STALL_SECS,
     DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS, EXTRACT_ROLE_RULES,

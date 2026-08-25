@@ -380,6 +380,7 @@ fn main() {
             commands::asset_graph::asset_graph_full,
             commands::asset_graph::asset_graph_session_node,
             commands::asset_graph::asset_graph_sessions,
+            commands::asset_graph::asset_graph_extraction_queue,
             commands::asset_graph::asset_graph_rebuild,
             commands::pi_agent::agent_runtime_info,
             commands::pi_agent::agent_create_session,

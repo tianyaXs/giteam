@@ -1,0 +1,24 @@
+```json
+{
+  "quality": "high",
+  "session_intent": "排查登录页卡顿",
+  "entities": [
+    {
+      "id": "login-perf",
+      "type": "feature",
+      "title": "login 登录页 sigma 缓存优化",
+      "confidence": 0.92,
+      "evidence": "登录页打开有点慢"
+    }
+  ],
+  "relations": [
+    {
+      "type": "implements",
+      "subject": "login-perf",
+      "object": "src/ui/login.tsx",
+      "confidence": 0.9,
+      "evidence": "src/ui/login.tsx 每次渲染都重新构造 sigma 实例"
+    }
+  ]
+}
+```

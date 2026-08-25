@@ -1,0 +1,20 @@
+{
+  "name": "lifecycle-seed-store",
+  "note": "通用前置：沉淀一条可被 supersedes 的存储决策（不绑定具体产品域）",
+  "input": {
+    "user_text": "本地持久化先定了：用嵌入式 SQLite，不上独立图数据库。零运维优先。",
+    "assistant_text": "已按决策落地：在 src/store.rs 用 SQLite 做主存储，开启 WAL。",
+    "file_paths": ["src/store.rs"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "decision",
+        "slug_contains": "sqlite",
+        "props_required": ["evidence"]
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 6
+  }
+}

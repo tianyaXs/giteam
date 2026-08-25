@@ -12,6 +12,10 @@ export type AgentChatSession = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** 会话当前 provider（服务端真相；有会话时 UI 只读此字段）。 */
+  provider?: string;
+  /** 会话当前 model id（服务端真相）。 */
+  model?: string;
   messages: AgentChatMessage[];
   turnStart: number;
   loaded: boolean;
@@ -24,6 +28,10 @@ export type ChatSessionSummary = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** 会话绑定的 provider（来自 list/getSession，禁止再靠 localStorage 猜）。 */
+  provider?: string;
+  /** 会话绑定的 model id。 */
+  model?: string;
   parentId?: string;
   archivedAt?: number;
 };
@@ -104,16 +112,30 @@ export function newAgentSession(seedPrompt?: string, indexHint?: number): AgentC
 }
 
 export function agentSessionFromSummary(summary: ChatSessionSummary, indexHint?: number): AgentChatSession {
+  const provider = String(summary.provider || "").trim();
+  const model = String(summary.model || "").trim();
   return {
     id: summary.id,
     title: toAgentSessionTitle(summary.title || "", indexHint),
     createdAt: summary.createdAt || Date.now(),
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
     messages: [],
     turnStart: 0,
     loaded: false,
     nextCursor: undefined
   };
+}
+
+/** 从会话对象拼出 provider/model ref；缺任一端则返回空（有会话时不得回落 draft）。 */
+export function modelRefFromChatSession(
+  session: Pick<AgentChatSession, "provider" | "model"> | null | undefined
+): string {
+  const provider = String(session?.provider || "").trim();
+  const model = String(session?.model || "").trim();
+  if (!provider || !model) return "";
+  return `${provider}/${model}`;
 }
 
 export function compareAgentSessionActivity(

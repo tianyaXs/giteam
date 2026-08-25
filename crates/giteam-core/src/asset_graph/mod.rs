@@ -2,7 +2,9 @@
 //!
 //! 设计文档：`docs/repo-asset-graph-agent.md`。分层：
 //! - [`store`]：SQLite schema + 幂等批量写入
+//! - [`entity`]：语义实体身份（normalize → resolve → merge）
 //! - [`extract`]：确定性抽取（live 事件 → 事实；不调 LLM）
+//! - [`extraction`] / [`stage1`]：语义抽取（Codex 式：turn 入队，idle/startup 批处理）
 //! - [`replay`]：存量会话 JSONL → 事实（与 live 同一套规则）
 //! - [`query`]：检索/上下文构建（agent 工具与启动注入共用）
 //!
@@ -11,11 +13,13 @@
 //! 打开时自动迁入）与全局 [`on_event_published`]（由
 //! `pi_agent::events::publish_event` 转发，失败静默——图谱绝不影响 agent 主流程）。
 
+pub mod entity;
 pub mod extract;
 pub mod extraction;
 pub mod query;
 pub mod replay;
 pub mod semantic;
+pub mod stage1;
 pub mod store;
 
 use std::collections::HashMap;
@@ -88,6 +92,31 @@ impl AssetGraph {
             envelope.session_id.clone(),
             envelope.run_id.clone().unwrap_or_default(),
         );
+
+        // Run 终态后会再收到 SessionStatusChanged(Idle/Failed/Aborted)。
+        // 若走下面的 or_insert，会在 RunCompleted 刚 remove 之后又占位 live，
+        // Stage-1 debounce 2s 后仍把该 session 当热路径排除 → pending 永不 claim。
+        if matches!(
+            &envelope.event,
+            crate::pi_agent::AgentEvent::SessionStatusChanged {
+                status:
+                    crate::pi_agent::AgentSessionStatus::Idle
+                    | crate::pi_agent::AgentSessionStatus::Failed
+                    | crate::pi_agent::AgentSessionStatus::Aborted,
+                ..
+            }
+        ) {
+            self.live.remove(&key);
+            if let Some(host) = current_extraction_host(&self.subagent_host) {
+                stage1::schedule_idle_stage1(
+                    host,
+                    self.db_path.clone(),
+                    self.repo_path.clone(),
+                );
+            }
+            return;
+        }
+
         let repo_path = self.repo_path.to_string_lossy().to_string();
         let acc = self
             .live
@@ -99,36 +128,33 @@ impl AssetGraph {
             if let Err(error) = store::write_batch(&self.db, &batch) {
                 eprintln!("[asset-graph] write batch failed: {error}");
             }
-            // 语义抽取（M4）：turn 边界异步跑 extract 子代理，fire-and-forget。
-            // 抽取子代理自身的事件（session 以 asset-graph-extract 前缀标识的
-            // parent_tool_call_id）不再触发抽取，防自递归。
+            // 语义抽取（Codex 式 Stage-1）：turn 边界只入队非真空内容，
+            // **价值判定交给抽取 agent**（idle/startup 后跑）；热路径不调 LLM、不闪 UI。
             let is_turn_end =
                 matches!(envelope.event, crate::pi_agent::AgentEvent::TurnCompleted { .. });
             let is_extraction_child = extraction::is_extract_session(&key.0);
             if is_turn_end && !is_extraction_child {
-                let input = acc.take_extraction_input(envelope.timestamp_ms, envelope.sequence);
-                // 先确认 host 再 claim turn：无宿主时不登记，避免宿主后补挂上
-                // 的事件重放因空 claim 永久跳过抽取。
-                if input.worth_extracting() {
-                    // host 解析：实例注入优先，回落全局注册表——图谱可能由面板
-                    // rebuild 等路径先于 service 挂载（无 host），不能因此跳过抽取。
-                    if let Some(host) = current_extraction_host(&self.subagent_host) {
-                        // turn 去重：同一 turn（事件重放/乱序）只触发一次抽取调用。
-                        let turn_claimed = input
-                            .turn_key
-                            .as_deref()
-                            .map(extraction::claim_turn_extraction)
-                            .unwrap_or(false);
-                        if turn_claimed {
-                            extraction::spawn_extraction(host, input, self.db_path.clone());
+                let mut input =
+                    acc.take_extraction_input(envelope.timestamp_ms, envelope.sequence);
+                if input.repo_path.is_empty() {
+                    input.repo_path = self.repo_path.to_string_lossy().to_string();
+                }
+                if let Some(host) = current_extraction_host(&self.subagent_host) {
+                    if let Some(snap) = host.extraction_parent_snapshot(&input.session_id) {
+                        if input.provider.is_none() {
+                            input.provider = snap.provider;
                         }
-                    } else {
-                        // 挂载时未注入宿主（旧实例/重建冲掉）——这是接线问题，
-                        // 必须可见，否则语义层静默缺失。
-                        eprintln!(
-                            "[asset-graph] extraction skipped: no subagent host (session {})",
-                            key.0
-                        );
+                        if input.model.is_none() {
+                            input.model = snap.model;
+                        }
+                        if input.thinking.is_none() {
+                            input.thinking = snap.thinking;
+                        }
+                    }
+                }
+                if input.should_enqueue() {
+                    if let Err(error) = stage1::enqueue_job(&self.db, &input) {
+                        eprintln!("[asset-graph] enqueue extraction job failed: {error}");
                     }
                 }
             }
@@ -137,9 +163,25 @@ impl AssetGraph {
                 crate::pi_agent::AgentEvent::RunCompleted
                     | crate::pi_agent::AgentEvent::RunFailed { .. }
             ) {
-                self.live.remove(&key);
+                // 同一 session 串行 run；终态时清掉该会话全部 live 占位（防御 run_id 偏差）。
+                self.live
+                    .retain(|(session_id, _), _| session_id != &envelope.session_id);
+                // Run 结束后 debounce Stage-1（排除仍 live 的会话）。
+                if let Some(host) = current_extraction_host(&self.subagent_host) {
+                    stage1::schedule_idle_stage1(
+                        host,
+                        self.db_path.clone(),
+                        self.repo_path.clone(),
+                    );
+                }
             }
         }
+    }
+
+    /// 当前仍有 live 累积器的 session_id（Stage-1 排除热路径）。
+    #[must_use]
+    pub fn live_session_keys(&self) -> Vec<(String, String)> {
+        self.live.keys().cloned().collect()
     }
 
     /// 语义抽取宿主（重建时保留注入用）。
@@ -222,10 +264,26 @@ fn extraction_host() -> &'static Mutex<Option<std::sync::Arc<dyn crate::pi_agent
     HOST.get_or_init(|| Mutex::new(None))
 }
 
-/// 登记/替换全局抽取宿主（PiAgentService 单例启动时调用）。
+/// 登记/替换全局抽取宿主（PiAgentService 单例启动时调用），并 kick 已挂载仓库的 Stage-1。
 pub fn set_extraction_host(host: std::sync::Arc<dyn crate::pi_agent::SubagentHost>) {
     if let Ok(mut slot) = extraction_host().lock() {
-        *slot = Some(host);
+        *slot = Some(host.clone());
+    }
+    // 宿主后挂上时，消化此前堆积的 pending。
+    let attached_repos: Vec<(PathBuf, PathBuf)> = graphs()
+        .lock()
+        .ok()
+        .map(|map| {
+            map.values()
+                .filter_map(|graph| {
+                    let g = graph.lock().ok()?;
+                    Some((g.db_path().to_path_buf(), g.repo_path.clone()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (db_path, repo_path) in attached_repos {
+        stage1::kick_stage1(host.clone(), db_path, repo_path, stage1::Stage1Trigger::Startup);
     }
 }
 
@@ -268,14 +326,18 @@ pub fn attach_repo(repo_path: &Path) -> Result<(usize, usize), String> {
     Ok(stats)
 }
 
-/// 同 [`attach_repo`]，但注入子代理宿主启用 turn 级语义抽取。
+/// 同 [`attach_repo`]，但注入子代理宿主启用 Stage-1 语义抽取，并 kick startup 扫描。
 pub fn attach_repo_with_extraction(
     repo_path: &Path,
     host: std::sync::Arc<dyn crate::pi_agent::SubagentHost>,
 ) -> Result<(usize, usize), String> {
-    let mut graph = AssetGraph::open(repo_path)?.with_subagent_host(host);
+    let mut graph = AssetGraph::open(repo_path)?.with_subagent_host(host.clone());
     let stats = graph.replay_backlog();
+    let db_path = graph.db_path().to_path_buf();
+    let repo = graph.repo_path.clone();
     attach(graph);
+    // Codex：挂载/新会话启动时消化跨会话 pending backlog（排除 live session）。
+    stage1::kick_stage1(host, db_path, repo, stage1::Stage1Trigger::Startup);
     Ok(stats)
 }
 
@@ -285,11 +347,16 @@ pub fn reattach_repo(repo_path: &Path) -> Result<(usize, usize), String> {
     let host = attached(repo_path)
         .and_then(|graph| graph.lock().ok().and_then(|g| g.subagent_host()));
     let mut graph = AssetGraph::open(repo_path)?;
-    if let Some(host) = host {
+    let db_path = graph.db_path().to_path_buf();
+    let repo = graph.repo_path.clone();
+    if let Some(host) = host.clone() {
         graph = graph.with_subagent_host(host);
     }
     let stats = graph.replay_backlog();
     attach(graph);
+    if let Some(host) = host {
+        stage1::kick_stage1(host, db_path, repo, stage1::Stage1Trigger::Startup);
+    }
     Ok(stats)
 }
 
@@ -323,6 +390,33 @@ pub fn on_event_published(envelope: &crate::pi_agent::AgentEventEnvelope) {
 pub fn attached(repo_path: &Path) -> Option<Arc<Mutex<AssetGraph>>> {
     let canonical = std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
     graphs().lock().ok().and_then(|g| g.get(&canonical).cloned())
+}
+
+/// 抽取队列摘要：优先读已挂载实例；未挂载时直接打开记忆库（只读轮询，不创建目录）。
+#[must_use]
+pub fn extraction_queue_summary(repo_path: &Path) -> stage1::ExtractionQueueSummary {
+    let empty = stage1::ExtractionQueueSummary {
+        pending: 0,
+        claimed: 0,
+        updated_at_ms: 0,
+    };
+    if let Some(graph) = attached(repo_path) {
+        if let Ok(graph) = graph.lock() {
+            if let Ok(summary) = stage1::queue_summary(graph.connection()) {
+                return summary;
+            }
+        }
+    }
+    let Some(db_path) = crate::pi_agent::memory_db_path_for_repo(repo_path) else {
+        return empty;
+    };
+    if !db_path.is_file() {
+        return empty;
+    }
+    let Ok(db) = store::open(&db_path) else {
+        return empty;
+    };
+    stage1::queue_summary(&db).unwrap_or(empty)
 }
 
 #[cfg(test)]
@@ -440,6 +534,58 @@ mod tests {
             .into_iter()
             .find(|s| s.session_label.contains("重构登录模块"));
         assert!(summary.is_some(), "intent not found");
+    }
+
+    #[test]
+    fn idle_status_after_run_completed_does_not_leak_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut graph = AssetGraph::open(&repo).unwrap();
+        let repo_str = repo.to_string_lossy().to_string();
+
+        for env in live_session(&repo) {
+            graph.ingest_live(&env);
+        }
+        assert!(!graph.live_session_keys().is_empty());
+
+        graph.ingest_live(&AgentEventEnvelope {
+            schema_version: 1,
+            event_id: "e-run-done".into(),
+            sequence: 10,
+            repo_path: repo_str.clone(),
+            session_id: "sess-live".into(),
+            run_id: Some("run-live".into()),
+            timestamp_ms: 10_000,
+            event: AgentEvent::RunCompleted,
+        });
+        assert!(
+            graph.live_session_keys().is_empty(),
+            "RunCompleted should clear live"
+        );
+
+        // 模拟 service 在 RunCompleted 之后发出的 Idle（此前会 or_insert 泄漏）。
+        graph.ingest_live(&AgentEventEnvelope {
+            schema_version: 1,
+            event_id: "e-idle".into(),
+            sequence: 11,
+            repo_path: repo_str,
+            session_id: "sess-live".into(),
+            run_id: Some("run-live".into()),
+            timestamp_ms: 10_500,
+            event: AgentEvent::SessionStatusChanged {
+                status: crate::pi_agent::AgentSessionStatus::Idle,
+                error: None,
+            },
+        });
+        assert!(
+            graph.live_session_keys().is_empty(),
+            "Idle must not re-register live accumulator"
+        );
+        assert!(
+            stage1::live_session_ids_for_repo(&repo).is_empty(),
+            "Stage-1 exclude set must stay empty"
+        );
     }
 
     #[test]

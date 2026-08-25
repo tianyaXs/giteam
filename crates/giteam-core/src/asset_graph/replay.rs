@@ -101,8 +101,15 @@ pub fn parse_session_jsonl(repo_path: &str, text: &str) -> Option<ReplayOutcome>
                     .unwrap_or_else(|| format!("m{sequence}"));
                 match message.get("role").and_then(Value::as_str) {
                     Some("user") => {
-                        state.turn_index += 1;
                         let content = message_content_text(message);
+                        // 抽取子代理会话（管道内部）不进图谱。
+                        if content
+                            .trim_start()
+                            .starts_with(super::extraction::EXTRACTION_USER_PROMPT_PREFIX)
+                        {
+                            return None;
+                        }
+                        state.turn_index += 1;
                         if content.trim().is_empty() {
                             continue;
                         }
@@ -356,6 +363,16 @@ mod tests {
         // 无任何用户消息 → 空批次 → None。
         assert!(parse_session_jsonl("/repo", bad).is_none());
         assert!(parse_session_jsonl("/repo", "not json at all").is_none());
+    }
+
+    #[test]
+    fn skips_extraction_subagent_sessions() {
+        let text = concat!(
+            r#"{"type":"session","version":3,"id":"s-extract","timestamp":"2026-08-15T08:00:00.000Z","cwd":"/repo"}"#,
+            "\n",
+            r#"{"type":"message","id":"m1","timestamp":"2026-08-15T08:00:01.000Z","message":{"role":"user","content":"Extract semantic entities and relations from this coding-agent turn. Reply with the JSON object only.","timestamp":1}}"#,
+        );
+        assert!(parse_session_jsonl("/repo", text).is_none());
     }
 
     #[test]

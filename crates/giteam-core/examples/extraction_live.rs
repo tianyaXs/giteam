@@ -159,6 +159,10 @@ async fn main() {
         error_lines: Vec::new(),
         timestamp_ms: now_ms(),
         sequence: 900_001,
+        repo_path: args.repo.to_string_lossy().into_owned(),
+        provider: Some(args.provider.clone()),
+        model: Some(args.model.clone()),
+        thinking: Some("off".into()),
     };
 
     let known_lines = load_known_entity_lines(&db_path);
@@ -182,6 +186,12 @@ async fn main() {
             parent_session_id: parent_id.clone(),
             extraction_id: extraction_id.clone(),
             prompt: input.build_prompt(&known_lines),
+            fallback: Some(giteam_core::pi_agent::ExtractionCompletionFallback {
+                repo_path: args.repo.to_string_lossy().into_owned(),
+                provider: Some(args.provider.clone()),
+                model: Some(args.model.clone()),
+                thinking: Some("off".into()),
+            }),
         })
         .await;
 
@@ -210,7 +220,7 @@ async fn main() {
     println!("----- end raw -----");
 
     let anchors = input.anchors();
-    let parsed = semantic::parse_extraction(&result.summary, &anchors);
+    let parsed = semantic::parse_extraction(&result.summary, &anchors, &[]);
     println!(
         "[ok] parsed entities={} relations={} intent={:?}",
         parsed.entity_count, parsed.relation_count, parsed.intent
@@ -259,6 +269,8 @@ async fn main() {
             parsed.relation_count as u32,
             parsed.intent.clone(),
             entities,
+            Some(parsed.quality.as_str().to_string()),
+            Some(parsed.priority.as_str().to_string()),
             result.elapsed_ms,
         );
         println!("[ok] memory.extraction.completed published");

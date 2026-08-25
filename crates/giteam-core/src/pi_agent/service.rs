@@ -2249,6 +2249,85 @@ impl PiAgentService {
 
     /// 旁路语义抽取：ephemeral 无工具 session + 单次 prompt。
     /// 不进 catalog、不投影 subagent.*；slug 稳定靠 prompt 注入已有实体。
+    fn resolve_extraction_parent_meta(
+        &self,
+        parent_session_id: &str,
+        fallback: Option<&super::subagents::ExtractionCompletionFallback>,
+    ) -> Result<
+        (
+            PathBuf,
+            PathBuf,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+        PiAgentError,
+    > {
+        let fb = fallback.filter(|f| !f.repo_path.trim().is_empty());
+        let fb_has_provider = fb.is_some_and(|f| {
+            f.provider.as_ref().is_some_and(|s| !s.trim().is_empty())
+                && f.model.as_ref().is_some_and(|s| !s.trim().is_empty())
+        });
+        if fb_has_provider {
+            let fb = fb.expect("checked");
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            return Ok((
+                repo_path,
+                session_dir,
+                fb.provider.clone(),
+                fb.model.clone(),
+                fb.thinking.clone(),
+            ));
+        }
+        if let Ok(records) = self.records.lock() {
+            if let Some(record) = records.get(parent_session_id) {
+                return Ok((
+                    record.repo_path.clone(),
+                    record.session_dir.clone(),
+                    (!record.provider.is_empty()).then_some(record.provider.clone()),
+                    (!record.model.is_empty()).then_some(record.model.clone()),
+                    record.thinking.clone(),
+                ));
+            }
+        }
+        if let Some(fb) = fb {
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            let provider = fb.provider.clone().filter(|s| !s.trim().is_empty());
+            let model = fb.model.clone().filter(|s| !s.trim().is_empty());
+            return Ok((
+                repo_path,
+                session_dir,
+                provider,
+                model,
+                fb.thinking.clone(),
+            ));
+        }
+        Err(PiAgentError::SessionNotFound(parent_session_id.to_string()))
+    }
+
+    /// Stage-1 入队时快照父会话 provider/model/repo（父 session 销毁后仍可抽）。
+    #[must_use]
+    pub fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let record = self.records.lock().ok()?.get(parent_session_id).cloned()?;
+        Some(super::subagents::ExtractionCompletionFallback {
+            repo_path: record.repo_path.to_string_lossy().into_owned(),
+            provider: (!record.provider.is_empty()).then_some(record.provider),
+            model: (!record.model.is_empty()).then_some(record.model),
+            thinking: record.thinking,
+        })
+    }
+
     pub async fn run_extraction_completion(
         &self,
         request: super::subagents::ExtractionCompletionRequest,
@@ -2269,24 +2348,10 @@ impl PiAgentService {
             .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
         let _queue_guard = extract_lock.lock().await;
 
-        let parent_meta = {
-            let records = self
-                .records
-                .lock()
-                .map_err(|error| PiAgentError::State(error.to_string()))?;
-            let record = records
-                .get(&request.parent_session_id)
-                .ok_or_else(|| {
-                    PiAgentError::SessionNotFound(request.parent_session_id.clone())
-                })?;
-            (
-                record.repo_path.clone(),
-                record.session_dir.clone(),
-                (!record.provider.is_empty()).then_some(record.provider.clone()),
-                (!record.model.is_empty()).then_some(record.model.clone()),
-                record.thinking.clone(),
-            )
-        };
+        let parent_meta = self.resolve_extraction_parent_meta(
+            &request.parent_session_id,
+            request.fallback.as_ref(),
+        )?;
         let (repo_path, session_dir, provider, model, thinking) = parent_meta;
 
         let mut config = PiSessionConfig::persistent(repo_path.clone(), session_dir);
@@ -2818,6 +2883,14 @@ impl SubagentHost for ServiceSubagentHost {
             context,
             extraction_id,
         ))
+    }
+
+    fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let service = self.weak.upgrade()?;
+        service.extraction_parent_snapshot(parent_session_id)
     }
 }
 

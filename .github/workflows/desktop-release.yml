@@ -120,13 +120,13 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 记忆（仓库资产图谱）
+            ## 记忆图谱
 
-            - 右侧「记忆」面板：跨会话抽取实体/关系，sigma.js 可视化（搜索、下钻、打开时飞到当前会话）
-            - 布局：FA2 冷启动后冻结 home；拖拽只动当前节点，松手弹簧回位（交互期不再跑 Force）
-            - 图谱查询支持时间范围过滤；去掉右下角类型说明卡片
-            - Agent 回忆工具（asset_context / asset_search / asset_precedents），时间线批组为「回忆」
-            - 切项目时图谱让路给会话消息；空闲再建 WebGL；流式回复淡入
+            - Obsidian 式分层：节点统一尺寸，用灰度区分实体核 / 会话卫星 / 过程脚手架
+            - 会话命名：优先意图标题，避免显示「会话」；弱标题（继续/你好）不覆盖已有好标题
+            - 抽取即使 quality=low 也输出 session_intent，减少「未命名会话」
+            - 占位标题不参与同语义聚合；搜索结果同步用 intent 展示
+            - 沉淀队列进度提示、增量合并节点、相机聚焦体验优化
 
             ## 说明
 

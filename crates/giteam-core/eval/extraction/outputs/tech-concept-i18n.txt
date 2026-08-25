@@ -1,0 +1,93 @@
+{
+  "session_intent": "调研替换 sigma.js 以解决树图渲染慢",
+  "quality": "medium",
+  "entities": [
+    {
+      "id": "keep-sigmajs-layout-to-worker",
+      "type": "decision",
+      "title": "保留 sigma.js，布局计算迁到 Web Worker",
+      "category": "library",
+      "scenario": "树图渲染太慢，调研是否将 sigma.js 换成 WebGL 原生方案或 pixi.js",
+      "chose": "保留 sigma.js，将 ForceAtlas2 布局计算迁移到 Web Worker",
+      "rejected": "WebGL 原生方案、pixi.js",
+      "because": "sigma.js 本身已是 WebGL 渲染，性能瓶颈在 ForceAtlas2 布局的 CPU 计算，换渲染库不能解决瓶颈",
+      "confidence": 0.9,
+      "evidence": "建议保留 sigma.js，把布局迁到 Worker；pixi.js 不解决布局瓶颈，不推荐。"
+    },
+    {
+      "id": "sigmajs-vs-webgl-native-vs-pixijs",
+      "type": "tradeoff",
+      "title": "保留 sigma.js + Worker 布局，弃用 WebGL 原生与 pixi.js",
+      "chose": "sigma.js（布局迁 Worker）",
+      "rejected": "WebGL 原生方案、pixi.js",
+      "because": "sigma.js 已用 WebGL 渲染，瓶颈是 ForceAtlas2 的 CPU 布局计算，pixi.js 不解决布局瓶颈",
+      "confidence": 0.9,
+      "evidence": "sigma.js 本身已是 WebGL 渲染，瓶颈在 ForceAtlas2 布局的 CPU 计算。"
+    },
+    {
+      "id": "sigma-js",
+      "type": "tech_concept",
+      "title": "sigma.js 图渲染库",
+      "confidence": 0.95,
+      "evidence": "调研一下能不能把 sigma.js 换成 WebGL 原生的方案"
+    },
+    {
+      "id": "pixi-js",
+      "type": "tech_concept",
+      "title": "pixi.js 渲染引擎",
+      "confidence": 0.9,
+      "evidence": "或者上 pixi.js"
+    },
+    {
+      "id": "forceatlas2-layout",
+      "type": "tech_concept",
+      "title": "ForceAtlas2 力导向布局算法",
+      "confidence": 0.95,
+      "evidence": "瓶颈在 ForceAtlas2 布局的 CPU 计算"
+    },
+    {
+      "id": "open-task-layout-to-worker",
+      "type": "open_task",
+      "title": "将 ForceAtlas2 布局计算迁移到 Web Worker",
+      "confidence": 0.7,
+      "evidence": "建议保留 sigma.js，把布局迁到 Worker"
+    }
+  ],
+  "relations": [
+    {
+      "type": "decided",
+      "subject": "keep-sigmajs-layout-to-worker",
+      "object": "sigma-js",
+      "confidence": 0.9,
+      "evidence": "建议保留 sigma.js，把布局迁到 Worker"
+    },
+    {
+      "type": "rationale",
+      "subject": "sigmajs-vs-webgl-native-vs-pixijs",
+      "object": "keep-sigmajs-layout-to-worker",
+      "confidence": 0.9,
+      "evidence": "pixi.js 不解决布局瓶颈，不推荐。"
+    },
+    {
+      "type": "involves",
+      "subject": "keep-sigmajs-layout-to-worker",
+      "object": "forceatlas2-layout",
+      "confidence": 0.85,
+      "evidence": "瓶颈在 ForceAtlas2 布局的 CPU 计算"
+    },
+    {
+      "type": "involves",
+      "subject": "sigmajs-vs-webgl-native-vs-pixijs",
+      "object": "pixi-js",
+      "confidence": 0.85,
+      "evidence": "pixi.js 不解决布局瓶颈，不推荐。"
+    },
+    {
+      "type": "involves",
+      "subject": "open-task-layout-to-worker",
+      "object": "forceatlas2-layout",
+      "confidence": 0.7,
+      "evidence": "建议保留 sigma.js，把布局迁到 Worker"
+    }
+  ]
+}

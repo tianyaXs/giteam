@@ -1,0 +1,20 @@
+{
+  "name": "lifecycle-seed-task",
+  "note": "通用前置：沉淀一条可被 closes 的 open_task（小屏适配，与业务域无关）",
+  "input": {
+    "user_text": "桌面端主流程差不多了，不过小屏/移动端布局适配还没做，记一下后续要补。",
+    "assistant_text": "记下开放任务：小屏布局适配未完成。本轮桌面端主流程已可用。",
+    "file_paths": ["src/ui/main_panel.tsx"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "open_task",
+        "slug_contains": "mobile",
+        "props_required": ["evidence"]
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 6
+  }
+}

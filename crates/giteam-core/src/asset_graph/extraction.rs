@@ -1,28 +1,34 @@
-//! 语义抽取管道：turn 完成后异步旁路 completion，把实体/关系写进图谱。
+//! 语义抽取管道：turn 入队后由 [`super::stage1`] 在 idle/startup 批处理，
+//! 把实体/关系写进图谱（对齐 Codex memories Phase 1：deferred + no-op）。
 //!
-//! 流程（设计文档 §3 第二版 / M4 的落地）：
+//! 流程（设计文档 §3 / M4，经 Codex 式改造）：
 //! 1. `ExtractionInput` 在 turn flush 时从累积器收集：用户意图 + 助手结论
 //!    + 工具动作摘要（edit 的文件 / bash 的命令 / 错误首行）——不喂原始
 //!    工具输出，控制 token 成本。
-//! 2. `spawn_extraction` 组装 prompt（注入图中已有实体以保 slug 稳定），经
-//!    `SubagentHost::run_extraction_completion` 起 **ephemeral 无工具** 一次
-//!    LLM 调用（非完整子代理会话）；经 `MemoryExtractionPublisher` 发
-//!    `memory.extraction.*` 供 UI。
+//! 2. 热路径只 [`super::stage1::enqueue_job`]（真空 turn 不入队）；
+//!    **是否值得沉淀由 Stage-1 抽取 agent 判定**（minimum-signal / no-op），
+//!    不用寒暄正则替模型做主。Stage-1 worker 调 [`run_extraction_job`]：
+//!    组装 prompt → ephemeral 无工具 completion。默认 Silent（不绑父 run UI）；
+//!    空产出 = `NoOutput`。
 //! 3. 完成后 `parse_extraction` 解析 summary JSON → `write_batch` 入图。
-//!    任何失败（JSON 坏 / host 无 / 超时）不阻断主流程（§7 失败隔离），
-//!    但会发 `memory.extraction.failed`。
+//!    任何失败不阻断主流程（§7 失败隔离）。
 //!
-//! 幂等：turn 节点 props 标 `semExtracted`，回放/重复 flush 不重抽。
+//! 幂等：turn 节点 props 标 `semExtracted` + `extraction_jobs` durable claim。
 //! 抽取质量：同一 EXTRACT_ROLE_RULES、父会话同模型；slug 稳定靠 known-entities 注入。
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::semantic::{self, ExtractionAnchors};
 use super::store;
-use crate::pi_agent::{ExtractionCompletionRequest, SubagentHost};
+use crate::pi_agent::{ExtractionCompletionFallback, ExtractionCompletionRequest, SubagentHost};
+
+/// 抽取子代理会话的首行用户消息前缀：这类会话是管道内部产物，
+/// 不进图谱（live 已拦，回放/查询层据此兜底）。
+pub const EXTRACTION_USER_PROMPT_PREFIX: &str = "Extract semantic entities and relations";
 
 /// 单次抽取的输入（turn 级摘要）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtractionInput {
     pub session_id: String,
     pub run_id: String,
@@ -40,32 +46,62 @@ pub struct ExtractionInput {
     pub error_lines: Vec<String>,
     pub timestamp_ms: u64,
     pub sequence: u64,
+    /// 仓库根（Stage-1 延迟跑时父 session 可能已销毁）。
+    #[serde(default)]
+    pub repo_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 impl ExtractionInput {
-    /// 无语义价值的内容直接跳过（空 turn / 纯寒暄），省一次 LLM 调用。
-    /// 短用户消息（"继续"/"好" 等 steer）本身不够格，但助手有实质产出或
-    /// 动了文件时仍值得抽——否则多轮 steer 会话的语义层会大面积缺失。
+    /// 真空 turn（无文本、无文件、无命令）→ 不入队。
+    /// 有内容一律入队；值不值得记交给 Stage-1 抽取 agent（Codex no-op 门控）。
     #[must_use]
     pub fn worth_extracting(&self) -> bool {
-        let has_content = !self.user_text.trim().is_empty()
+        !self.user_text.trim().is_empty()
             || !self.assistant_text.trim().is_empty()
-            || !self.file_keys.is_empty();
-        if !has_content {
-            return false;
-        }
-        if self.user_text.trim().chars().count() > 4 {
-            return true;
-        }
-        self.assistant_text.trim().chars().count() > 40 || !self.file_keys.is_empty()
+            || !self.file_keys.is_empty()
+            || !self.commands.is_empty()
+    }
+
+    /// 是否应进入 Stage-1 队列（= 非真空；价值判定不在此层）。
+    #[must_use]
+    pub fn should_enqueue(&self) -> bool {
+        self.worth_extracting()
     }
 
     /// 组装抽取 prompt（附实体边界由系统提示承载，此处只给数据）。
-    /// `known_entities` 为图中已有语义实体（`type\tid\ttitle` 行），用于 slug 复用。
     #[must_use]
     pub fn build_prompt(&self, known_entities: &[String]) -> String {
         let mut lines = vec![
-            "Extract semantic entities and relations from this coding-agent turn. Reply with the JSON object only.".to_string(),
+            format!("{EXTRACTION_USER_PROMPT_PREFIX} from this coding-agent turn. Reply with the JSON object only."),
+            String::new(),
+            "## Quality grade (LLM judgment — not keyword lists)".to_string(),
+            "Set top-level \"quality\": \"high\" | \"medium\" | \"low\" and optional \"priority\": \
+             \"high\" | \"normal\" | \"low\"."
+                .to_string(),
+            "- low: no durable repo knowledge (pure social chatter, empty ack). Return empty \
+             entities/relations, quality=low — but ALWAYS still emit session_intent as a short graph-node title for this turn."
+                .to_string(),
+            "- medium: some durable facts/decisions worth storing; write entities; do not treat as \
+             urgent."
+                .to_string(),
+            "- high (or priority=high): important decisions/preferences/repo facts a future agent \
+             should see prominently."
+                .to_string(),
+            "If the same social theme is worth a durable concept (e.g. recurring greeting pattern), \
+             you MAY emit a tech_concept/open_task with a clear title — still set quality honestly."
+                .to_string(),
+            String::new(),
+            "## Minimum-signal gate (Codex-style)".to_string(),
+            "Ask: will a future agent plausibly act better because of what you extract?".to_string(),
+            "If NO — return {\"entities\":[],\"relations\":[],\"quality\":\"low\"} and \
+             STILL emit session_intent (title only). Reply length is never evidence of extractable content."
+                .to_string(),
             String::new(),
             "## User intent".to_string(),
             snippet(&self.user_text, 1200),
@@ -100,13 +136,37 @@ impl ExtractionInput {
         lines.push(
             "\nRemember: entity types decision/feature/module/tech_concept/error_pattern/api/tradeoff/open_task; \
              relation subjects/objects may be entity slugs, the file paths above, or \"session\". \
+             Emit entity↔entity relations when concepts are related (do not invent). \
+             When you emit 2+ entities, include at least one typed relation linking them \
+             (do not leave co-mentioned concepts as orphans). \
              Every entity needs a human-readable title (never the slug) and every entity/relation \
              must carry \"confidence\" (0.0-1.0) and \"evidence\" \
-             (a verbatim quote copied exactly from the text above, <= 100 chars). \
-             Prefer dense relations (decided/rationale/implements/located_in/affects/pattern_of). \
-             Also output a top-level \"session_intent\": one concise line (<= 40 chars, same \
-             language as the user) distilling what the user wants in this turn — resolve \
-             shorthand like \"继续\" using the context, never copy the raw message."
+             (a verbatim quote copied exactly from the text above, <= 100 chars — required; \
+             fabricated evidence is discarded; omit the entity rather than inventing evidence). \
+             Prefer dense, typed relations \
+             (decided/rationale/implements/located_in/affects/pattern_of/involves/supersedes/closes). \
+             Prefer reusing ## Existing entities (and near-duplicate titles like \"X\" vs \"X (useTimer)\") \
+             over inventing parallel slugs — same concept, one node. \
+             Schema mechanisms (not examples): \
+             decision MUST include chose/rejected/because fields — otherwise it is a feature. \
+             error_pattern MUST be anchored to code (path or compile/test failure evidence) and \
+             prefer pattern_of → file|module|feature; unanchored environment noise is dropped. \
+             open_task: ONLY for incomplete work / known issues still open. At most one per turn. \
+             Do NOT emit an open_task that merely restates a decision/feature/tradeoff already in \
+             this turn — session_intent is a label, not an automatic open_task entity. \
+             REUSE Existing-entities when content overlaps; never invent parallel slugs for the same goal. \
+             Lifecycle (Graphiti-style): conclusion flip / replacement → supersedes(new, old); \
+             open_task done/fixed → closes(closer, open_task). Reuse Existing ids; never silent overwrite. \
+             Relation schema: subjects/objects must match typed endpoints \
+             (open_task —involves→ module|feature; module/feature —located_in→ file; \
+             feature —implements→ file; error_pattern —pattern_of→ file|module|feature; \
+             closes → open_task; supersedes between decision|feature|open_task|tech_concept|tradeoff). \
+             Density: prefer 3–8 entities per turn; omit facts already implied by a kept module. \
+             Always include top-level \"quality\". ALWAYS output a top-level \"session_intent\": \
+             one concise line (<= 40 chars, same language as the user) naming this turn for the \
+             memory graph — even when quality=low and entities are empty. Distill what the user \
+             wants; resolve shorthand like \"继续\" / \"好的\" from context into a concrete title; \
+             never copy opaque ids; never use placeholders like \"会话\" / \"session\"."
                 .to_string(),
         );
         lines.join("\n")
@@ -124,7 +184,6 @@ impl ExtractionInput {
             run_id: self.run_id.clone(),
             sequence: self.sequence,
             event_id: format!("extract-{}-{}", self.session_id, self.sequence),
-            // evidence 校验基准 = 模型实际看到的文本（与 build_prompt 同一套截断）。
             source_text: format!(
                 "{}\n{}",
                 snippet(&self.user_text, 1200),
@@ -134,27 +193,41 @@ impl ExtractionInput {
     }
 }
 
-// ---------- 防自递归注册表 ----------
-// extract 子代理自身的事件流也会经 publish_event 进图（过程层数据照收，
-// 有价值），但它的 turn 完成不得再触发抽取——否则指数爆炸。
-// run_subagent 创建 extract 子会话时注册 session id，ingest_live 查询。
+/// UI 事件发布策略。Stage-1 默认 Silent（不绑父 run，聊天流不闪「记录中」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractionPublishMode {
+    /// 不发 `memory.extraction.*`。
+    Silent,
+    /// 发完整 started/completed/failed（仅遗留/调试路径）。
+    Full,
+    /// 仅在有实体/关系/intent 写入时发 completed（无 started 闪烁）。
+    OnWrite,
+}
 
-/// 已触发抽取的 turn key 集合（in-flight 去重）：turn flush 与 run 结束
-/// 之间事件重放/乱序时，同一 turn 只触发一次抽取调用（token 不白花；
-/// 落库本身幂等，这层只省调用）。容量上限防泄漏。
+/// 单次 Stage-1 job 结果。
+#[derive(Debug, Clone)]
+pub enum ExtractionJobOutcome {
+    Wrote {
+        entity_count: usize,
+        relation_count: usize,
+        intent: Option<String>,
+    },
+    /// 有效跑完但无沉淀（Codex `succeeded_no_output`）。
+    NoOutput,
+    Failed(String),
+}
+
 fn triggered_turns() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static TURNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
     TURNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
-/// 登记该 turn 的抽取：首次登记（应触发）返回 true；已登记过（重放/乱序
-/// 导致的重复触发）返回 false。容量超限时淘汰旧条目（落库幂等兜底，
-/// 最坏情况是多花一次调用，不会重复写）。
+/// 登记该 turn 的抽取：首次登记（应触发）返回 true；已登记过返回 false。
 #[must_use]
 pub fn claim_turn_extraction(turn_key: &str) -> bool {
     let Ok(mut set) = triggered_turns().lock() else {
-        return true; // 锁异常：宁可跳过，不重复花钱
+        return true;
     };
     if set.len() > 512 {
         let drop: Vec<String> = set.iter().take(256).cloned().collect();
@@ -171,11 +244,10 @@ fn extract_sessions() -> &'static std::sync::Mutex<std::collections::HashSet<Str
     SESSIONS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
-/// 注册一个 extract 子代理的 session id（service.rs 创建子会话时调用）。
+/// 注册一个 extract 子代理的 session id。
 pub fn register_extract_session(session_id: &str) {
     if let Ok(mut set) = extract_sessions().lock() {
         set.insert(session_id.to_string());
-        // 防泄漏：只保留最近 64 个（抽取会话是一次性的）。
         if set.len() > 64 {
             let oldest: Vec<String> = set.iter().take(set.len() - 64).cloned().collect();
             for id in oldest {
@@ -188,117 +260,241 @@ pub fn register_extract_session(session_id: &str) {
 /// 该 session 是否为 extract 子代理。
 #[must_use]
 pub fn is_extract_session(session_id: &str) -> bool {
-    extract_sessions().lock().map(|set| set.contains(session_id)).unwrap_or(false)
+    extract_sessions()
+        .lock()
+        .map(|set| set.contains(session_id))
+        .unwrap_or(false)
 }
 
-/// 异步发起旁路抽取 completion → 解析 → 入图。
-/// 返回 join handle 供测试等待；生产路径 fire-and-forget。
-/// 可观测性：每个失败分支和最终结果都记 stderr（失败隔离 = 不影响主流程，
-/// 不等于无迹可查）；空批次也打 semExtracted 标——「跑过但无产出」与
-/// 「从未触发」必须在库里可区分。
+/// 异步旁路抽取（遗留兼容：Full UI）。生产路径请走 [`super::stage1`]。
 pub fn spawn_extraction(
     host: std::sync::Arc<dyn SubagentHost>,
     input: ExtractionInput,
     db_path: std::path::PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let extraction_id = format!("asset-graph-extract-{}", input.sequence);
-        let publisher = host.memory_extraction_publisher(&input.session_id, &extraction_id);
+        let repo_path = if input.repo_path.trim().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            std::path::PathBuf::from(&input.repo_path)
+        };
+        let _ = run_extraction_job(host, input, db_path, repo_path, ExtractionPublishMode::Full).await;
+    })
+}
+
+fn default_extraction_provider() -> Option<String> {
+    std::env::var("GITEAM_EXTRACT_PROVIDER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("GITEAM_RP_PROVIDER").ok().filter(|s| !s.trim().is_empty()))
+}
+
+fn default_extraction_model() -> Option<String> {
+    std::env::var("GITEAM_EXTRACT_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("GITEAM_RP_MODEL").ok().filter(|s| !s.trim().is_empty()))
+}
+
+/// 执行一次抽取 job（Stage-1 worker 调用）。
+pub async fn run_extraction_job(
+    host: std::sync::Arc<dyn SubagentHost>,
+    input: ExtractionInput,
+    db_path: std::path::PathBuf,
+    repo_path: std::path::PathBuf,
+    publish: ExtractionPublishMode,
+) -> ExtractionJobOutcome {
+    let extraction_id = format!("asset-graph-extract-{}", input.sequence);
+    let publisher = match publish {
+        ExtractionPublishMode::Silent => None,
+        ExtractionPublishMode::Full | ExtractionPublishMode::OnWrite => {
+            host.memory_extraction_publisher(&input.session_id, &extraction_id)
+        }
+    };
+    if publish == ExtractionPublishMode::Full {
         if let Some(pubber) = &publisher {
             pubber.started();
         }
-        let started = std::time::Instant::now();
-        let known = load_known_entities(&db_path);
-        let request = ExtractionCompletionRequest {
-            parent_session_id: input.session_id.clone(),
-            extraction_id: extraction_id.clone(),
-            prompt: input.build_prompt(&known),
-        };
-        let result = match host.run_extraction_completion(request).await {
-            Ok(result) => result,
-            Err(error) => {
-                eprintln!(
-                    "[asset-graph] extraction completion failed (session {}): {error}",
-                    input.session_id
-                );
+    }
+    let started = std::time::Instant::now();
+    let known_catalog = load_entity_catalog(&db_path);
+    let known = format_known_entities(&known_catalog);
+    let fallback_repo = if input.repo_path.trim().is_empty() {
+        repo_path.to_string_lossy().into_owned()
+    } else {
+        input.repo_path.clone()
+    };
+    let fallback_provider = input.provider.clone().or_else(default_extraction_provider);
+    let fallback_model = input.model.clone().or_else(default_extraction_model);
+    let request = ExtractionCompletionRequest {
+        parent_session_id: input.session_id.clone(),
+        extraction_id: extraction_id.clone(),
+        prompt: input.build_prompt(&known),
+        fallback: Some(ExtractionCompletionFallback {
+            repo_path: fallback_repo,
+            provider: fallback_provider,
+            model: fallback_model,
+            thinking: input.thinking.clone(),
+        }),
+    };
+    let result = match host.run_extraction_completion(request).await {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!(
+                "[asset-graph] extraction completion failed (session {}): {error}",
+                input.session_id
+            );
+            if publish != ExtractionPublishMode::Silent {
                 if let Some(pubber) = &publisher {
                     let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
                     pubber.failed(error.to_string(), elapsed_ms);
                 }
-                return;
             }
-        };
-        let anchors = input.anchors();
-        let extraction = semantic::parse_extraction(&result.summary, &anchors);
-        let db = match store::open(&db_path) {
-            Ok(db) => db,
-            Err(error) => {
-                eprintln!("[asset-graph] extraction db open failed: {error}");
+            return ExtractionJobOutcome::Failed(error.to_string());
+        }
+    };
+    let anchors = input.anchors();
+    let extraction = semantic::parse_extraction(&result.summary, &anchors, &known_catalog);
+    let db = match store::open(&db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("[asset-graph] extraction db open failed: {error}");
+            if publish != ExtractionPublishMode::Silent {
                 if let Some(pubber) = &publisher {
                     let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
                     pubber.failed(format!("db open failed: {error}"), elapsed_ms);
                 }
-                return;
             }
-        };
-        if !extraction.batch.is_empty() {
-            if let Err(error) = store::write_batch(&db, &extraction.batch) {
-                eprintln!("[asset-graph] extraction write failed: {error}");
+            return ExtractionJobOutcome::Failed(format!("db open failed: {error}"));
+        }
+    };
+    // 无论是否落实体，都把 LLM 质量档写回 session（compact 过滤 / 摘要用）。
+    let _ = db.execute(
+        "UPDATE nodes SET props = json_set(
+             json_set(COALESCE(props, '{}'), '$.quality', ?1),
+             '$.priority', ?2)
+         WHERE key = ?3 AND type = 'session'",
+        rusqlite::params![
+            extraction.quality.as_str(),
+            extraction.priority.as_str(),
+            anchors.session_key
+        ],
+    );
+    if extraction.should_write_semantics() && !extraction.batch.is_empty() {
+        if let Err(error) = store::write_batch(&db, &extraction.batch) {
+            eprintln!("[asset-graph] extraction write failed: {error}");
+            if publish != ExtractionPublishMode::Silent {
                 if let Some(pubber) = &publisher {
                     let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
                     pubber.failed(format!("write failed: {error}"), elapsed_ms);
                 }
-                return;
+            }
+            return ExtractionJobOutcome::Failed(format!("write failed: {error}"));
+        }
+    }
+    mark_turn_extracted(&db, input.turn_key.as_deref());
+    let mut titled = false;
+    if let Some(intent) = extraction.intent.as_deref().filter(|s| !s.trim().is_empty()) {
+        // 强 intent 覆盖；弱 intent（如「继续」）不覆盖已有好标题。
+        titled = try_apply_session_intent(
+            &db,
+            &anchors.session_key,
+            input.turn_key.as_deref(),
+            intent,
+        );
+    }
+    // LLM 省略 session_intent 时：用用户原文确定性回填，避免落成「未命名会话」。
+    if !titled {
+        if let Some(fallback) = fallback_session_title(&input.user_text) {
+            if session_title_is_weak(&db, &anchors.session_key) {
+                apply_intent_labels(&db, &anchors.session_key, input.turn_key.as_deref(), &fallback);
             }
         }
-        mark_turn_extracted(&db, input.turn_key.as_deref());
-        if let Some(intent) = &extraction.intent {
-            let _ = db.execute(
-                "UPDATE nodes SET props = json_set(props, '$.intent', ?1)
-                 WHERE key = ?2 AND type = 'session'",
-                rusqlite::params![intent, anchors.session_key],
-            );
-        }
-        let elapsed_ms = started
-            .elapsed()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX)
-            .max(result.elapsed_ms);
-        if let Some(pubber) = &publisher {
-            let entities = extraction
-                .entity_summaries
-                .iter()
-                .map(|(etype, title)| crate::pi_agent::MemoryExtractionEntity {
-                    entity_type: etype.clone(),
-                    title: title.clone(),
-                })
-                .collect();
-            pubber.completed(
-                extraction.entity_count as u32,
-                extraction.relation_count as u32,
-                extraction.intent.clone(),
-                entities,
-                elapsed_ms,
-            );
+    }
+    let elapsed_ms = started
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+        .max(result.elapsed_ms);
+    let wrote = extraction.should_write_semantics()
+        && (extraction.entity_count > 0
+            || extraction.relation_count > 0
+            || extraction.intent.as_ref().is_some_and(|s| !s.trim().is_empty()));
+    // 仅高质量或高优先才发记忆完成卡（低质量不渲染事件）。
+    let emit_event = wrote && extraction.should_emit_memory_event();
+    if wrote {
+        if emit_event
+            && matches!(
+                publish,
+                ExtractionPublishMode::Full | ExtractionPublishMode::OnWrite
+            )
+        {
+            if let Some(pubber) = &publisher {
+                let entities = extraction
+                    .entity_summaries
+                    .iter()
+                    .map(|(etype, title)| crate::pi_agent::MemoryExtractionEntity {
+                        entity_type: etype.clone(),
+                        title: title.clone(),
+                    })
+                    .collect();
+                pubber.completed(
+                    extraction.entity_count as u32,
+                    extraction.relation_count as u32,
+                    extraction.intent.clone(),
+                    entities,
+                    Some(extraction.quality.as_str().to_string()),
+                    Some(extraction.priority.as_str().to_string()),
+                    elapsed_ms,
+                );
+            }
         }
         eprintln!(
-            "[asset-graph] semantic extraction: +{} entities, +{} relations (session {})",
-            extraction.entity_count, extraction.relation_count, input.session_id
+            "[asset-graph] semantic extraction: +{} entities, +{} relations quality={} (session {})",
+            extraction.entity_count,
+            extraction.relation_count,
+            extraction.quality.as_str(),
+            input.session_id
         );
-    })
+        ExtractionJobOutcome::Wrote {
+            entity_count: extraction.entity_count,
+            relation_count: extraction.relation_count,
+            intent: extraction.intent,
+        }
+    } else {
+        if publish == ExtractionPublishMode::Full {
+            if let Some(pubber) = &publisher {
+                pubber.completed(0, 0, None, Vec::new(), None, None, elapsed_ms);
+            }
+        }
+        eprintln!(
+            "[asset-graph] semantic extraction: no-op quality={} (session {})",
+            extraction.quality.as_str(),
+            input.session_id
+        );
+        ExtractionJobOutcome::NoOutput
+    }
 }
 
-/// 从图中读取近期语义实体，格式 `type\tslug\ttitle`，供 prompt 复用 id。
-fn load_known_entities(db_path: &std::path::Path) -> Vec<String> {
+/// 加载语义实体目录（供 resolve + prompt）。
+/// 默认排除已废止实体（superseded_by / closed_by / status 终态），对齐
+/// Graphiti「当前有效事实」视图；历史仍在图中可经边追溯。
+pub fn load_entity_catalog(db_path: &std::path::Path) -> Vec<crate::asset_graph::entity::CatalogEntity> {
+    use crate::asset_graph::entity::{catalog_from_node, is_retired_status, CatalogEntity};
+
     let Ok(db) = store::open(db_path) else {
         return Vec::new();
     };
     let Ok(mut stmt) = db.prepare(
-        "SELECT type, key, label FROM nodes
+        "SELECT type, key, label, props FROM nodes
          WHERE key LIKE 'sem:%'
+           AND id NOT IN (
+             SELECT DISTINCT src_id FROM edges
+             WHERE type IN ('sem/superseded_by', 'sem/closed_by')
+           )
          ORDER BY last_seen_ms DESC
-         LIMIT 40",
+         LIMIT 120",
     ) else {
         return Vec::new();
     };
@@ -306,32 +502,149 @@ fn load_known_entities(db_path: &std::path::Path) -> Vec<String> {
         let etype: String = row.get(0)?;
         let key: String = row.get(1)?;
         let label: String = row.get(2)?;
-        Ok((etype, key, label))
+        let props_text: String = row.get(3)?;
+        Ok((etype, key, label, props_text))
     });
     let Ok(rows) = rows else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let mut out: Vec<CatalogEntity> = Vec::new();
     for row in rows.flatten() {
-        let (etype, key, label) = row;
-        // key = sem:{type}:{slug} → 取 slug
-        let slug = key
-            .strip_prefix("sem:")
-            .and_then(|rest| rest.split_once(':'))
-            .map(|(_, slug)| slug)
-            .unwrap_or(key.as_str());
-        let title = if label.trim().is_empty() {
-            slug.to_string()
-        } else {
-            label
-        };
-        out.push(format!("{etype}\t{slug}\t{title}"));
+        let (etype, key, label, props_text) = row;
+        let props: serde_json::Value =
+            serde_json::from_str(&props_text).unwrap_or_else(|_| serde_json::json!({}));
+        if is_retired_status(&props) {
+            continue;
+        }
+        out.push(catalog_from_node(&etype, &key, &label, &props));
+        if out.len() >= 80 {
+            break;
+        }
     }
     out
 }
 
-/// turn 节点打 `semExtracted` 标记（幂等：回放不重抽）。
-fn mark_turn_extracted(db: &rusqlite::Connection, turn_key: Option<&str>) {
+/// prompt 用：`type\tslug\ttitle`（行为兼容旧 known_entities）。
+#[must_use]
+pub fn format_known_entities(catalog: &[crate::asset_graph::entity::CatalogEntity]) -> Vec<String> {
+    catalog
+        .iter()
+        .take(40)
+        .map(|e| {
+            let slug = e
+                .key
+                .strip_prefix("sem:")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, slug)| slug)
+                .unwrap_or(e.key.as_str());
+            let title = if e.label.trim().is_empty() {
+                slug
+            } else {
+                e.label.as_str()
+            };
+            format!("{}\t{slug}\t{title}", e.entity_type)
+        })
+        .collect()
+}
+
+/// 占位/弱标题：需要被 session_intent 或用户原文覆盖。
+fn is_weak_session_title(label: &str) -> bool {
+    let t = label.trim();
+    if t.is_empty() || t.chars().count() < 2 {
+        return true;
+    }
+    if t == "会话" || t.eq_ignore_ascii_case("session") || t == "未命名会话" {
+        return true;
+    }
+    // 口头承接/寒暄：留给 LLM session_intent 提炼，不当作最终标题锁死。
+    const WEAK: &[&str] = &[
+        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗",
+        "ok", "okay", "yes", "y", "hi", "hello", "thanks", "thx",
+    ];
+    let lower = t.to_lowercase();
+    WEAK.iter().any(|w| lower == *w || t == *w)
+}
+
+fn fallback_session_title(user_text: &str) -> Option<String> {
+    let line = user_text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    let title = snippet(line, 40);
+    if is_weak_session_title(&title) {
+        return None;
+    }
+    Some(title)
+}
+
+fn session_title_is_weak(db: &rusqlite::Connection, session_key: &str) -> bool {
+    let row: Option<(String, String)> = db
+        .query_row(
+            "SELECT label, props FROM nodes WHERE key = ?1 AND type = 'session' LIMIT 1",
+            [session_key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((label, props)) = row else {
+        return true;
+    };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&props) {
+        if let Some(intent) = v.get("intent").and_then(|x| x.as_str()) {
+            if !is_weak_session_title(intent) {
+                return false;
+            }
+        }
+    }
+    is_weak_session_title(&label)
+}
+
+/// 写回会话标题，并决定是否跳过用户原文兜底。
+///
+/// - 强 `session_intent`：始终写回，返回 true
+/// - 弱 intent（「继续」「好的」等）：仅当当前标题也弱时写回；若已有好标题则保留并返回 true（跳过兜底）
+/// - 空 intent：返回 false，允许走用户原文兜底
+fn try_apply_session_intent(
+    db: &rusqlite::Connection,
+    session_key: &str,
+    turn_key: Option<&str>,
+    intent: &str,
+) -> bool {
+    let intent = intent.trim();
+    if intent.is_empty() {
+        return false;
+    }
+    if is_weak_session_title(intent) && !session_title_is_weak(db, session_key) {
+        // 例如本轮 LLM 把「继续」当成 session_intent，不能盖掉「修复登录超时」。
+        return true;
+    }
+    apply_intent_labels(db, session_key, turn_key, intent);
+    true
+}
+
+/// 将 LLM 提炼的 session_intent 写回 session/turn 的 label 与 props.intent。
+pub fn apply_intent_labels(
+    db: &rusqlite::Connection,
+    session_key: &str,
+    turn_key: Option<&str>,
+    intent: &str,
+) {
+    let label = snippet(intent, 80);
+    let _ = db.execute(
+        "UPDATE nodes SET label = ?1, props = json_set(COALESCE(props, '{}'), '$.intent', ?2)
+         WHERE key = ?3 AND type = 'session'",
+        rusqlite::params![label, intent, session_key],
+    );
+    if let Some(key) = turn_key {
+        let _ = db.execute(
+            "UPDATE nodes SET label = ?1, props = json_set(COALESCE(props, '{}'), '$.intent', ?2)
+             WHERE key = ?3 AND type = 'turn'",
+            rusqlite::params![label, intent, key],
+        );
+    }
+}
+
+/// turn 节点打 `semExtracted` 标记（幂等）。
+pub fn mark_turn_extracted(db: &rusqlite::Connection, turn_key: Option<&str>) {
     let Some(key) = turn_key else { return };
     let _ = db.execute(
         "UPDATE nodes SET props = json_set(props, '$.semExtracted', json('true'))
@@ -340,7 +653,7 @@ fn mark_turn_extracted(db: &rusqlite::Connection, turn_key: Option<&str>) {
     );
 }
 
-/// turn 是否已抽过（回放增量判断用）。
+/// turn 是否已抽过。
 #[must_use]
 pub fn turn_already_extracted(db: &rusqlite::Connection, turn_key: &str) -> bool {
     db.query_row(
@@ -362,8 +675,7 @@ fn snippet(text: &str, max_chars: usize) -> String {
     trimmed.chars().take(max_chars).collect()
 }
 
-/// 从 Value 工具入参提取文件相对路径（extraction input 收集用，与 extract.rs 的
-/// extract_paths_from_input 保持同一套工具名单）。
+/// 从 Value 工具入参提取文件相对路径。
 #[must_use]
 pub fn file_paths_from_input(tool_name: &str, input: &Value) -> Vec<String> {
     if !matches!(tool_name, "edit" | "write" | "read" | "multiedit" | "create" | "ls") {
@@ -397,37 +709,60 @@ mod tests {
             error_lines: vec![],
             timestamp_ms: 1,
             sequence: 5,
+            repo_path: "/repo".into(),
+            provider: None,
+            model: None,
+            thinking: None,
         }
     }
 
     #[test]
-    fn worth_extracting_filters_chitchat() {
-        assert!(input().worth_extracting());
-        // 纯寒暄：短用户消息 + 无实质产出 → 不抽。
-        let mut trivial = input();
-        trivial.user_text = "hi".into();
-        trivial.assistant_text = "在的".into();
-        trivial.file_keys.clear();
-        trivial.commands.clear();
-        assert!(!trivial.worth_extracting());
-        // 短 steer 消息但有实质产出（改了文件）→ 抽。
-        let mut steer = input();
-        steer.user_text = "继续".into();
-        assert!(steer.worth_extracting());
-        let mut empty = input();
-        empty.user_text = String::new();
-        empty.assistant_text = String::new();
-        empty.file_keys.clear();
-        assert!(!empty.worth_extracting());
+    fn hello_still_enqueued_for_agent_gate() {
+        // 寒暄也入队：值不值得记由 Stage-1 抽取 agent no-op，不用正则替模型判定。
+        let mut hi = input();
+        hi.user_text = "你好".into();
+        hi.assistant_text = "你好！有什么可以帮你的？".into();
+        hi.file_keys.clear();
+        hi.commands.clear();
+        assert!(hi.worth_extracting());
+        assert!(hi.should_enqueue());
     }
 
     #[test]
-    fn prompt_carries_data_sections() {
+    fn steer_with_files_still_enqueued() {
+        let mut steer = input();
+        steer.user_text = "继续".into();
+        assert!(steer.should_enqueue());
+    }
+
+    #[test]
+    fn thanks_still_enqueued_for_agent_gate() {
+        let mut thanks = input();
+        thanks.user_text = "谢谢，今天辛苦啦，回复得真快".into();
+        thanks.assistant_text = "不客气".into();
+        thanks.file_keys.clear();
+        thanks.commands.clear();
+        assert!(thanks.should_enqueue());
+    }
+
+    #[test]
+    fn vacuum_not_worth() {
+        let mut empty = input();
+        empty.user_text.clear();
+        empty.assistant_text.clear();
+        empty.file_keys.clear();
+        empty.commands.clear();
+        assert!(!empty.worth_extracting());
+        assert!(!empty.should_enqueue());
+    }
+
+    #[test]
+    fn prompt_carries_gate_and_data() {
         let prompt = input().build_prompt(&[]);
+        assert!(prompt.contains("Minimum-signal"));
         assert!(prompt.contains("SQLite"));
         assert!(prompt.contains("src/store.rs"));
         assert!(prompt.contains("cargo test"));
-        assert!(prompt.contains("entity types"));
     }
 
     #[test]
@@ -452,5 +787,88 @@ mod tests {
         mark_turn_extracted(&db, Some("turn:k"));
         assert!(turn_already_extracted(&db, "turn:k"));
         assert!(!turn_already_extracted(&db, "turn:missing"));
+    }
+
+    #[test]
+    fn weak_session_intent_does_not_overwrite_strong_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store::open(&dir.path().join("g.db")).unwrap();
+        store::write_batch(
+            &db,
+            &store::FactBatch {
+                nodes: vec![store::NodeFact {
+                    node_type: "session",
+                    key: "session:k".into(),
+                    label: "修复登录超时".into(),
+                    props: serde_json::json!({
+                        "sessionId": "s1",
+                        "intent": "修复登录超时"
+                    }),
+                    timestamp_ms: 1,
+                }],
+                edges: vec![],
+            },
+        )
+        .unwrap();
+
+        assert!(try_apply_session_intent(
+            &db,
+            "session:k",
+            None,
+            "继续",
+        ));
+        let (label, props): (String, String) = db
+            .query_row(
+                "SELECT label, props FROM nodes WHERE key = 'session:k' AND type = 'session'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, "修复登录超时");
+        let intent = serde_json::from_str::<serde_json::Value>(&props)
+            .unwrap()
+            .get("intent")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(intent, "修复登录超时");
+    }
+
+    #[test]
+    fn strong_session_intent_overwrites_weak_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = store::open(&dir.path().join("g.db")).unwrap();
+        store::write_batch(
+            &db,
+            &store::FactBatch {
+                nodes: vec![store::NodeFact {
+                    node_type: "session",
+                    key: "session:k".into(),
+                    label: "你好".into(),
+                    props: serde_json::json!({
+                        "sessionId": "s1",
+                        "intent": "你好"
+                    }),
+                    timestamp_ms: 1,
+                }],
+                edges: vec![],
+            },
+        )
+        .unwrap();
+
+        assert!(try_apply_session_intent(
+            &db,
+            "session:k",
+            None,
+            "修复登录超时",
+        ));
+        let label: String = db
+            .query_row(
+                "SELECT label FROM nodes WHERE key = 'session:k' AND type = 'session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(label, "修复登录超时");
     }
 }

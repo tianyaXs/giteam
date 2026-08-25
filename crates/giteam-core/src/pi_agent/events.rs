@@ -242,6 +242,11 @@ pub enum AgentEvent {
         /// 入图实体摘要（type + title），供时间线展开预览；上限由发送方截断。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         entities: Vec<MemoryExtractionEntity>,
+        /// LLM 质量档（前端与后端门控对齐；仅 high / priority-high 应出卡）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quality: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<String>,
         #[serde(rename = "elapsedMs")]
         elapsed_ms: u64,
     },

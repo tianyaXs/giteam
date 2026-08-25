@@ -1,0 +1,30 @@
+{
+  "name": "lifecycle-closes",
+  "note": "通用机制：后续轮次完成开放任务，必须 closes 既有 open_task id",
+  "input": {
+    "user_text": "上次记的小屏布局适配，我做完了，那个 open task 可以关掉了。",
+    "assistant_text": "确认：小屏布局适配已合入 src/ui，断点与触控拖拽都通了。原先「小屏布局适配未完成」的开放任务关闭。",
+    "file_paths": [
+      "src/ui/main_panel.tsx",
+      "src/ui/responsive.tsx"
+    ]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type_any": ["decision", "feature", "open_task"],
+        "slug_contains": "mobile",
+        "props_required": ["evidence"]
+      }
+    ],
+    "relations": [
+      {
+        "type": "closes",
+        "subject_contains": "",
+        "object_contains": "mobile"
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

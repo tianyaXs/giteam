@@ -1,0 +1,64 @@
+{
+  "session_intent": "确定本地持久化方案：嵌入式 SQLite，零运维",
+  "quality": "high",
+  "priority": "high",
+  "entities": [
+    {
+      "id": "embedded-sqlite-persistence",
+      "type": "decision",
+      "title": "本地持久化选用嵌入式 SQLite",
+      "category": "architecture",
+      "scenario": "确定本地持久化存储方案",
+      "chose": "嵌入式 SQLite",
+      "rejected": "独立图数据库",
+      "because": "零运维优先",
+      "outcome": "已在 src/store.rs 用 SQLite 做主存储并开启 WAL",
+      "confidence": 0.95,
+      "evidence": "用嵌入式 SQLite，不上独立图数据库。零运维优先。"
+    },
+    {
+      "id": "sqlite",
+      "type": "tech_concept",
+      "title": "SQLite",
+      "confidence": 0.95,
+      "evidence": "在 src/store.rs 用 SQLite 做主存储，开启 WAL。"
+    },
+    {
+      "id": "local-persistence-store",
+      "type": "module",
+      "title": "本地持久化存储模块",
+      "confidence": 0.9,
+      "evidence": "在 src/store.rs 用 SQLite 做主存储，开启 WAL。"
+    }
+  ],
+  "relations": [
+    {
+      "type": "decided",
+      "subject": "embedded-sqlite-persistence",
+      "object": "sqlite",
+      "confidence": 0.95,
+      "evidence": "本地持久化先定了：用嵌入式 SQLite"
+    },
+    {
+      "type": "located_in",
+      "subject": "local-persistence-store",
+      "object": "src/store.rs",
+      "confidence": 0.95,
+      "evidence": "在 src/store.rs 用 SQLite 做主存储，开启 WAL。"
+    },
+    {
+      "type": "affects",
+      "subject": "embedded-sqlite-persistence",
+      "object": "src/store.rs",
+      "confidence": 0.9,
+      "evidence": "已按决策落地：在 src/store.rs 用 SQLite 做主存储"
+    },
+    {
+      "type": "implements",
+      "subject": "local-persistence-store",
+      "object": "embedded-sqlite-persistence",
+      "confidence": 0.9,
+      "evidence": "已按决策落地：在 src/store.rs 用 SQLite 做主存储"
+    }
+  ]
+}

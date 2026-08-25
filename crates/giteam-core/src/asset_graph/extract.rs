@@ -43,6 +43,8 @@ pub struct SessionAccumulator {
     turn_file_keys: Vec<(String, String)>,
     turn_commands: Vec<String>,
     turn_error_lines: Vec<String>,
+    /// 会话是否已观察到工具动作（文件/命令）——跨 turn 累计，用于 chitchat 标记。
+    session_had_tool_actions: bool,
     intent_recorded: bool,
 }
 
@@ -78,7 +80,10 @@ impl SessionAccumulator {
         match &envelope.event {
             AgentEvent::TurnStarted { index } => {
                 self.turn_index = *index as u64;
-                let key = turn_key(&self.session_id, self.turn_index);
+                // 必须含 run_id：每个 prompt run 的 turnIndex 都会从 0 重计，
+                // 若只按 session+index 哈希，后一次 run 会撞上第一次的 turn/job，
+                // 导致「已 done 不再入队」或长时间复用同一 pending，顶栏看不到新队列。
+                let key = turn_key(&self.session_id, &self.run_id, self.turn_index);
                 let session = session_key(&self.session_id);
                 if !self.session_base_written {
                     self.session_base_written = true;
@@ -104,7 +109,29 @@ impl SessionAccumulator {
                 self.turn_key = Some(key);
                 false
             }
-            AgentEvent::TurnCompleted { .. } => true,
+            AgentEvent::TurnCompleted { .. } => {
+                // turn 边界：用本轮用户首句作可读标签（替代裸 "turn N"）。
+                if let Some(turn_key) = self.turn_key.clone() {
+                    let user = self.turn_user_text.trim();
+                    let label = if user.is_empty() {
+                        format!("turn {}", self.turn_index)
+                    } else {
+                        snippet(user, 80)
+                    };
+                    let mut props = serde_json::json!({ "turnIndex": self.turn_index });
+                    if !user.is_empty() {
+                        props["intent"] = serde_json::json!(snippet(user, 120));
+                    }
+                    self.push_node(NodeFact {
+                        node_type: "turn",
+                        key: turn_key,
+                        label,
+                        props,
+                        timestamp_ms: envelope.timestamp_ms,
+                    });
+                }
+                true
+            }
             AgentEvent::RunCompleted | AgentEvent::RunFailed { .. } => true,
             AgentEvent::MessageCompleted { message } => {
                 self.ingest_message(message, envelope);
@@ -153,12 +180,31 @@ impl SessionAccumulator {
             }
             _ => {}
         }
+        // 空正文不进图：流式占位 / 空 Tool 结果只会变成一堆无信息的「消息」节点。
+        // 用户意图仍已写入 turn_user_text，供 turn 标签与抽取使用。
+        if text.trim().is_empty() {
+            return;
+        }
+        let role = format!("{:?}", message.role);
+        let label = {
+            let snip = snippet(&text, 80);
+            if snip.is_empty() {
+                match message.role {
+                    AgentRole::User => "用户消息".into(),
+                    AgentRole::Assistant => "助手回复".into(),
+                    AgentRole::Tool => "工具输出".into(),
+                    _ => "消息".into(),
+                }
+            } else {
+                snip
+            }
+        };
         let node = NodeFact {
             node_type: "message",
             key: message_key(&self.session_id, &message.id),
-            label: snippet(&text, 80),
+            label,
             props: serde_json::json!({
-                "role": format!("{:?}", message.role),
+                "role": role,
                 "text": snippet(&text, 2000),
                 "messageId": message.id,
             }),
@@ -180,16 +226,28 @@ impl SessionAccumulator {
         // intent 兜底只存 120 字符首句：完整提炼由 extract 子代理的
         // session_intent 写回（每轮覆盖），不再 dump 2000 字符原文。
         if message.role == AgentRole::User && !self.intent_recorded && !text.trim().is_empty() {
-            self.intent_recorded = true;
+            let title = snippet(&text, 80);
+            let weak = is_weak_user_title(&title);
+            // 弱标题（继续/你好…）先写入但不锁死，留给后续实意消息或 LLM session_intent 覆盖。
+            if !weak {
+                self.intent_recorded = true;
+            }
+            // 已发生工具动作（文件/命令）→ 保留 intent；否则标 chitchat，紧凑图聚合。
+            let has_tool_actions = self.session_had_tool_actions;
+            let mut props = serde_json::json!({
+                "sessionId": self.session_id,
+                "repoPath": self.repo_path,
+                "intent": snippet(&text, 120),
+            });
+            if !has_tool_actions {
+                // 无资产动作的会话视为闲聊：不进启动摘要、图谱聚合为闲聊组。
+                props["chitchat"] = serde_json::json!(true);
+            }
             self.push_node(NodeFact {
                 node_type: "session",
                 key: session_key(&self.session_id),
-                label: snippet(&text, 80),
-                props: serde_json::json!({
-                    "sessionId": self.session_id,
-                    "repoPath": self.repo_path,
-                    "intent": snippet(&text, 120),
-                }),
+                label: title,
+                props,
                 timestamp_ms: envelope.timestamp_ms,
             });
         }
@@ -220,7 +278,9 @@ impl SessionAccumulator {
         self.push_edge(&anchor, &tool_key, "used_tool", envelope, serde_json::json!({"toolName": tool_name}));
 
         // 资产边：从工具入参确定性地抽路径/命令。
+        let mut saw_asset = false;
         for (path, action) in extract_paths_from_input(tool_name, input) {
+            saw_asset = true;
             let normalized = normalize_file_path(&self.repo_path, &path);
             let file_key = file_key(&self.repo_path, &path);
             if !self
@@ -240,6 +300,7 @@ impl SessionAccumulator {
             self.push_edge(&tool_key, &file_key, action, envelope, serde_json::json!({}));
         }
         if let Some(command) = extract_command_from_input(tool_name, input) {
+            saw_asset = true;
             let normalized = normalize_command(&command);
             if !self.turn_commands.contains(&normalized) {
                 self.turn_commands.push(snippet(&normalized, 200));
@@ -253,6 +314,9 @@ impl SessionAccumulator {
                 timestamp_ms: envelope.timestamp_ms,
             });
             self.push_edge(&tool_key, &command_key, "executed", envelope, serde_json::json!({}));
+        }
+        if saw_asset {
+            self.session_had_tool_actions = true;
         }
     }
 
@@ -362,6 +426,10 @@ impl SessionAccumulator {
             error_lines: std::mem::take(&mut self.turn_error_lines),
             timestamp_ms,
             sequence,
+            repo_path: self.repo_path.clone(),
+            provider: None,
+            model: None,
+            thinking: None,
         }
     }
 
@@ -406,8 +474,8 @@ fn run_key(session_id: &str, run_id: &str) -> String {
     super::store::node_id("run", &format!("{session_id}/{run_id}"))
 }
 
-fn turn_key(session_id: &str, index: u64) -> String {
-    super::store::node_id("turn", &format!("{session_id}/turn/{index}"))
+fn turn_key(session_id: &str, run_id: &str, index: u64) -> String {
+    super::store::node_id("turn", &format!("{session_id}/{run_id}/turn/{index}"))
 }
 
 fn message_key(session_id: &str, message_id: &str) -> String {
@@ -418,11 +486,27 @@ fn toolcall_key(session_id: &str, tool_call_id: &str) -> String {
     super::store::node_id("tool_call", &format!("{session_id}/{tool_call_id}"))
 }
 
+
+fn is_weak_user_title(title: &str) -> bool {
+    let t = title.trim();
+    if t.is_empty() || t.chars().count() < 2 {
+        return true;
+    }
+    const WEAK: &[&str] = &[
+        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗",
+        "ok", "okay", "yes", "y", "hi", "hello", "thanks", "thx",
+    ];
+    let lower = t.to_lowercase();
+    WEAK.iter().any(|w| lower == *w || t == *w)
+}
+
 fn session_node(session_id: &str, repo_path: &str, timestamp_ms: u64) -> NodeFact {
     NodeFact {
         node_type: "session",
         key: session_key(session_id),
-        label: short(session_id),
+        // 空 label：upsert 保留已有意图标题，避免每次 TurnStarted 把「修复登录…」盖成「会话」。
+        // 展示名由首条用户消息 / LLM session_intent 回填 props.intent + label。
+        label: String::new(),
         props: serde_json::json!({"sessionId": session_id, "repoPath": repo_path}),
         timestamp_ms,
     }
@@ -676,6 +760,15 @@ mod tests {
             .expect("session with intent");
         assert_eq!(session.props["intent"], "修复登录超时");
         assert!(session.props.get("sessionId").is_some(), "sessionId must survive props merge");
+        let turn = batch
+            .nodes
+            .iter()
+            .filter(|n| n.node_type == "turn")
+            .find(|n| n.props.get("intent").is_some())
+            .or_else(|| batch.nodes.iter().rfind(|n| n.node_type == "turn"))
+            .unwrap();
+        assert_eq!(turn.label, "修复登录超时");
+        assert_eq!(turn.props["intent"], "修复登录超时");
         let file = batch.nodes.iter().find(|n| n.node_type == "file").unwrap();
         assert_eq!(file.label, "src/auth.rs");
         let edge_types: Vec<&str> = batch.edges.iter().map(|e| e.edge_type).collect();
@@ -686,6 +779,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn turn_keys_diverge_across_runs_with_same_index() {
+        let mut a = SessionAccumulator::new("/repo", "sess-1", "run-a");
+        a.ingest(&envelope(1, AgentEvent::TurnStarted { index: 0 }));
+        let key_a = a.take_extraction_input(1, 1).turn_key.clone();
+
+        let mut b = SessionAccumulator::new("/repo", "sess-1", "run-b");
+        b.ingest(&envelope(1, AgentEvent::TurnStarted { index: 0 }));
+        let key_b = b.take_extraction_input(1, 1).turn_key.clone();
+
+        assert_ne!(key_a, key_b, "same session turnIndex must not collide across runs");
+        assert!(key_a.as_ref().unwrap().starts_with("turn:"));
+        assert!(key_b.as_ref().unwrap().starts_with("turn:"));
+    }
+
     fn error_fingerprinting_and_resolution() {
         let mut acc = SessionAccumulator::new("/repo", "sess-1", "run-1");
         acc.ingest(&envelope(1, AgentEvent::TurnStarted { index: 0 }));

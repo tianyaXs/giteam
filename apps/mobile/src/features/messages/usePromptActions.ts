@@ -404,6 +404,12 @@ export function usePromptActions(params: UsePromptActionsParams) {
               `POST agent.model failed sid=${targetSessionId} model=${modelRef} ${String(modelError)}`,
               'error'
             );
+            // 与桌面端一致：setModel 失败必须阻断发送，否则 UI 显示 A、实际仍跑会话旧模型。
+            setStatus(`模型同步失败：${String(modelError)}`);
+            setSessionStatusMap((prev) => ({ ...prev, [targetSessionId]: { type: 'idle' } }));
+            abortMessageSendPerf(perf, String(modelError));
+            releaseTurnAwaiting();
+            return;
           }
           markMessageSendPerf(perf, 'send.set_model.done', {
             ms: Math.round(performance.now() - setModelStartedAt)

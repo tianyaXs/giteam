@@ -286,6 +286,7 @@ import {
   compareAgentSessionActivity,
   filterActiveAgentSessionSummaries,
   agentSessionFromSummary,
+  modelRefFromChatSession,
   sortAgentSessionSummaries,
   appendAssistantMessage,
   commitUserBeforeLiveAssistant,
@@ -479,7 +480,7 @@ const SPLASH_MIN_DISPLAY_MS = 600;
 const SPLASH_MAX_DISPLAY_MS = 8000;
 const AGENT_MODEL_VIS_KEY = "giteam.agent.model-visibility.v1";
 const AGENT_MODEL_ENABLE_KEY = "giteam.agent.model-enabled.v1";
-const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v1";
+const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v2";
 const AGENT_SESSION_PAGE_SIZE = 3;
 const AGENT_SIDEBAR_SESSION_POLL_MS = 45000;
 const AGENT_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
@@ -514,6 +515,7 @@ const AGENT_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.agent.auto-accept-permissions.
 migrateLocalStoragePrefix("giteam.opencode.model-visibility.v1", AGENT_MODEL_VIS_KEY);
 migrateLocalStoragePrefix("giteam.opencode.model-enabled.v1", AGENT_MODEL_ENABLE_KEY);
 migrateLocalStoragePrefix("giteam.opencode.model-selection.v1", AGENT_MODEL_SELECTION_KEY);
+migrateLocalStoragePrefix("giteam.agent.model-selection.v1", AGENT_MODEL_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.agent-selection.v1", AGENT_COMPOSER_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.thinking-selection.v1", AGENT_THINKING_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.auto-accept-permissions.v1", AGENT_AUTO_ACCEPT_PERMISSIONS_KEY);
@@ -590,15 +592,24 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
 function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSummary {
   const updatedAt = summary.updatedAtMs > 0 ? summary.updatedAtMs : Date.now();
   const parentId = String(summary.parentSessionId || "").trim();
+  const provider = String(summary.provider || "").trim();
+  const model = String(summary.model || "").trim();
   return {
     id: summary.sessionId,
     // 标题来自后端派生的首条用户消息摘要；空会话回退 id 前缀。
     title: String(summary.title || "").trim() || `Session ${summary.sessionId.slice(0, 8)}`,
     createdAt: updatedAt,
     updatedAt,
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
     ...(parentId ? { parentId } : {})
   };
 }
+
+function modelRefFromAgentSummary(summary: Pick<AgentSessionSummary, "provider" | "model">): string {
+  return normalizeModelRef(`${String(summary.provider || "").trim()}/${String(summary.model || "").trim()}`);
+}
+
 
 /** 收集会话内全部 ToolResult（pi 中它是独立的 tool 角色消息），按 toolCallId 索引，
  * 供 assistant 消息的 toolCall part 合并 output/error。 */
@@ -1115,9 +1126,8 @@ export function App() {
   const {
     savedModels: agentSavedModels,
     draftModel: agentDraftModel,
-    sessionModel: agentSessionModel,
     rememberSavedModel: rememberAgentSavedModel,
-    selectModel: selectAgentModel
+    selectDraftModel: selectAgentDraftModel
   } = useAgentModelSelection(`${AGENT_MODEL_SELECTION_KEY}:global`);
   const [showAgentModelPicker, setShowAgentModelPicker] = useState(false);
   const [agentModelPickerSearch, setAgentModelPickerSearch] = useState("");
@@ -1908,7 +1918,8 @@ export function App() {
   const activeAgentModel = useMemo(() => {
     return resolveActiveAgentModel({
       activeSessionId: activeAgentSessionId,
-      sessionModel: agentSessionModel,
+      // 有会话时只认会话对象上的 provider/model（服务端真相），禁止再读 localStorage 影子映射。
+      sessionModelRef: modelRefFromChatSession(activeAgentSession),
       draftModel: agentDraftModel,
       configuredModel: agentConfig?.configuredModel || "",
       savedModels: agentSavedModels,
@@ -1919,7 +1930,8 @@ export function App() {
     });
   }, [
     activeAgentSessionId,
-    agentSessionModel,
+    activeAgentSession?.provider,
+    activeAgentSession?.model,
     agentDraftModel,
     agentConfig?.configuredModel,
     agentSavedModels,
@@ -1928,6 +1940,18 @@ export function App() {
     agentEnabledModels,
     agentProviderNames
   ]);
+
+  // 活动会话的 provider/model 变化时，同步旁路 picker state（禁止再用 draft 覆盖会话真相）。
+  useEffect(() => {
+    const sid = activeAgentSessionId.trim();
+    if (!sid) return;
+    const provider = String(activeAgentSession?.provider || "").trim();
+    const model = String(activeAgentSession?.model || "").trim();
+    if (!provider || !model) return;
+    setAgentModelProvider(provider);
+    setAgentSelectedModel(model);
+  }, [activeAgentSessionId, activeAgentSession?.provider, activeAgentSession?.model]);
+
   const agentMessages = activeAgentSession?.messages ?? [];
   const agentSessionLoading = Boolean(
     hydratingActiveAgentSession
@@ -2170,6 +2194,16 @@ export function App() {
       setAgentSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
       const targetRepoId = repos.find((repo) => normalizeWorkspacePath(repo.path) === normalizeWorkspacePath(target))?.id || selectedRepo?.id || "";
       upsertSidebarAgentSession(targetRepoId, next);
+      // provider/model 已随 agentSummaryToChatSummary → agentSessionFromSummary 写入 next。
+      const createdModelRef = modelRefFromAgentSummary(createdAgent);
+      if (createdModelRef) {
+        selectAgentDraftModel(createdModelRef);
+        const parsedCreated = parseModelRef(createdModelRef);
+        if (parsedCreated) {
+          setAgentModelProvider(parsedCreated.provider);
+          setAgentSelectedModel(parsedCreated.model);
+        }
+      }
       selectAgentSession(created.id, "new");
       if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
       if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
@@ -2468,52 +2502,76 @@ export function App() {
     setAgentConfigBusy(true);
     try {
       const parsed = parseModelRef(normalized);
-      // OpenCode-like: selecting a model updates local selection (session/draft) and recent list.
-      // It does NOT write server /config.model unless explicitly requested elsewhere.
       const sid = activeAgentSessionId.trim();
-      selectAgentModel(normalized, sid);
-      if (parsed) {
+      // 无会话：只更新草稿预选（新建会话时写入服务端）。
+      // 有会话：唯一真相是 setModel 返回的 summary → 写回 AgentChatSession。
+      if (!sid) {
+        selectAgentDraftModel(normalized);
+        if (parsed) {
+          ensureProviderExists(parsed.provider);
+          setAgentModelProvider(parsed.provider);
+          setAgentSelectedModel(parsed.model);
+        }
+      } else if (parsed) {
         ensureProviderExists(parsed.provider);
-        // 备份当前选择：setModel 失败时回滚，避免 UI 显示新模型而 session 仍是旧 provider。
-        const prevProvider = agentModelProvider;
-        const prevModel = agentSelectedModel;
+        const prevProvider = String(activeAgentSession?.provider || agentModelProvider || "").trim();
+        const prevModel = String(activeAgentSession?.model || agentSelectedModel || "").trim();
+        // 乐观更新会话对象（显示立刻跟上选择）。
+        updateAgentSessionById(sid, (session) => ({
+          ...session,
+          provider: parsed.provider,
+          model: parsed.model
+        }));
         setAgentModelProvider(parsed.provider);
         setAgentSelectedModel(parsed.model);
-        if (sid) {
-          try {
-            await agentClient.setModel(sid, parsed.provider, parsed.model);
-            const piLevel = toPiThinkingLevel(
-              clampThinkingLevelToModel(
-                sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
-                agentModelInfoByRef[normalized] || null
-              ),
-              agentModelInfoByRef[normalized] || null
-            );
-            if (piLevel) await agentClient.setThinking(sid, piLevel);
-          } catch (error) {
-            // setModel 失败（如目标模型不在 pi 运行时 registry）：必须回滚 UI 并明确报错。
-            // 否则 UI 显示新模型而 session 仍用旧 provider，发送时才穿帮（如发图报旧 provider）。
-            appendAgentDebugLog(`session.setModel.error ${sid} ${String(error)}`);
-            setAgentModelProvider(prevProvider);
-            setAgentSelectedModel(prevModel);
-            throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
-          }
-          // 切换成功：清当前会话残留的运行失败错误占位（上一 provider 的报错），否则 UI 仍显示
-          // 旧 provider 的错误——例如已切到 gptluna，最后一条却仍显示 kimi-coding 报错（问题3）。
-          updateAgentSessionById(sid, (session) => {
-            let changed = false;
-            const messages = session.messages.map((message) => {
-              if (message.role === "assistant" && Boolean(message.error) && !(message.content || "").trim()) {
-                changed = true;
-                return { ...message, error: "" };
-              }
-              return message;
-            });
-            return changed ? { ...session, messages } : session;
-          });
+        selectAgentDraftModel(normalized); // 同时记住为下次新建默认
+        try {
+          const updated = await agentClient.setModel(sid, parsed.provider, parsed.model);
+          const serverProvider = String(updated.provider || parsed.provider).trim();
+          const serverModel = String(updated.model || parsed.model).trim();
+          const serverRef = normalizeModelRef(`${serverProvider}/${serverModel}`) || normalized;
+          updateAgentSessionById(sid, (session) => ({
+            ...session,
+            provider: serverProvider,
+            model: serverModel
+          }));
+          setAgentModelProvider(serverProvider);
+          setAgentSelectedModel(serverModel);
+          selectAgentDraftModel(serverRef);
+          rememberAgentSavedModel(serverRef);
+          const piLevel = toPiThinkingLevel(
+            clampThinkingLevelToModel(
+              agentSessionThinkingLevel[sid] || agentDraftThinkingLevel,
+              agentModelInfoByRef[serverRef] || agentModelInfoByRef[normalized] || null
+            ),
+            agentModelInfoByRef[serverRef] || agentModelInfoByRef[normalized] || null
+          );
+          if (piLevel) await agentClient.setThinking(sid, piLevel);
+        } catch (error) {
+          appendAgentDebugLog(`session.setModel.error ${sid} ${String(error)}`);
+          // 整段回滚到切换前的会话模型（服务端未改动）。
+          updateAgentSessionById(sid, (session) => ({
+            ...session,
+            ...(prevProvider ? { provider: prevProvider } : { provider: undefined }),
+            ...(prevModel ? { model: prevModel } : { model: undefined })
+          }));
+          setAgentModelProvider(prevProvider);
+          setAgentSelectedModel(prevModel);
+          throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
         }
+        // 切换成功：清当前会话残留的运行失败错误占位（上一 provider 的报错）。
+        updateAgentSessionById(sid, (session) => {
+          let changed = false;
+          const messages = session.messages.map((message) => {
+            if (message.role === "assistant" && Boolean(message.error) && !(message.content || "").trim()) {
+              changed = true;
+              return { ...message, error: "" };
+            }
+            return message;
+          });
+          return changed ? { ...session, messages } : session;
+        });
       }
-      // 切换模型后钳制推理档到新模型能力。
       const clamped = clampThinkingLevelToModel(
         sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
         agentModelInfoByRef[normalized] || null
@@ -3329,6 +3387,18 @@ export function App() {
     setDraftAgentSession(false);
     selectAgentSession(session.id, "click");
     bindAgentSessionToWorkspace(session.id, repo.path, repo.name);
+    void agentClient.getSession(session.id).then((summary) => {
+      const provider = String(summary.provider || "").trim();
+      const model = String(summary.model || "").trim();
+      if (!provider || !model) return;
+      updateAgentSessionById(summary.sessionId, (row) => ({ ...row, provider, model }));
+      if (activeAgentSessionIdRef.current === summary.sessionId) {
+        setAgentModelProvider(provider);
+        setAgentSelectedModel(model);
+      }
+    }).catch((error) => {
+      appendAgentDebugLog(`session.getModel.error ${session.id} ${String(error)}`);
+    });
     void loadAgentSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
   }
 
@@ -3471,8 +3541,9 @@ export function App() {
       setSidebarAgentSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
     }
     try {
-      const rows = (await agentClient.listSessions())
-        .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg))
+      const listed = (await agentClient.listSessions())
+        .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg));
+      const rows = listed
         .map(agentSummaryToChatSummary)
         // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
         .sort(compareAgentSessionActivity)
@@ -3538,8 +3609,9 @@ export function App() {
     const pendingAtRequest = pendingSidebarSessionSelectionRef.current;
     const limit = Math.max(AGENT_SESSION_PAGE_SIZE, limitArg ?? agentSessionFetchLimit);
     appendAgentDebugLog("session.list requested");
-    const rows = (await agentClient.listSessions())
-      .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath))
+    const listed = (await agentClient.listSessions())
+      .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath));
+    const rows = listed
       .map(agentSummaryToChatSummary)
       // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
       .sort(compareAgentSessionActivity)
@@ -3579,6 +3651,9 @@ export function App() {
           title: s.title.trim() || freshRow.title,
           createdAt: freshRow.createdAt,
           updatedAt: freshRow.updatedAt,
+          // 服务端 catalog 是模型真相：列表刷新时覆盖本地会话上的 provider/model。
+          ...(freshRow.provider ? { provider: freshRow.provider } : {}),
+          ...(freshRow.model ? { model: freshRow.model } : {}),
         };
       });
     const freshRows = sortAgentSessionSummaries(visibleRows.filter((s) => !prevList.some((p) => p.id === s.id))).map((s, i) => agentSessionFromSummary(s, i + 1));
@@ -3619,6 +3694,8 @@ export function App() {
           title: cached.title.trim() || session.title,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
+          ...(session.provider ? { provider: session.provider } : {}),
+          ...(session.model ? { model: session.model } : {}),
         }
         : session;
     });
@@ -3910,6 +3987,16 @@ export function App() {
     const repoIdAtCreate = selectedRepo?.id || newSessionTargetRepoId;
     upsertSidebarAgentSession(repoIdAtCreate, next);
     if (repoIdAtCreate) setExpandedProjectIds((prev) => (prev.includes(repoIdAtCreate) ? prev : [...prev, repoIdAtCreate]));
+    // provider/model 已写在 next（来自服务端 create summary）；草稿同步为下次新建默认。
+    const createdModelRef = modelRefFromAgentSummary(createdAgent) || parsedModel;
+    if (createdModelRef) {
+      selectAgentDraftModel(createdModelRef);
+      const parsedCreated = parseModelRef(createdModelRef);
+      if (parsedCreated) {
+        setAgentModelProvider(parsedCreated.provider);
+        setAgentSelectedModel(parsedCreated.model);
+      }
+    }
     selectAgentSession(created.id, "new");
     if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
     setAgentSessionThinkingLevel((prev) => ({ ...prev, [created.id]: activeAgentThinkingLevel }));
@@ -5323,8 +5410,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       setAgentConfiguredProviders(snapshot.configuredProviders);
 
       if (includeCurrentModel) {
-        // pi 没有服务端"当前模型"：选择是客户端状态，session 创建时生效，
-        // 活动 session 通过 agentClient.setModel 切换。
+        // 会话 provider/model 以服务端 catalog 为准；此处只同步草稿预选到旁路 picker state。
         const currentModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
@@ -5455,7 +5541,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const active = parseModelRef(activeAgentModel);
       if (active?.provider === pid) {
         // 当前选中模型属于已删供应商时清空，避免继续发到失效端点。
-        selectAgentModel("", activeAgentSessionId.trim());
+        const sid = activeAgentSessionId.trim();
+        if (sid) {
+          updateAgentSessionById(sid, (session) => {
+            const next = { ...session };
+            delete next.provider;
+            delete next.model;
+            return next;
+          });
+        }
         setAgentModelProvider("");
         setAgentSelectedModel("");
       }
@@ -5529,6 +5623,29 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
     // 发消息前确保当前 session hub 已同步 auto 偏好（覆盖：新建竞态、冷启动恢复会话）。
     await ensureSessionAutoAcceptPermissions(sessionId, agentAutoAcceptPermissions);
+    // 发送前把 UI 选择落到服务端会话，并以返回 summary 回写 AgentChatSession（唯一真相）。
+    const selectedParsed = parseModelRef(selectedModel);
+    if (selectedParsed) {
+      try {
+        const updated = await agentClient.setModel(sessionId, selectedParsed.provider, selectedParsed.model);
+        const serverProvider = String(updated.provider || selectedParsed.provider).trim();
+        const serverModel = String(updated.model || selectedParsed.model).trim();
+        updateAgentSessionById(sessionId, (session) => ({
+          ...session,
+          provider: serverProvider,
+          model: serverModel
+        }));
+        setAgentModelProvider(serverProvider);
+        setAgentSelectedModel(serverModel);
+      } catch (error) {
+        appendAgentDebugLog(`session.setModel.beforePrompt.error ${sessionId} ${String(error)}`);
+        restoreComposer();
+        releaseSubmitLock();
+        setError(`模型同步失败：${String(error instanceof Error ? error.message : error)}`);
+        setMessage("模型与会话不一致，请重新选择模型后再发送");
+        return;
+      }
+    }
     const modelInfo = agentModelInfoByRef[activeAgentModel] || null;
     const piThinking = toPiThinkingLevel(activeAgentThinkingLevel, modelInfo);
     if (piThinking) {
@@ -5676,6 +5793,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     let eventSubscription: { close: () => void } | null = null;
     let finalized = false;
     let finalizePromise: Promise<void> | null = null;
+    // 旁路记忆抽取在 run.completed 之后才回 completed/failed（ephemeral LLM 调用，
+    // 默认超时 120s）。finalize 立刻关订阅会丢这个终态事件，part 永远停在
+    // started，时间线卡片卡死「记录中」。跟踪在飞抽取，订阅留到其落地再关。
+    const pendingMemoryExtractions = new Set<string>();
+    let memoryGraceTimer: number | null = null;
+    const closeEventSubscription = () => {
+      if (memoryGraceTimer !== null) {
+        window.clearTimeout(memoryGraceTimer);
+        memoryGraceTimer = null;
+      }
+      if (eventSubscription) {
+        eventSubscription.close();
+        eventSubscription = null;
+      }
+    };
+    const closeSubscriptionWhenMemorySettled = () => {
+      if (finalized && pendingMemoryExtractions.size === 0) closeEventSubscription();
+    };
     /** 订阅已收到的事件数；>0 时禁止再整段回放 result.events（二次 ensure 会叠出同文气泡）。 */
     let liveEventCount = 0;
 
@@ -6429,6 +6564,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         case "memory.extraction.completed":
         case "memory.extraction.failed": {
           const extractionId = String(event.extractionId || "").trim() || "memory";
+          // 在飞登记先于挂载判断：即使这条终态事件找不到归属消息（无法上屏），
+          // 也必须把它从 pending 中清掉，否则订阅永远等不到收口。
+          if (event.type === "memory.extraction.started") {
+            pendingMemoryExtractions.add(extractionId);
+          } else {
+            pendingMemoryExtractions.delete(extractionId);
+          }
           if (!currentServerAssistantId && currentLocalAssistantId) {
             currentServerAssistantId = `memory-pending:${runId}`;
             localAssistantByMessageId.set(currentServerAssistantId, currentLocalAssistantId);
@@ -6437,7 +6579,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               [currentLocalAssistantId]: currentServerAssistantId
             }));
           }
-          if (!currentServerAssistantId) break;
+          if (!currentServerAssistantId) {
+            closeSubscriptionWhenMemorySettled();
+            break;
+          }
           const phase =
             event.type === "memory.extraction.started"
               ? "started"
@@ -6461,10 +6606,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             relationCount: Number(event.relationCount) || 0,
             intent: String(event.intent || "").trim(),
             entities,
+            quality: String(event.quality || "").trim(),
+            priority: String(event.priority || "").trim(),
             error: String(event.error || "").trim(),
             elapsedMs: Number(event.elapsedMs) || 0,
             status: phase === "started" ? "running" : phase === "failed" ? "error" : "completed"
           });
+          closeSubscriptionWhenMemorySettled();
           break;
         }
         case "runtime.compaction":
@@ -6752,9 +6900,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       finalized = true;
       cancelStreamBatch();
       finalizePromise = (async () => {
-        if (eventSubscription) {
-          eventSubscription.close();
-          eventSubscription = null;
+        // 有在飞的记忆抽取时延迟关订阅（终态事件在 run.completed 之后到达）；
+        // 兜底计时对齐抽取超时（默认 120s）加余量，防事件丢失导致永不关闭。
+        if (pendingMemoryExtractions.size === 0) {
+          closeEventSubscription();
+        } else if (memoryGraceTimer === null) {
+          memoryGraceTimer = window.setTimeout(() => {
+            closeEventSubscription();
+          }, 150_000);
         }
         if (agentRunIdBySessionRef.current[sessionId] === runId) {
           delete agentRunIdBySessionRef.current[sessionId];
@@ -10301,7 +10454,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         apiKey: key || undefined
       });
       // 保存即选中：当前模型是客户端选择状态（draft 选择 + 记忆列表）。
-      selectAgentModel(full, "");
+      selectAgentDraftModel(full);
       // 自定义 provider 同样尽力拉实时模型列表，补全目录。
       if (key) {
         const added = (await agentClient.refreshProviderModels(pid).catch(() => [] as string[])) ?? [];

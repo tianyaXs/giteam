@@ -16,7 +16,7 @@ cargo run --example extraction_eval -- prompt eval/extraction/decision-basic.jso
 cargo run --example extraction_eval -- score eval/extraction/decision-basic.json /tmp/out.txt
 
 # 3. 批量：对 eval/extraction/*.json，到 outputs/ 找同名 .txt 打分并出汇总报告
-cargo run --example extraction_eval -- report eval/extraction outputs/
+cargo run --example extraction_eval -- report eval/extraction eval/extraction/outputs
 ```
 
 打分用的是 `giteam_core::asset_graph::semantic::parse_extraction`——和生产路径
@@ -42,8 +42,8 @@ cargo run --example extraction_eval -- report eval/extraction outputs/
 
 | case | 考察点 |
 |---|---|
-| `chitchat-gate` | 门控：`user_text ≤ 4 字符` 时 `worth_extracting() == false`（根本不调 LLM) |
-| `chitchat-empty` | 闲聊即便进了 LLM，也必须返回空实体（测试模型对 "NEVER invent" 的服从度） |
+| `chitchat-gate` | 寒暄仍 `should_enqueue() == true`；空实体靠抽取 agent no-op |
+| `chitchat-empty` | 闲聊入队后抽取 agent 必须返回空实体（minimum-signal） |
 | `hallucination-bait` | 幻觉诱导：文件列表里有 `auth.rs` 但文本没提 → 不得给它连边；人名不得成实体 |
 
 ### 维度 3：能力边界（诊断已知弱点）

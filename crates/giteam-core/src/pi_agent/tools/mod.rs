@@ -32,7 +32,7 @@ pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
 pub use task::TaskTool;
-pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool};
+pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool};
 pub use todo::TodoTool;
 pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
@@ -180,6 +180,7 @@ impl ToolFactory for GiteamToolFactory {
             registry.push(Box::new(AssetContextTool::new(cwd.to_path_buf())));
             registry.push(Box::new(AssetSearchTool::new(cwd.to_path_buf())));
             registry.push(Box::new(AssetPrecedentsTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetTraceTool::new(cwd.to_path_buf())));
         }
         if self.todo_enabled || wants_todo {
             registry.push(Box::new(TodoTool::new()));

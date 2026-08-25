@@ -589,14 +589,30 @@ function ToolBatchGroup({
   onOpenToolFile: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
 }) {
-  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
-  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
-  const running = !forceInactive;
   const shell = group.batchKind === "shell";
   const web = group.batchKind === "web";
   const browser = group.batchKind === "browser";
   const task = group.batchKind === "task";
   const memory = group.batchKind === "memory";
+  // 记忆批组三分态：进行中（part phase=started）给瞬时反馈；有真实写入
+  // （实体/关系/意图）留卡；失败留卡可排查；完成的空抽取（寒暄轮等）整组不渲染。
+  const memoryPhaseOf = (part: (typeof group.parts)[number]) =>
+    String((part as { phase?: string }).phase || "").trim();
+  const memoryHasRunning = memory && group.parts.some((part) => memoryPhaseOf(part) === "started");
+  const memoryFailed = memory && group.parts.some((part) => memoryPhaseOf(part) === "failed");
+  const memoryWrote =
+    memory &&
+    group.parts.some(
+      (part) =>
+        (Number((part as { entityCount?: number }).entityCount) || 0) > 0 ||
+        (Number((part as { relationCount?: number }).relationCount) || 0) > 0 ||
+        Boolean(String((part as { intent?: string }).intent || "").trim())
+    );
+  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
+  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
+  // 例外：记忆抽取在 turn 结束后异步到达，forceInactive 已为 true，但 part 仍在
+  // started——此时组标签必须以 part 相位为准显示「记录中」，否则「已记录」抢先出现。
+  const running = !forceInactive || memoryHasRunning;
   const recall = group.batchKind === "recall";
   // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
   const activeLabel = memory
@@ -613,7 +629,9 @@ function ToolBatchGroup({
               ? "浏览中"
               : "编辑中";
   const doneLabel = memory
-    ? "已记录"
+    ? memoryFailed && !memoryWrote
+      ? "记忆写入失败"
+      : "已记录"
     : recall
       ? "已回忆"
       : task
@@ -645,6 +663,8 @@ function ToolBatchGroup({
     ? dedupeVisibleSubagentTaskParts(group.parts)
     : group.parts;
   if (task && visibleTaskParts.length === 0) return null;
+  // 空抽取（寒暄轮等）不出卡：没有写入也没有失败，这条事件对用户无信息量。
+  if (memory && !memoryHasRunning && !memoryWrote && !memoryFailed) return null;
 
   // 与「已探索 2次搜索」同形：回忆/查询类数字与量词紧贴，避免「1 次」多出空格
   const countCompact = recall || web || browser;
@@ -708,7 +728,9 @@ function ToolBatchGroup({
       label={
         <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
           <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
-          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
+          {!memory || memoryWrote ? (
+            <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
+          ) : null}
           {taskDetail ? (
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
           ) : null}
@@ -1509,17 +1531,26 @@ function MemoryExtractionPart({
   const entities = Array.isArray((part as { entities?: unknown }).entities)
     ? ((part as { entities: Array<{ type?: string; title?: string }> }).entities)
     : [];
+  const quality = String((part as { quality?: string }).quality || "").trim().toLowerCase();
+  const priority = String((part as { priority?: string }).priority || "").trim().toLowerCase();
   const running = phase === "started";
   const failed = phase === "failed";
-  const empty = !running && !failed && entityCount === 0 && relationCount === 0;
-  const doneLabel = failed ? "记忆写入失败" : empty ? "记忆未更新" : "已写入记忆";
+  // intent 写回 session 节点也算一次真实写入；全空（寒暄轮）的完成行不渲染。
+  // 与后端 quality/priority 门控对齐：仅 high 或 priority-high 出完成卡。
+  const lowSignal =
+    !running &&
+    !failed &&
+    ((quality === "low" || quality === "medium") && priority !== "high");
+  const empty = !running && !failed && entityCount === 0 && relationCount === 0 && !intent;
+  if (empty || lowSignal) return null;
+  const doneLabel = failed ? "记忆写入失败" : "已写入记忆";
   const countPreview =
     entityCount > 0 || relationCount > 0
       ? `${entityCount} 个实体 · ${relationCount} 条关系`
       : "";
   const preview = failed
     ? (error.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || error || "抽取失败")
-    : countPreview || intent || (running ? "沉淀本轮决策与实体" : empty ? "本轮无新实体" : "");
+    : countPreview || intent || (running ? "沉淀本轮决策与实体" : "");
   const canExpand = entities.length > 0 || Boolean(error);
 
   const header = (

@@ -21,7 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 
 /// 当前 schema 版本。
-const SCHEMA_VERSION: i64 = 1;
+/// v2：Codex 式 `extraction_jobs`（turn 入队、idle/startup claim）。
+const SCHEMA_VERSION: i64 = 2;
 
 /// 节点/边 JSON props 的最大字节数（防异常事件撑爆库）。
 const MAX_PROPS_BYTES: usize = 64 * 1024;
@@ -166,11 +167,38 @@ fn migrate(db: &Connection) -> rusqlite::Result<()> {
             |row| row.get(0),
         )
         .unwrap_or(None);
-    if recorded.unwrap_or(0) < SCHEMA_VERSION {
+    let current = recorded.unwrap_or(0);
+    if current < 2 {
+        db.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS extraction_jobs (
+                turn_key TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                enqueued_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                claimed_at_ms INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_extraction_jobs_status
+                ON extraction_jobs(status, enqueued_at_ms);
+            CREATE INDEX IF NOT EXISTS idx_extraction_jobs_session
+                ON extraction_jobs(session_id, status);
+            "#,
+        )?;
+    }
+    if current < SCHEMA_VERSION {
         db.execute(
             "INSERT OR REPLACE INTO schema_versions (version, applied_at, description)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![SCHEMA_VERSION, now_ms(), "initial asset graph schema"],
+            rusqlite::params![
+                SCHEMA_VERSION,
+                now_ms(),
+                "v2: extraction_jobs for deferred stage1 memory extraction"
+            ],
         )?;
     }
     Ok(())
@@ -202,10 +230,28 @@ pub fn write_batch(db: &Connection, batch: &FactBatch) -> rusqlite::Result<()> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
          ON CONFLICT(id) DO UPDATE SET
            last_seen_ms = MAX(last_seen_ms, excluded.last_seen_ms),
-           label = CASE WHEN excluded.label != '' THEN excluded.label ELSE nodes.label END,
+           -- 占位名（空/「会话」/session）不覆盖已有可读标题。
+           label = CASE
+             WHEN excluded.label = '' THEN nodes.label
+             WHEN lower(excluded.label) IN ('session', '会话')
+                  AND nodes.label != ''
+                  AND lower(nodes.label) NOT IN ('session', '会话')
+               THEN nodes.label
+             ELSE excluded.label
+           END,
+           -- 浅合并 props：新键覆盖，旧键（如 intent）在新对象缺失时保留。
            props = CASE
-             WHEN excluded.props != '{}' AND excluded.props != nodes.props
-             THEN excluded.props ELSE nodes.props END",
+             WHEN excluded.props = '{}' OR excluded.props = '' THEN nodes.props
+             WHEN nodes.props = '{}' OR nodes.props = '' THEN excluded.props
+             ELSE (
+               SELECT json_group_object(key, value) FROM (
+                 SELECT key, value FROM json_each(nodes.props)
+                 WHERE key NOT IN (SELECT key FROM json_each(excluded.props))
+                 UNION ALL
+                 SELECT key, value FROM json_each(excluded.props)
+               )
+             )
+           END",
     )?;
     // 边引用映射到已写入的节点 id：按 key 索引本批节点，跨批引用查库补。
     let mut id_index: HashMap<String, String> = HashMap::with_capacity(batch.nodes.len());
@@ -328,7 +374,7 @@ mod tests {
             .query_row("SELECT MAX(version) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        for table in ["nodes", "edges", "replay_state", "nodes_fts"] {
+        for table in ["nodes", "edges", "replay_state", "nodes_fts", "extraction_jobs"] {
             let count: i64 = db
                 .query_row(
                     &format!("SELECT COUNT(*) FROM sqlite_master WHERE name = '{table}'"),

@@ -55,7 +55,7 @@ Do NOT explore the repository. Do NOT call any tools. Answer with the JSON objec
 and nothing else — no prose, no markdown fence. \
 \
 Entity types (extract ONLY these): \
-- decision: a technical choice that was made (fields: title, category \
+- decision: a technical choice with chose/rejected/because (fields: title, category \
   [architecture|library|api|data|process|ui], scenario, reasoning, outcome, \
   confidence 0.0-1.0) \
 - feature: a product capability or requirement being built/tracked \
@@ -72,20 +72,40 @@ Entity types (extract ONLY these): \
 Relation types (subject and object must both appear in your entities or be a \
 file path / session reference given in the input): \
 decided, rationale, affects, implements, located_in, involves, pattern_of, \
-exposes, blocked_by, similar_to, supersedes \
+exposes, blocked_by, similar_to, supersedes, closes \
 \
 Rules: \
-- Extract only what the text supports; NEVER invent. When nothing meaningful \
-  is present, return {\"entities\":[],\"relations\":[]}. \
+- Always set top-level \"quality\": \"high\" | \"medium\" | \"low\" (and optional \
+  \"priority\": \"high\" | \"normal\" | \"low\"). This is an LLM judgment of durable \
+  value — not a keyword/regex filter. \
+- Extract only what the text supports; NEVER invent. When nothing durable is \
+  present, return {\"entities\":[],\"relations\":[],\"quality\":\"low\"} but ALWAYS \
+  still include session_intent as a short graph-node title. \
+- Minimum-signal gate (Codex-style): ask whether a future agent will plausibly \
+  act better because of this extraction. If NO — one-off chatter, generic status, \
+  temporary facts, or no durable preference/decision/repo fact — return empty \
+  arrays with quality=low but ALWAYS still include session_intent (title only). \
+- Pure social turns usually have quality=low and empty arrays. If the same social \
+  theme is worth a durable concept (e.g. a recurring greeting pattern titled \
+  \"问候\"), you MAY emit a tech_concept/open_task — still set quality honestly. \
+  Reply length is never evidence of extractable content. \
 - Prefer 3-8 high-value entities over many weak ones. \
-- When a new decision explicitly REPLACES an earlier one (\"改用X，弃用之前的Y\", \
-  \"switch from Y to X\"), emit {\"type\":\"supersedes\",\"subject\":<new>,\"object\":<old>} \
-  so the graph can retire the outdated decision. Also emit the new decision entity. \
+- Lifecycle (Graphiti-style invalidation via edges — never delete; never silently \
+  overwrite). When a durable conclusion FLIPS or REPLACES a prior one (chose X→Y, \
+  true→false, abandoned approach), emit BOTH the new entity AND \
+  {\"type\":\"supersedes\",\"subject\":<new>,\"object\":<old>} — reuse Existing-entities \
+  id for the old object when present. When an open_task is DONE / FIXED / no longer \
+  relevant, emit {\"type\":\"closes\",\"subject\":<closer>,\"object\":<open_task>} where \
+  closer is the resolving decision/feature/module/open_task or \"session\"; reuse the \
+  Existing open_task id. Do NOT reopen a closed task by inventing a parallel slug. \
+- Emit entity↔entity relations when concepts are related; do not invent edges. \
 - Every entity and relation MUST include \"confidence\" (0.0-1.0); omit guesses \
   below 0.4 entirely instead of emitting them. \
 - Every entity and relation MUST include \"evidence\": a short verbatim quote \
   (<= 100 chars) copied EXACTLY from the input text that supports it — never \
-  paraphrase evidence; entries with fabricated evidence are discarded. \
+  paraphrase evidence; entries with fabricated or missing evidence are discarded. \
+- Prefer reusing Existing-entities ids (including near-duplicate titles) over \
+  inventing parallel slugs for the same concept. \
 - Entity id = a short stable slug (lowercase ASCII hyphens, e.g. \"sqlite-asset-graph\"). \
   Reuse an Existing-entities id when the same concept appears — do not invent \
   a parallel slug. \
@@ -295,6 +315,18 @@ pub struct SubagentSpawnResult {
     pub elapsed_ms: u64,
 }
 
+/// Stage-1 落库时快照的父会话上下文；父 session 已从内存/catalog 清掉时作 fallback。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ExtractionCompletionFallback {
+    pub repo_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
 /// 旁路语义抽取 completion 请求（无子会话投影、无工具、一次 LLM 调用）。
 #[derive(Debug, Clone)]
 pub struct ExtractionCompletionRequest {
@@ -302,6 +334,8 @@ pub struct ExtractionCompletionRequest {
     pub extraction_id: String,
     /// 用户消息：ExtractionInput.build_prompt()（可含 known entities 段）。
     pub prompt: String,
+    /// 父 session 不在内存时用于创建 ephemeral 子 session（Stage-1 延迟跑）。
+    pub fallback: Option<ExtractionCompletionFallback>,
 }
 
 /// 旁路抽取 completion 结果。
@@ -350,6 +384,8 @@ impl MemoryExtractionPublisher {
         relation_count: u32,
         intent: Option<String>,
         entities: Vec<crate::pi_agent::MemoryExtractionEntity>,
+        quality: Option<String>,
+        priority: Option<String>,
         elapsed_ms: u64,
     ) {
         self.context
@@ -359,6 +395,8 @@ impl MemoryExtractionPublisher {
                 relation_count,
                 intent,
                 entities,
+                quality,
+                priority,
                 elapsed_ms,
             });
     }
@@ -393,6 +431,14 @@ pub trait SubagentHost: Send + Sync {
         _parent_session_id: &str,
         _extraction_id: &str,
     ) -> Option<MemoryExtractionPublisher> {
+        None
+    }
+
+    /// 入队 Stage-1 时快照父会话 provider/model（可选）。
+    fn extraction_parent_snapshot(
+        &self,
+        _parent_session_id: &str,
+    ) -> Option<ExtractionCompletionFallback> {
         None
     }
 }

@@ -206,6 +206,8 @@ export type AgentEvent = {
     relationCount?: number;
     intent?: string;
     entities?: Array<{ type?: string; title?: string }>;
+    quality?: string;
+    priority?: string;
   };
 };
 

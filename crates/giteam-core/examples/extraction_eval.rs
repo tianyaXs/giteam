@@ -46,7 +46,7 @@ struct Expect {
     entities: Vec<ExpectEntity>,
     #[serde(default)]
     relations: Vec<ExpectRelation>,
-    /// worth_extracting() 的期望值（门控 case）。
+    /// should_enqueue() 的期望值（门控 case；Codex 式前置跳过寒暄）。
     gate: Option<bool>,
     min_entities: Option<usize>,
     max_entities: Option<usize>,
@@ -106,6 +106,10 @@ fn extraction_input(case: &Case) -> ExtractionInput {
         error_lines: case.input.error_lines.clone(),
         timestamp_ms: 1_000,
         sequence: 1,
+        repo_path: String::new(),
+        provider: None,
+        model: None,
+        thinking: None,
     }
 }
 
@@ -122,14 +126,14 @@ struct Check {
 
 fn score_case(case: &Case, raw: &str) -> (Vec<Check>, SemanticExtraction) {
     let input = extraction_input(case);
-    let out = semantic::parse_extraction(raw, &anchors(&input));
+    let out = semantic::parse_extraction(raw, &anchors(&input), &[]);
     let mut checks: Vec<Check> = Vec::new();
     let expect = &case.expect;
 
     if let Some(gate) = expect.gate {
         checks.push(Check {
-            label: format!("gate: worth_extracting() == {gate}"),
-            passed: input.worth_extracting() == gate,
+            label: format!("gate: should_enqueue() == {gate}"),
+            passed: input.should_enqueue() == gate,
         });
     }
 

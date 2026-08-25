@@ -1,14 +1,13 @@
 //! 资产图谱工具面：让当前会话的 agent 查询其他会话的执行记录。
 //!
-//! 三个只读工具（设计文档 docs/repo-asset-graph-agent.md §4.2，工具面组织
-//! 借 codegraph 的成熟模式——一个复合主工具 + 单点补充）：
-//! - `asset_context`（主工具）：改文件前/遇错时先调，一次组合返回
-//!   相关会话（意图+改动+提交）+ 文件跨会话修改史 + 错误修复先例。
-//! - `asset_search`：单点检索节点（文件/命令/错误/会话）。
+//! 工具面组织借 codegraph 成熟模式——一个复合主工具 + 单点补充 + 路径追溯：
+//! - `asset_context`（主工具）：改文件前/遇错时先调，一次返回
+//!   匹配节点 + 一跳邻居 + 文件史 + 开放回路 + 错误先例。
+//! - `asset_search`：单点检索节点。
 //! - `asset_precedents`：按错误文本找历史修复对。
+//! - `asset_trace`：两点间执行/语义路径（意图→工具→文件→提交）。
 //!
-//! 全部无副作用（effects=read）、不走审批、返回体限幅 8KB
-//! （超限提示收窄查询，防撑爆上下文）。
+//! 全部无副作用（effects=read）、不走审批、返回体限幅 8KB。
 
 use async_trait::async_trait;
 use pi::sdk::{Result, Tool, ToolOutput, ToolUpdate};
@@ -16,10 +15,7 @@ use pi::tools::ToolEffects;
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// 工具输出的字符预算（对齐设计文档的护栏）。
 const OUTPUT_BUDGET: usize = 8 * 1024;
-
-// ---------- 公共辅助 ----------
 
 fn text_output(text: String) -> ToolOutput {
     ToolOutput {
@@ -63,7 +59,11 @@ fn string_input(input: &Value, field: &str) -> String {
         .to_string()
 }
 
-// ---------- asset_context（主工具） ----------
+fn short_key(key: &str) -> String {
+    key.chars().take(16).collect()
+}
+
+// ---------- asset_context ----------
 
 pub struct AssetContextTool {
     repo_root: PathBuf,
@@ -87,11 +87,12 @@ impl Tool for AssetContextTool {
     }
 
     fn description(&self) -> &str {
-        "Cross-session repository memory. Call this BEFORE editing any file or when hitting any error: \
-         returns which sessions touched the relevant files (with the original user intent of each), \
-         what they changed, produced commits, and how similar errors were fixed before. \
-         Input is a task description, a file path, or an error message. Do not blind-edit files with \
-         history you haven't checked."
+        "PRIMARY cross-session memory tool (codegraph_context style). Call BEFORE editing any file \
+         and WHENEVER you hit an error. ONE call returns: matched nodes, 1-hop neighbors \
+         (decisions↔files↔entities), file edit history with original intents, open loops \
+         (unclosed open_task / unresolved errors), and inline fix precedents when the task looks \
+         like an error. Do not blind-edit files with history you haven't checked. Do not grep \
+         raw session JSONL under .giteam — use this instead."
     }
 
     fn parameters(&self) -> Value {
@@ -127,22 +128,30 @@ impl Tool for AssetContextTool {
         let Ok(graph) = graph.lock() else {
             return Ok(unavailable_output());
         };
-        let query = graph.query();
-        let bundle = query.build_context(&task);
+        let bundle = graph.query().build_context(&task);
         let mut lines: Vec<String> = Vec::new();
 
         lines.push("## 记忆上下文".into());
         if bundle.matched_nodes.is_empty() {
             lines.push("（无匹配节点——该主题在历史会话中未出现过）".into());
         } else {
-            lines.push("### 匹配节点".into());
-            for hit in bundle.matched_nodes.iter().take(10) {
+            lines.push("### Anchors（匹配节点）".into());
+            for hit in bundle.matched_nodes.iter().take(8) {
                 lines.push(format!("- [{}] {} ({})", hit.node_type, hit.label, hit.node_id));
             }
         }
+        if !bundle.neighbors.is_empty() {
+            lines.push("### Neighbors（一跳关联）".into());
+            for n in bundle.neighbors.iter().take(12) {
+                lines.push(format!(
+                    "- {} -[{}]-> [{}] {}",
+                    n.from_label, n.edge_type, n.neighbor_type, n.neighbor_label
+                ));
+            }
+        }
         if !bundle.file_history.is_empty() {
-            lines.push("### 文件修改史（谁、为何）".into());
-            for entry in bundle.file_history.iter().take(10) {
+            lines.push("### Who & why（文件修改史）".into());
+            for entry in bundle.file_history.iter().take(8) {
                 lines.push(format!(
                     "- [{}] {}（意图：{}）",
                     entry.timestamp_ms,
@@ -151,23 +160,40 @@ impl Tool for AssetContextTool {
                 ));
             }
         }
-        if !bundle.recent_sessions.is_empty() {
-            lines.push("### 近期会话".into());
-            for session in &bundle.recent_sessions {
-                let files = session.files_modified.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
-                let pending = session.unresolved_errors.iter().take(2).cloned().collect::<Vec<_>>().join(" / ");
+        if !bundle.open_loops.is_empty() {
+            lines.push("### Open loops（未闭环）".into());
+            for loop_hit in bundle.open_loops.iter().take(6) {
                 lines.push(format!(
-                    "- 「{}」改了 [{}]{}{}",
-                    session.intent,
-                    files,
-                    if session.commits.is_empty() { String::new() } else { format!("；提交 {}", session.commits.iter().take(3).cloned().collect::<Vec<_>>().join(",")) },
-                    if pending.is_empty() { String::new() } else { format!("；未闭环：{pending}") }
+                    "- [{}] {} — {}",
+                    loop_hit.kind, loop_hit.label, loop_hit.detail
                 ));
             }
         }
-        if !bundle.unresolved_error_labels.is_empty() {
-            lines.push("### 相关错误（可用 asset_precedents 查修复先例）".into());
-            for label in bundle.unresolved_error_labels.iter().take(5) {
+        if !bundle.precedents.is_empty() {
+            lines.push("### Precedents（修复先例）".into());
+            for hit in bundle.precedents.iter().take(5) {
+                lines.push(format!(
+                    "- 「{}」→ {}（意图：{}）",
+                    hit.error_label, hit.resolved_by_label, hit.intent
+                ));
+            }
+        }
+        if !bundle.recent_sessions.is_empty() {
+            lines.push("### 近期会话".into());
+            for session in bundle.recent_sessions.iter().take(4) {
+                let files = session
+                    .files_modified
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("- 「{}」改了 [{}]", session.intent, files));
+            }
+        }
+        if !bundle.unresolved_error_labels.is_empty() && bundle.precedents.is_empty() {
+            lines.push("### 相关错误（可再调 asset_precedents）".into());
+            for label in bundle.unresolved_error_labels.iter().take(4) {
                 lines.push(format!("- {label}"));
             }
         }
@@ -199,8 +225,9 @@ impl Tool for AssetSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search asset-graph nodes by text: files, commands, errors, sessions, commits. \
-         Returns node id / type / label. Use to locate exact targets before asset_context."
+        "Locate asset-graph nodes by text (files, commands, errors, sessions, commits, \
+         semantic entities). Use to pin down exact names BEFORE asset_context when the task \
+         description is vague. Prefer asset_context for 'what's the deal with X' questions."
     }
 
     fn parameters(&self) -> Value {
@@ -215,7 +242,7 @@ impl Tool for AssetSearchTool {
                         "decision", "feature", "module", "tech_concept",
                         "error_pattern", "api", "tradeoff", "open_task"
                     ],
-                    "description": "可选节点类型过滤（后 8 类为语义实体，由 extract 子代理抽取）"
+                    "description": "可选节点类型过滤（后 8 类为语义实体）"
                 }
             },
             "required": ["query"]
@@ -280,9 +307,9 @@ impl Tool for AssetPrecedentsTool {
     }
 
     fn description(&self) -> &str {
-        "Find how similar errors were fixed in past sessions: pass the error text, \
-         get each precedent's fix action and the session intent behind it. \
-         Numbers in the error are normalized, so 'line 42' matches 'line 99'."
+        "Find how similar errors were fixed in past sessions (error text in → fix action + \
+         session intent out). Numbers are normalized so line numbers need not match. \
+         Prefer asset_context first when exploring a task; use this for a focused error lookup."
     }
 
     fn parameters(&self) -> Value {
@@ -332,8 +359,104 @@ impl Tool for AssetPrecedentsTool {
     }
 }
 
-fn short_key(key: &str) -> String {
-    key.chars().take(16).collect()
+// ---------- asset_trace ----------
+
+pub struct AssetTraceTool {
+    repo_root: PathBuf,
+}
+
+impl AssetTraceTool {
+    #[must_use]
+    pub fn new(repo_root: PathBuf) -> Self {
+        Self { repo_root }
+    }
+}
+
+#[async_trait]
+impl Tool for AssetTraceTool {
+    fn name(&self) -> &str {
+        "asset_trace"
+    }
+
+    fn label(&self) -> &str {
+        "AssetTrace"
+    }
+
+    fn description(&self) -> &str {
+        "Trace the path between two asset-graph nodes (codegraph_trace style): intent/session → \
+         turn → tool → file/error → commit, or decision → affects → file. ONE call returns the \
+         whole hop list. Do NOT reconstruct paths with asset_search + manual chaining."
+    }
+
+    fn parameters(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "string",
+                    "description": "起点：节点 id / key / label（会话、文件、决策、错误等）"
+                },
+                "to": {
+                    "type": "string",
+                    "description": "终点：节点 id / key / label"
+                },
+                "max_hops": {
+                    "type": "integer",
+                    "description": "最大跳数（默认 5，上限 8）"
+                }
+            },
+            "required": ["from", "to"]
+        })
+    }
+
+    fn effects(&self) -> ToolEffects {
+        ToolEffects::read()
+    }
+
+    async fn execute(
+        &self,
+        _tool_call_id: &str,
+        input: Value,
+        _on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
+    ) -> Result<ToolOutput> {
+        let from = string_input(&input, "from");
+        let to = string_input(&input, "to");
+        if from.is_empty() || to.is_empty() {
+            return Ok(text_output("需要 from 与 to 参数。".into()));
+        }
+        let max_hops = input
+            .get("max_hops")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32)
+            .unwrap_or(5);
+        let Some(graph) = crate::asset_graph::attached(&self.repo_root) else {
+            return Ok(unavailable_output());
+        };
+        let Ok(graph) = graph.lock() else {
+            return Ok(unavailable_output());
+        };
+        let hops = graph.query().trace_path(&from, &to, max_hops);
+        if hops.is_empty() {
+            return Ok(text_output(format!(
+                "未找到从「{from}」到「{to}」的路径（可先用 asset_search 确认两端节点）。"
+            )));
+        }
+        let mut lines = vec![format!("## 路径 {} → {}（{} 跳）", from, to, hops.len().saturating_sub(1))];
+        for (idx, hop) in hops.iter().enumerate() {
+            if idx == 0 {
+                lines.push(format!("1. [{}] {}", hop.node_type, hop.label));
+            } else {
+                let via = hop.via_edge.as_deref().unwrap_or("?");
+                lines.push(format!(
+                    "{}. -[{via}]-> [{}] {}",
+                    idx + 1,
+                    hop.node_type,
+                    hop.label
+                ));
+            }
+        }
+        Ok(text_output(lines.join("\n")))
+    }
 }
 
 #[cfg(test)]
@@ -359,5 +482,8 @@ mod tests {
         assert_eq!(search.name(), "asset_search");
         let precedents = AssetPrecedentsTool::new(PathBuf::from("/repo"));
         assert_eq!(precedents.name(), "asset_precedents");
+        let trace = AssetTraceTool::new(PathBuf::from("/repo"));
+        assert_eq!(trace.name(), "asset_trace");
+        assert!(trace.description().contains("path"));
     }
 }
