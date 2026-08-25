@@ -1502,7 +1502,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <div
             className={cn(
               "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
-              active.id === "models" || active.id === "mobile" || (active.id === "plugins" && pluginsSubTab === "skills")
+              active.id === "models" || active.id === "mobile"
                 ? "max-w-[1120px]"
                 : "max-w-[680px]"
             )}
