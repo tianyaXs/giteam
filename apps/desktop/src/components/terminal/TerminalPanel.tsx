@@ -10,7 +10,9 @@ import { useCodeFontSize } from "../../lib/useAppearanceFontSize";
 
 function getTerminalDisplayTitle(tab?: TerminalTabState): string {
   const raw = String(tab?.title || "").trim();
-  if (!raw || /^终端\s*\d+$/i.test(raw) || /^terminal\s*\d+$/i.test(raw)) return "zsh";
+  if (!raw || /^终端\s*\d+$/i.test(raw) || /^terminal\s*\d+$/i.test(raw)) {
+    return navigator.platform.toLowerCase().includes("win") ? "shell" : "zsh";
+  }
   return raw;
 }
 

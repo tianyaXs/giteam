@@ -161,14 +161,29 @@ fn apply_session_winsize(session: &mut ManagedRepoTerminalSession, cols: u16, ro
 }
 
 fn write_terminal_winsize(stdin: &mut impl Write, cols: u16, rows: u16) -> Result<(), String> {
-    let (cols, rows) = clamp_terminal_size(cols, rows);
-    let cmd = format!("stty cols {cols} rows {rows} 2>/dev/null || true\n");
-    stdin
-        .write_all(cmd.as_bytes())
-        .map_err(|e| format!("failed writing terminal winsize: {e}"))?;
-    stdin
-        .flush()
-        .map_err(|e| format!("failed flushing terminal winsize: {e}"))
+    // Windows 管道壳没有真实 TTY；往 cmd/pwsh 写 stty 只会刷错误输出。
+    #[cfg(windows)]
+    {
+        let _ = (stdin, cols, rows);
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        let (cols, rows) = clamp_terminal_size(cols, rows);
+        let cmd = format!("stty cols {cols} rows {rows} 2>/dev/null || true\n");
+        stdin
+            .write_all(cmd.as_bytes())
+            .map_err(|e| format!("failed writing terminal winsize: {e}"))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("failed flushing terminal winsize: {e}"))
+    }
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -343,20 +358,17 @@ fn complete_command_name(prefix: &str) -> Vec<String> {
 }
 
 fn complete_path_token(repo_path: &str, cwd: &str, token: &str) -> Vec<String> {
-    let home_dir = std::env::var("HOME").ok();
+    let home_dir = user_home_dir();
     let (display_dir, raw_prefix) = match token.rsplit_once('/') {
         Some((dir, prefix)) => (format!("{dir}/"), prefix),
         None => (String::new(), token),
     };
     let base_dir = if token.starts_with("~/") {
         home_dir
-            .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(repo_path))
             .join(display_dir.trim_start_matches("~/"))
     } else if token == "~" {
-        home_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(repo_path))
+        home_dir.unwrap_or_else(|| PathBuf::from(repo_path))
     } else if token.starts_with('/') {
         if display_dir.is_empty() {
             PathBuf::from("/")
@@ -431,12 +443,12 @@ fn resolve_terminal_cd_target(current_cwd: &str, line: &str) -> Option<String> {
     let target =
         unescape_terminal_path_token(raw_target.trim_matches(|ch| ch == '"' || ch == '\''));
     let path = if target == "~" {
-        std::env::var("HOME").ok().map(PathBuf::from)?
+        user_home_dir()?
     } else if let Some(rest) = target.strip_prefix("~/") {
-        std::env::var("HOME").ok().map(PathBuf::from)?.join(rest)
+        user_home_dir()?.join(rest)
     } else if target == "-" {
         return None;
-    } else if target.starts_with('/') {
+    } else if Path::new(&target).is_absolute() {
         PathBuf::from(target)
     } else {
         PathBuf::from(current_cwd).join(target)
@@ -537,18 +549,94 @@ fn session_alive(session: &mut ManagedRepoTerminalSession) -> bool {
     }
 }
 
+fn configure_windows_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
+fn spawn_interactive_shell_command(repo_path: &str) -> Result<Command, String> {
+    #[cfg(unix)]
+    {
+        // Use `script` to allocate a PTY so interactive shell behavior matches a real terminal better.
+        // 先 stty 再 exec 交互 shell：避免 winsize=0x0 时安装类 CLI 一字一行换行。
+        let shell = command_runner::resolve_login_shell().unwrap_or_else(|| "/bin/zsh".to_string());
+        // 路径可能含空格，必须 quote。
+        let boot = format!(
+            "stty cols 120 rows 40 2>/dev/null || true; exec {} -il",
+            shell_quote_for_boot(&shell)
+        );
+        let mut cmd = Command::new("/usr/bin/script");
+        cmd.args(["-q", "/dev/null", "/bin/sh", "-c", &boot])
+            .current_dir(repo_path)
+            .envs(terminal_shell_envs())
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Ok(cmd)
+    }
+    #[cfg(windows)]
+    {
+        // 尚无 ConPTY：用管道挂交互壳。优先 Git Bash，其次 pwsh / powershell / cmd。
+        let shell = command_runner::resolve_login_shell()
+            .ok_or_else(|| "no usable Windows shell found (install Git Bash or use PowerShell)".to_string())?;
+        let stem = Path::new(&shell)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let mut cmd = Command::new(&shell);
+        match stem.as_str() {
+            "cmd" => {
+                cmd.args(["/Q", "/K"]);
+            }
+            "powershell" | "pwsh" => {
+                cmd.args(["-NoLogo", "-NoExit"]);
+            }
+            _ => {
+                // Git Bash：--login 默认会 cd ~；CHERE_INVOKING=1 保留 current_dir。
+                cmd.args(["--login", "-i"]);
+                cmd.env("CHERE_INVOKING", "1");
+                cmd.env("MSYSTEM", "MINGW64");
+            }
+        }
+        cmd.current_dir(repo_path)
+            .envs(terminal_shell_envs())
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_windows_no_window(&mut cmd);
+        Ok(cmd)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = repo_path;
+        Err("embedded terminal is not supported on this platform".to_string())
+    }
+}
+
+fn shell_quote_for_boot(shell: &str) -> String {
+    if shell.is_empty() {
+        return "''".to_string();
+    }
+    if !shell.contains('\'') {
+        return format!("'{shell}'");
+    }
+    let escaped = shell.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
 fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSession, String> {
-    // Use `script` to allocate a PTY so interactive shell behavior matches a real terminal better.
-    // 先 stty 再 exec 交互 shell：避免 winsize=0x0 时安装类 CLI 一字一行换行。
-    let boot = "stty cols 120 rows 40 2>/dev/null || true; exec /bin/zsh -il";
-    let mut child = Command::new("/usr/bin/script")
-        .args(["-q", "/dev/null", "/bin/zsh", "-c", boot])
-        .current_dir(repo_path)
-        .envs(terminal_shell_envs())
-        .env("TERM", "xterm-256color")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut child = spawn_interactive_shell_command(repo_path)?
         .spawn()
         .map_err(|e| format!("failed to start terminal shell: {e}"))?;
     let stdin = child
@@ -574,17 +662,26 @@ fn spawn_repo_terminal_session(repo_path: &str) -> Result<ManagedRepoTerminalSes
         cols: 0,
         rows: 0,
     };
-    // child zsh 可能稍后才挂上 tty，短暂重试；失败再回退 stty。
-    let mut sized = false;
-    for _ in 0..8 {
-        if apply_session_winsize(&mut session, 120, 40).is_ok() {
-            sized = true;
-            break;
+    // Unix：child zsh 可能稍后才挂上 tty，短暂重试；失败再回退 stty。
+    // Windows：无真实 TTY，直接记录默认尺寸。
+    #[cfg(unix)]
+    {
+        let mut sized = false;
+        for _ in 0..8 {
+            if apply_session_winsize(&mut session, 120, 40).is_ok() {
+                sized = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
         }
-        std::thread::sleep(Duration::from_millis(25));
+        if !sized {
+            let _ = write_terminal_winsize(&mut session.stdin, 120, 40);
+            session.cols = 120;
+            session.rows = 40;
+        }
     }
-    if !sized {
-        let _ = write_terminal_winsize(&mut session.stdin, 120, 40);
+    #[cfg(not(unix))]
+    {
         session.cols = 120;
         session.rows = 40;
     }
@@ -1938,7 +2035,7 @@ pub fn run_repo_terminal_command(repo_path: &str, command: &str) -> Result<Strin
     if script.contains('\0') {
         return Err("command contains invalid null byte".to_string());
     }
-    command_runner::run_and_capture_in_dir_with_timeout("/bin/zsh", &["-lc", script], repo_path, 30)
+    command_runner::run_shell_script_in_dir(script, repo_path, 30)
 }
 
 #[tauri::command]
