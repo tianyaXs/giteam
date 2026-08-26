@@ -3,6 +3,7 @@ mod environment;
 mod events;
 mod https_egress;
 mod interactions;
+mod managed_bins;
 mod messages;
 mod permissions;
 mod project_memory;
@@ -25,6 +26,10 @@ pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
 pub use prompt::default_system_prompt;
 pub use providers::{
     AgentModelCost, AgentModelInfo, AgentProviderInfo, CustomProviderInput, ProviderCatalog,
+};
+pub use managed_bins::{
+    agent_bin_dir, agent_bin_dir_string, ensure_agent_bins, prepend_agent_bin_to_path, BinEnsureReport,
+    BinSource,
 };
 pub use secrets::{
     default_data_dir, default_pi_agent_dir, ensure_data_dir, ensure_pi_agent_dir_env,

@@ -64,6 +64,12 @@ fn build_path_env() -> String {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
+    // Agent 私有 rg/fd（~/.giteam/bin），优先于系统扩展目录。
+    if let Some(agent_bin) = crate::pi_agent::agent_bin_dir_string() {
+        if !dirs.iter().any(|d| d == &agent_bin) {
+            dirs.insert(0, agent_bin);
+        }
+    }
     let home_dirs = [
         format!("{home}/.npm-global/bin"),
         format!("{home}/.local/bin"),

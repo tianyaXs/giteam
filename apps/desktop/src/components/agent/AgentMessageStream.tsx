@@ -1138,6 +1138,30 @@ function CollapsibleUserText({
   );
 }
 
+function MessageGraphContextRefs({
+  refs,
+  className
+}: {
+  refs: NonNullable<AgentChatMessage["graphRefs"]>;
+  className?: string;
+}) {
+  if (refs.length <= 0) return null;
+  return (
+    <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", className)}>
+      {refs.map((ref) => (
+        <div
+          key={ref.id}
+          className="flex max-w-[220px] items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-foreground"
+          title={ref.snippet ? `${ref.typeLabel}: ${ref.label}\n${ref.snippet}` : `${ref.typeLabel}: ${ref.label}`}
+        >
+          <span className="shrink-0 text-muted-foreground">{ref.typeLabel}</span>
+          <span className="min-w-0 truncate font-medium">{ref.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UserMessage({
   msg,
   messageOpenState,
@@ -1156,12 +1180,17 @@ function UserMessage({
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
 }) {
   const attachments = msg.attachments || [];
+  const graphRefs = msg.graphRefs || [];
   const hasAttachments = attachments.length > 0;
+  const hasGraphRefs = graphRefs.length > 0;
   const hasContent = Boolean(msg.content.trim());
-  if (!hasContent && attachments.length === 0) return null;
+  if (!hasContent && attachments.length === 0 && !hasGraphRefs) return null;
 
   return (
-    <div className={cn("grid min-w-0 gap-2", hasAttachments && "justify-items-end")}>
+    <div className={cn("grid min-w-0 gap-2", (hasAttachments || hasGraphRefs) && "justify-items-end")}>
+      {hasGraphRefs ? (
+        <MessageGraphContextRefs refs={graphRefs} className="justify-self-end" />
+      ) : null}
       <MessageAttachments
         attachments={attachments}
         className={hasAttachments ? "justify-self-end" : undefined}
@@ -1170,7 +1199,7 @@ function UserMessage({
         onOpenAttachment={onOpenAttachment}
       />
       {hasContent ? (
-        hasAttachments ? (
+        hasAttachments || hasGraphRefs ? (
           <div className="w-fit max-w-full select-text rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground">
             {shouldCollapseMessage(msg.content) ? (
               <CollapsibleUserText

@@ -18,6 +18,7 @@ import {
   type ComposerAgentName
 } from "../../lib/agentComposerSettings";
 import { getAttachmentBadgeLabel, isImageAttachment, type AgentAttachment } from "../../lib/imageAttachments";
+import type { GraphContextRef } from "../../lib/graphContextRefs";
 import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
@@ -76,6 +77,9 @@ type AgentComposerPanelProps = {
   onJumpLatest?: () => void;
   attachments: AgentAttachment[];
   onRemoveAttachment: (id: string) => void;
+  /** 图谱节点引用 chip（发送时注入 <graph_context>） */
+  graphRefs?: GraphContextRef[];
+  onRemoveGraphRef?: (id: string) => void;
   slashOpen: boolean;
   slashSuggestions: SlashCommandOption[];
   slashActiveIndex: number;
@@ -592,6 +596,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     selectedRepoName,
     attachments,
     onRemoveAttachment,
+    graphRefs = [],
+    onRemoveGraphRef,
     slashOpen,
     slashSuggestions,
     slashActiveIndex,
@@ -646,7 +652,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       ? "选择模型"
       : "未配置";
   const thinkingValueLabel = thinkingLevelMeta(activeThinkingLevel).shortLabel;
-  const hasComposerPreviews = attachments.length > 0;
+  const hasComposerPreviews = attachments.length > 0 || graphRefs.length > 0;
   // 旧会话空输入始终「继续跟进」；贴图不应改成「要做什么？」。
   const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
   const configSummaryLabel = (activeModel || "").trim()
@@ -677,7 +683,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     const observer = new ResizeObserver(sync);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [showEmptyState, hasComposerPreviews, attachments.length]);
+  }, [showEmptyState, hasComposerPreviews, attachments.length, graphRefs.length]);
 
   const editorProps = {
     textareaClassName: "py-0 text-[15px] leading-7",
@@ -721,6 +727,30 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           className="w-full min-w-0 overflow-hidden"
         >
           <div className="flex w-full min-w-0 flex-wrap items-start justify-start gap-1.5">
+            {graphRefs.length > 0 ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                {graphRefs.map((ref) => (
+                  <div
+                    key={ref.id}
+                    className="group flex max-w-[220px] items-center gap-1 rounded-full border border-border/60 bg-muted/40 py-0.5 pl-2 pr-1 text-[11px] text-foreground"
+                    title={ref.snippet ? `${ref.typeLabel}: ${ref.label}\n${ref.snippet}` : `${ref.typeLabel}: ${ref.label}`}
+                  >
+                    <span className="shrink-0 text-muted-foreground">{ref.typeLabel}</span>
+                    <span className="min-w-0 truncate font-medium">{ref.label}</span>
+                    {onRemoveGraphRef ? (
+                      <button
+                        type="button"
+                        className="flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                        aria-label={`移除引用 ${ref.label}`}
+                        onClick={() => onRemoveGraphRef(ref.id)}
+                      >
+                        <CloseIcon width={10} height={10} />
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {attachments.length > 0 ? (
               <div className="flex min-w-0 flex-wrap items-start gap-1.5">
                 {attachments.map((attachment) => (

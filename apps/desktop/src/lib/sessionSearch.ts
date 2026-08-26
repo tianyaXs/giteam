@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentPart } from "./agent/client";
+import { normalizeUserMessageForDisplay } from "./graphContextRefs";
 
 /** 搜索范围：当前会话 / 当前仓库的全部会话 / 所有仓库的全部会话。 */
 export type SearchScope = "current-session" | "current-repo" | "all-repos";
@@ -59,7 +60,10 @@ export function extractSearchableText(message: AgentMessage): string {
 /** AgentMessage → 可搜索单元（丢弃 system/tool/custom 等非对话角色）。 */
 export function searchableItemFromAgentMessage(message: AgentMessage): SearchableItem | null {
   if (message.role !== "user" && message.role !== "assistant") return null;
-  const text = extractSearchableText(message);
+  let text = extractSearchableText(message);
+  if (message.role === "user") {
+    text = normalizeUserMessageForDisplay({ content: text }).content;
+  }
   if (!text.trim()) return null;
   return { messageId: message.id, role: message.role, text };
 }

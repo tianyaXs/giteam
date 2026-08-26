@@ -257,6 +257,8 @@ fn main() {
             // 统一权威数据根（~/.giteam），并迁入旧 Application Support / Tauri bundle 残留。
             giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
             let pi_dir = giteam_core::pi_agent::ensure_pi_agent_dir_env();
+            // 私有 rg/fd（缺则下载到 ~/.giteam/bin）并注入 PATH；须早于 agent grep/find。
+            let _ = giteam_core::pi_agent::ensure_agent_bins();
             // #35 诊断：asupersync connect 全生命周期日志，排查 Windows WSAENOTCONN 10057。
             // 落 PI_CODING_AGENT_DIR/asupersync-connect.log；asupersync 仅在设此环境变量时写文件。
             if let Some(dir) = pi_dir {

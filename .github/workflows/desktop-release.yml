@@ -120,13 +120,12 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 记忆图谱
+            ## Agent 工具与记忆图谱
 
-            - Obsidian 式分层：节点统一尺寸，用灰度区分实体核 / 会话卫星 / 过程脚手架
-            - 会话命名：优先意图标题，避免显示「会话」；弱标题（继续/你好）不覆盖已有好标题
-            - 抽取即使 quality=low 也输出 session_intent，减少「未命名会话」
-            - 占位标题不参与同语义聚合；搜索结果同步用 intent 展示
-            - 沉淀队列进度提示、增量合并节点、相机聚焦体验优化
+            - 自动准备私有 `rg` / `fd`（`~/.giteam/bin`）并注入 PATH，减少缺工具导致的检索失败
+            - 图谱节点可「引用到对话」：Composer chip + 发送时注入 `<graph_context>`，气泡只显示用户原文与 chip
+            - 剥离文件附件 / 纯图片占位等注入块，避免历史消息把系统提示当正文渲染
+            - 图谱点击性能：邻居高亮预计算、reducer 复用、merge 排队避免误触发整图重建与转圈
 
             ## 说明
 

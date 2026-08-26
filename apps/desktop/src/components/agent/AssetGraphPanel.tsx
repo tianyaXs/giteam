@@ -16,7 +16,7 @@
  * - 拖拽钉住 fx/fy 并加热，松手后邻域回位
  */
 
-import { useCallback, useEffect, useRef, useState, startTransition } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import Graph from "graphology";
 import random from "graphology-layout/random";
 import {
@@ -38,6 +38,9 @@ import { IS_TAURI } from "../../lib/platform";
 import { scheduleAfterInteraction, scheduleWhenIdle } from "../../lib/browserRuntime";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { makeGraphContextRef, type GraphContextRef } from "../../lib/graphContextRefs";
+
+export type { GraphContextRef };
 
 // ---------- 类型（对齐内核 query.rs DTO，camelCase） ----------
 
@@ -638,76 +641,87 @@ function buildSigmaScene(options: {
     if (!hoverFadeRaf) hoverFadeRaf = window.requestAnimationFrame(tickHoverFade);
   };
 
+  /** reducer 闭包共享的可变状态，避免每帧 setSetting 分配新函数。 */
+  const reducerState = {
+    focus: null as string | null,
+    hoverNode: null as string | null,
+    neighborSet: null as Set<string> | null,
+    hoverFade: 0,
+    selected: null as string | null,
+  };
+
   const applyState = () => {
     const focus = stateRef.current.selected ?? stateRef.current.hovered;
-    const hoverNode = stateRef.current.hovered;
-    sigma.setSetting("nodeReducer", (node, data) => {
-      const tier = (data.visualTier as VisualTier | undefined) ?? visualTierOf(String(data.nodeType || ""));
-      const baseColor = String(data.color || tierColor(tier, theme));
-      const base = {
-        ...data,
-        size: NODE_SIZE,
-        color: baseColor,
-      };
-      // 无 hover/选中：实体核常显标签；会话焦点节点细描边
-      if (!focus) {
-        if (focusRef.current === node) {
-          return {
-            ...base,
-            forceLabel: true,
-            zIndex: 3,
-            borderColor: theme.nodeFocusRing,
-            borderSize: 1.6,
-          };
-        }
-        if (tier === "entity") {
-          return { ...base, forceLabel: true, zIndex: 2 };
-        }
-        return base;
-      }
-      if (node === focus) {
-        const t =
-          hoverNode === node
-            ? hoverFade
-            : stateRef.current.selected === node
-              ? 1
-              : hoverFade;
-        // 对齐 sigma 官方 use-reducers：hover/选中只改色与 highlighted，不改 size。
-        // 改 size 会抖动命中区域，表现为节点「躲开」指针。
+    reducerState.focus = focus;
+    reducerState.hoverNode = stateRef.current.hovered;
+    reducerState.neighborSet = focus ? new Set(graph.neighbors(focus)) : null;
+    reducerState.hoverFade = hoverFade;
+    reducerState.selected = stateRef.current.selected;
+    sigma.refresh({ skipIndexation: true });
+  };
+
+  sigma.setSetting("nodeReducer", (node, data) => {
+    const { focus, hoverNode, neighborSet, hoverFade: fade, selected } = reducerState;
+    const tier = (data.visualTier as VisualTier | undefined) ?? visualTierOf(String(data.nodeType || ""));
+    const baseColor = String(data.color || tierColor(tier, theme));
+    const base = {
+      ...data,
+      size: NODE_SIZE,
+      color: baseColor,
+    };
+    if (!focus) {
+      if (focusRef.current === node) {
         return {
           ...base,
-          zIndex: 4,
-          highlighted: true,
           forceLabel: true,
-          color: lerpHex(baseColor, theme.nodeHover, t),
+          zIndex: 3,
           borderColor: theme.nodeFocusRing,
-          // 描边固定：动画 borderSize 会改变可视轮廓，易被感知成「躲开」。
           borderSize: 1.6,
         };
       }
-      if (graph.neighbors(focus).includes(node)) {
-        return { ...base, zIndex: 2, color: lerpHex(baseColor, theme.nodeHover, 0.25) };
+      if (tier === "entity") {
+        return { ...base, forceLabel: true, zIndex: 2 };
       }
+      return base;
+    }
+    if (node === focus) {
+      const t =
+        hoverNode === node
+          ? fade
+          : selected === node
+            ? 1
+            : fade;
       return {
         ...base,
-        zIndex: 0,
-        color: theme.nodeMuted,
-        label: null,
-        borderColor: undefined,
-        borderSize: 0,
-      } as typeof data;
-    });
-    sigma.setSetting("edgeReducer", (edge, data) => {
-      const [src, dst] = graph.extremities(edge);
-      if (focus && (src === focus || dst === focus)) {
-        return { ...data, color: theme.edgeHover, size: 1.1, zIndex: 4 };
-      }
-      if (!focus) return data;
-      return { ...data, color: theme.edgeMuted, size: 0.5 };
-    });
-    // 官方 use-reducers：未改 graph 数据时 skipIndexation，避免悬停重索引抖动。
-    sigma.refresh({ skipIndexation: true });
-  };
+        zIndex: 4,
+        highlighted: true,
+        forceLabel: true,
+        color: lerpHex(baseColor, theme.nodeHover, t),
+        borderColor: theme.nodeFocusRing,
+        borderSize: 1.6,
+      };
+    }
+    if (neighborSet?.has(node)) {
+      return { ...base, zIndex: 2, color: lerpHex(baseColor, theme.nodeHover, 0.25) };
+    }
+    return {
+      ...base,
+      zIndex: 0,
+      color: theme.nodeMuted,
+      label: null,
+      borderColor: undefined,
+      borderSize: 0,
+    } as typeof data;
+  });
+  sigma.setSetting("edgeReducer", (edge, data) => {
+    const { focus } = reducerState;
+    const [src, dst] = graph.extremities(edge);
+    if (focus && (src === focus || dst === focus)) {
+      return { ...data, color: theme.edgeHover, size: 1.1, zIndex: 4 };
+    }
+    if (!focus) return data;
+    return { ...data, color: theme.edgeMuted, size: 0.5 };
+  });
 
   const clearFit = () => {
     if (fitTimer !== null) {
@@ -788,7 +802,7 @@ function buildSigmaScene(options: {
           graph.setNodeAttribute(n.id, "x", n.x as number);
           graph.setNodeAttribute(n.id, "y", n.y as number);
         }
-        sigma.refresh();
+        sigma.refresh({ skipIndexation: true });
         // 收敛后只标记 settled，不再自动 fit。
         // sigma 默认 autoRescale 会在布局过程中保持图在视口内；
         // 结束时再 animate 相机会叠成「展开快完又缩放一次」。
@@ -1049,7 +1063,7 @@ function buildSigmaScene(options: {
     } else if (!sim && simNodes.length > 1) {
       startSim();
     }
-    sigma.refresh();
+    sigma.refresh({ skipIndexation: true });
     return added;
   };
   focusApiRef.current = { setFocus, mergeView };
@@ -1128,7 +1142,12 @@ function buildSigmaScene(options: {
     if (next) {
       const pos = sigma.getNodeDisplayData(node);
       if (pos) {
-        sigma.getCamera().animate({ x: pos.x, y: pos.y }, { duration: 480 });
+        const cam = sigma.getCamera();
+        const dx = cam.x - pos.x;
+        const dy = cam.y - pos.y;
+        if (dx * dx + dy * dy > 0.04) {
+          sigma.getCamera().animate({ x: pos.x, y: pos.y }, { duration: 280 });
+        }
       }
     }
   });
@@ -1257,6 +1276,8 @@ type AssetGraphPanelProps = {
   deferForContent?: boolean;
   /** 当前会话 id：打开图谱时视角优先落在它的节点附近（金环 + 相机飞入） */
   currentSessionId?: string;
+  /** 将节点引用到 Composer，作为发送时的显式图谱上下文 */
+  onCiteNode?: (ref: GraphContextRef) => void;
 };
 
 // ---------- 日期筛选 ----------
@@ -1298,7 +1319,123 @@ function computeDateRange(preset: DatePreset, customFrom: string, customTo: stri
   }
 }
 
-export function AssetGraphPanel({ repoPath, deferForContent = false, currentSessionId }: AssetGraphPanelProps) {
+type GraphNodeInspectorProps = {
+  detail: SubgraphNode;
+  nodeDotColor: string;
+  onClose: () => void;
+  onDrill: (nodeId: string) => void;
+  onCiteNode?: (ref: GraphContextRef) => void;
+};
+
+const GraphNodeInspector = memo(function GraphNodeInspector({
+  detail,
+  nodeDotColor,
+  onClose,
+  onDrill,
+  onCiteNode,
+}: GraphNodeInspectorProps) {
+  const label = useMemo(
+    () =>
+      resolveNodeLabel(detail.nodeType, detail.label, detail.props)
+        .replace(/\s*[×xX]\s*\d+\s*$/u, "")
+        .trim(),
+    [detail.nodeType, detail.label, detail.props],
+  );
+  const subtitle = useMemo(() => {
+    if (detail.nodeId.startsWith("session_group:")) {
+      try {
+        const props = JSON.parse(detail.props || "{}") as { count?: number };
+        const n = props.count ?? 0;
+        return n > 0 ? `同语义会话 · ${n} 个 · 点击展开` : "同语义会话聚合";
+      } catch {
+        return "同语义会话聚合";
+      }
+    }
+    return `${TYPE_LABELS[detail.nodeType] ?? detail.nodeType} · ${ageLabel(detail.lastSeenMs)}前`;
+  }, [detail.nodeId, detail.nodeType, detail.props, detail.lastSeenMs]);
+  const rows = useMemo(() => propsRows(detail.props).slice(0, 5), [detail.props]);
+
+  return (
+    <div className="absolute right-2 top-12 z-10 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-background/95 p-2.5 shadow-md backdrop-blur">
+      <div className="mb-1.5 flex items-start gap-2">
+        <span className="mt-1 size-2 shrink-0 rounded-full" style={{ backgroundColor: nodeDotColor }} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium text-foreground">{label}</p>
+          <p className="text-[10px] text-muted-foreground">{subtitle}</p>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onClose}
+          aria-label="关闭详情"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="flex flex-col gap-1">
+        {rows.map(([key, value]) => (
+          <div key={key} className="text-[10px] leading-relaxed">
+            <span className="text-muted-foreground">{key}: </span>
+            <span className="text-foreground/90">
+              {value.length > 140 ? `${value.slice(0, 138)}…` : value}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex flex-col gap-1.5">
+        {onCiteNode ? (
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            className="h-6 w-full text-[11px]"
+            onClick={() => {
+              onCiteNode(
+                makeGraphContextRef({
+                  nodeId: detail.nodeId,
+                  nodeType: detail.nodeType,
+                  typeLabel: TYPE_LABELS[detail.nodeType] ?? detail.nodeType,
+                  label,
+                  props: detail.props,
+                }),
+              );
+            }}
+          >
+            引用到对话
+          </Button>
+        ) : null}
+        {detail.nodeId.startsWith("session_group:") ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-6 w-full text-[11px]"
+            onClick={() => onDrill(detail.nodeId)}
+          >
+            展开成员
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-6 w-full text-[11px]"
+            onClick={() => onDrill(detail.nodeId)}
+          >
+            展开
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+});
+
+function AssetGraphPanelInner({
+  repoPath,
+  deferForContent = false,
+  currentSessionId,
+  onCiteNode,
+}: AssetGraphPanelProps) {
   const [counts, setCounts] = useState<GraphCounts | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [hits, setHits] = useState<NodeHit[]>([]);
@@ -1355,6 +1492,8 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
   const queueUpdatedAtRef = useRef(0);
   const queueSettleTimerRef = useRef<number | null>(null);
   const mergeInflightRef = useRef(false);
+  const pendingMergeViewRef = useRef<SubgraphView | null>(null);
+  const sceneEverReadyRef = useRef(false);
   const viewSnapshotRef = useRef<SubgraphView | null>(null);
   viewSnapshotRef.current = view;
 
@@ -1477,6 +1616,8 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
       return;
     }
     pendingRepoLoadRef.current = true;
+    sceneEverReadyRef.current = false;
+    pendingMergeViewRef.current = null;
     setHits([]);
     setDetail(null);
     setDrilled(null);
@@ -1550,12 +1691,13 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
           edges: result?.edges ?? [],
         };
         if (normalized.nodes.length === 0) return;
-        setView(normalized);
         viewRef.current = normalized;
         if (focusApiRef.current?.mergeView) {
           focusApiRef.current.mergeView(normalized);
+          pendingMergeViewRef.current = null;
+          startTransition(() => setView(normalized));
         } else {
-          bumpScene();
+          pendingMergeViewRef.current = normalized;
         }
         try {
           const summary = await invoke<GraphCounts>("asset_graph_summary", { repoPath: pathAt });
@@ -1708,15 +1850,39 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
   }, [currentSessionId, repoPath]);
 
   // 下钻视图有自己的 center 金环，会话焦点只在全图生效
+  const handleSelectNode = useCallback((node: SubgraphNode | null) => {
+    setDetail(node);
+  }, []);
+  const handleDrillNode = useCallback(
+    (nodeId: string) => {
+      void openSubgraph(nodeId);
+    },
+    [openSubgraph],
+  );
+  const handleCloseDetail = useCallback(() => setDetail(null), []);
+
   const { ready } = useSigmaScene(
     containerRef,
     sceneView,
     themeMode,
     focusRef,
     focusApiRef,
-    setDetail,
-    (nodeId) => { void openSubgraph(nodeId); },
+    handleSelectNode,
+    handleDrillNode,
   );
+
+  useEffect(() => {
+    if (ready) sceneEverReadyRef.current = true;
+  }, [ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const pending = pendingMergeViewRef.current;
+    if (!pending || !focusApiRef.current?.mergeView) return;
+    pendingMergeViewRef.current = null;
+    focusApiRef.current.mergeView(pending);
+    startTransition(() => setView(pending));
+  }, [ready]);
 
   // 焦点变化 / 场景就绪 / 同组内切会话 → 金环 + 相机飞入。
   // 依赖 currentSessionId：同语义超节点下切成员时 focusNodeId 不变，也要重飞。
@@ -1940,77 +2106,22 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
             </Button>
           </div>
 
-          {/* Inspector：刷新按钮下方 */}
-          {detail && (
-            <div className="absolute right-2 top-12 z-10 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-background/95 p-2.5 shadow-md backdrop-blur">
-              <div className="mb-1.5 flex items-start gap-2">
-                <span className="mt-1 size-2 shrink-0 rounded-full" style={{ backgroundColor: nodeDotColor }} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-foreground">
-                    {resolveNodeLabel(detail.nodeType, detail.label, detail.props)
-                      .replace(/\s*[×xX]\s*\d+\s*$/u, "")
-                      .trim()}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {detail.nodeId.startsWith("session_group:")
-                      ? (() => {
-                          try {
-                            const props = JSON.parse(detail.props || "{}") as { count?: number };
-                            const n = props.count ?? 0;
-                            return n > 0 ? `同语义会话 · ${n} 个 · 点击展开` : "同语义会话聚合";
-                          } catch {
-                            return "同语义会话聚合";
-                          }
-                        })()
-                      : `${TYPE_LABELS[detail.nodeType] ?? detail.nodeType} · ${ageLabel(detail.lastSeenMs)}前`}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="shrink-0 text-muted-foreground hover:text-foreground"
-                  onClick={() => setDetail(null)}
-                  aria-label="关闭详情"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-              <div className="flex flex-col gap-1">
-                {propsRows(detail.props).slice(0, 5).map(([key, value]) => (
-                  <div key={key} className="text-[10px] leading-relaxed">
-                    <span className="text-muted-foreground">{key}: </span>
-                    <span className="text-foreground/90">
-                      {value.length > 140 ? `${value.slice(0, 138)}…` : value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              {detail.nodeId.startsWith("session_group:") ? (
-                <Button
-                  type="button" variant="outline" size="sm"
-                  className="mt-2 h-6 w-full text-[11px]"
-                  onClick={() => void openSubgraph(detail.nodeId)}
-                >
-                  展开成员
-                </Button>
-              ) : (
-                <Button
-                  type="button" variant="outline" size="sm"
-                  className="mt-2 h-6 w-full text-[11px]"
-                  onClick={() => void openSubgraph(detail.nodeId)}
-                >
-                  展开
-                </Button>
-              )}
-            </div>
-          )}
+          {detail ? (
+            <GraphNodeInspector
+              detail={detail}
+              nodeDotColor={nodeDotColor}
+              onClose={handleCloseDetail}
+              onDrill={handleDrillNode}
+              onCiteNode={onCiteNode}
+            />
+          ) : null}
 
           {loadingView ? (
             <div className="absolute inset-0 flex items-center justify-center bg-background/60">
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : !ready ? (
-            // 有数据但场景未就绪（idle 调度窗口 + WebGL 构建 + 布局收敛）
-            // → 显示加载态；只有确认无数据时才显示空态，避免打开瞬间误闪「暂无」
+          ) : !ready && !sceneEverReadyRef.current ? (
+            // 仅首次构建显示加载遮罩；后续增量/重建不遮挡，避免点击时误感知为「转圈」
             view && view.nodes.length > 0 ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -2030,3 +2141,5 @@ export function AssetGraphPanel({ repoPath, deferForContent = false, currentSess
     </div>
   );
 }
+
+export const AssetGraphPanel = memo(AssetGraphPanelInner);

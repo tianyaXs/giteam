@@ -29,6 +29,14 @@ import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { AssetGraphPanel } from "./components/agent/AssetGraphPanel";
+import {
+  formatGraphContextBlock,
+  formatLocalFileAttachmentHint,
+  formatUiOnlyFileAttachmentHint,
+  IMAGE_ONLY_USER_PROMPT,
+  normalizeUserMessageForDisplay,
+  type GraphContextRef,
+} from "./lib/graphContextRefs";
 import { SearchPanel } from "./components/search/SearchPanel";
 import type { SearchHit, SearchScope } from "./lib/sessionSearch";
 import { AgentTodoProgressCard } from "./components/agent/AgentTodoProgressCard";
@@ -569,9 +577,29 @@ function buildToolPart(options: {
   return part;
 }
 
+function mergeCompletedUserChatMessage(
+  mapped: AgentChatMessage,
+  previous?: AgentChatMessage
+): AgentChatMessage {
+  const display = normalizeUserMessageForDisplay(mapped, previous);
+  return {
+    ...mapped,
+    content: display.content,
+    graphRefs: display.graphRefs,
+    attachments: previous?.attachments || mapped.attachments
+  };
+}
+
 function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | null {
   if (message.role !== "user" && message.role !== "assistant") return null;
-  const content = message.parts.map(agentPartText).join("");
+  const rawContent = message.parts.map(agentPartText).join("");
+  let content = rawContent;
+  let graphRefs: GraphContextRef[] | undefined;
+  if (message.role === "user") {
+    const normalized = normalizeUserMessageForDisplay({ content: rawContent });
+    content = normalized.content;
+    graphRefs = normalized.graphRefs;
+  }
   const images = message.parts
     .filter((part): part is Extract<AgentPart, { type: "image" }> => part.type === "image")
     .map((part, index) => ({
@@ -585,6 +613,7 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
     id: message.id,
     role: message.role,
     content,
+    graphRefs,
     attachments: images.length > 0 ? images : undefined
   };
 }
@@ -1178,6 +1207,7 @@ export function App() {
   const [agentProviderConfigBusy, setAgentProviderConfigBusy] = useState(false);
   const [agentPromptInput, setAgentPromptInput] = useState("");
   const [agentImageAttachments, setAgentImageAttachments] = useState<AgentAttachment[]>([]);
+  const [agentGraphContextRefs, setAgentGraphContextRefs] = useState<GraphContextRef[]>([]);
   const [agentAttachmentMenuOpen, setAgentAttachmentMenuOpen] = useState(false);
   const [agentDefinitions, setAgentDefinitions] = useState<AgentDefinition[]>([]);
   const [agentDefinitionsLoading, setAgentDefinitionsLoading] = useState(false);
@@ -1282,6 +1312,13 @@ export function App() {
   // 否则会把「跨会话定位」带过去的关键词一起清掉。
   const [highlightKeyword, setHighlightKeyword] = useState("");
   const agentInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const handleCiteGraphNode = useCallback((ref: GraphContextRef) => {
+    setAgentGraphContextRefs((prev) => {
+      if (prev.some((item) => item.nodeId === ref.nodeId)) return prev;
+      return [...prev, ref];
+    });
+    requestAnimationFrame(() => agentInputRef.current?.focus({ preventScroll: true }));
+  }, []);
   const agentInputComposingRef = useRef(false);
   const agentImageInputRef = useRef<HTMLInputElement | null>(null);
   const agentViewportTodosSigRef = useRef("");
@@ -3096,7 +3133,11 @@ export function App() {
             return {
               ...session,
               title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
-              messages: session.messages.map((item) => (item.id === mapped.id ? { ...item, ...mapped } : item)),
+              messages: session.messages.map((item) => (
+                item.id === mapped.id
+                  ? mergeCompletedUserChatMessage({ ...item, ...mapped }, item)
+                  : item
+              )),
               loaded: true,
               updatedAt: Date.now()
             };
@@ -3117,11 +3158,17 @@ export function App() {
           let messages = session.messages.flatMap((item) => {
             if (item.id === mapped.id) {
               replacedOptimistic = true;
-              return [{ ...item, ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             if (pendingId && item.id === pendingId) {
               replacedOptimistic = true;
-              return [{ ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             // 兜底：队列丢失时仍允许替换最早一条乐观（仅无 pendingId 时）。
             if (
@@ -3133,7 +3180,10 @@ export function App() {
               && String(item.content || "").trim() === userText
             ) {
               replacedOptimistic = true;
-              return [{ ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             return [item];
           });
@@ -3150,7 +3200,11 @@ export function App() {
             ).trim();
             const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
             const liveActive = Boolean(streamingId) && !frozen?.has(streamingId);
-            messages = commitUserBeforeLiveAssistant(messages, mapped, liveActive ? streamingId : "");
+            messages = commitUserBeforeLiveAssistant(
+              messages,
+              mergeCompletedUserChatMessage(mapped),
+              liveActive ? streamingId : ""
+            );
           }
           const seen = new Set<string>();
           messages = messages.filter((item) => {
@@ -5572,13 +5626,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const typedPrompt = (options?.promptOverride ?? agentPromptInput).trim();
     const prompt = typedPrompt;
     const attachments = isQueueFlush ? [] : agentImageAttachments;
-    if (!prompt && attachments.length === 0) return;
+    const graphRefs = isQueueFlush ? [] : agentGraphContextRefs;
+    if (!prompt && attachments.length === 0 && graphRefs.length === 0) return;
     // 在任何 await 之前上锁并清空输入，避免连按 Enter 发出两次相同内容。
     if (agentPromptSubmitLockRef.current) return;
     agentPromptSubmitLockRef.current = true;
     if (!isQueueFlush) {
       setAgentPromptInput("");
       setAgentImageAttachments([]);
+      setAgentGraphContextRefs([]);
     }
     const releaseSubmitLock = () => {
       agentPromptSubmitLockRef.current = false;
@@ -5587,6 +5643,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (isQueueFlush) return;
       setAgentPromptInput(prompt);
       if (attachments.length > 0) setAgentImageAttachments(attachments);
+      if (graphRefs.length > 0) setAgentGraphContextRefs(graphRefs);
     };
 
     const selectedModel = normalizeModelRef(activeAgentModel || "");
@@ -5703,18 +5760,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (isImageAttachment(attachment)) return [];
       const filename = attachment.filename || "unnamed attachment";
       if (attachment.sourcePath) {
-        return [[
-          "The user attached a local file named \"" + filename + "\".",
-          "Local path: " + attachment.sourcePath,
-          "Use the appropriate Pi tool to inspect it when needed."
-        ].join("\n")];
+        return [formatLocalFileAttachmentHint(filename, attachment.sourcePath)];
       }
-      return [[
-        "The user attached a file named \"" + filename + "\" (" + (attachment.mime || "unknown MIME type") + ").",
-        "The attachment was selected in the desktop UI but is not available as a filesystem path to the embedded agent."
-      ].join("\n")];
+      return [formatUiOnlyFileAttachmentHint(filename, attachment.mime || "unknown MIME type")];
     });
-    const sessionPrompt = [prompt, ...fileHints].filter(Boolean).join("\n\n").trim();
+    const graphContextBlock = formatGraphContextBlock(graphRefs);
+    const sessionPrompt = [prompt, graphContextBlock, ...fileHints].filter(Boolean).join("\n\n").trim();
     if (!sessionPrompt && multimodalImages.length === 0) {
       if (attachments.some((attachment) => isImageAttachment(attachment))) {
         restoreComposer();
@@ -5756,6 +5807,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           id: userId,
           role: "user",
           content: prompt,
+          graphRefs: graphRefs.length > 0 ? graphRefs : undefined,
           attachments: displayAttachments
         },
         { id: assistantId, role: "assistant", content: "" }
@@ -6373,18 +6425,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   let next = session.messages.flatMap((candidate) => {
                     if (candidate.id === mappedUser.id) {
                       replaced = true;
-                      return [{
-                        ...candidate,
-                        ...mappedUser,
-                        attachments: candidate.attachments || mappedUser.attachments
-                      }];
+                      return [mergeCompletedUserChatMessage(
+                        {
+                          ...candidate,
+                          ...mappedUser,
+                          attachments: candidate.attachments || mappedUser.attachments
+                        },
+                        candidate
+                      )];
                     }
                     if (pendingId && candidate.id === pendingId) {
                       replaced = true;
-                      return [{
-                        ...mappedUser,
-                        attachments: candidate.attachments || mappedUser.attachments
-                      }];
+                      return [mergeCompletedUserChatMessage(
+                        {
+                          ...mappedUser,
+                          attachments: candidate.attachments || mappedUser.attachments
+                        },
+                        candidate
+                      )];
                     }
                     return [candidate];
                   });
@@ -6394,7 +6452,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                       restore.unshift(pendingId);
                       agentPendingLocalUserIdsBySessionRef.current[sessionId] = restore;
                     }
-                    next = commitUserBeforeLiveAssistant(next, mappedUser, liveActive ? liveId : "");
+                    next = commitUserBeforeLiveAssistant(
+                      next,
+                      mergeCompletedUserChatMessage(mappedUser),
+                      liveActive ? liveId : ""
+                    );
                   }
                   const seen = new Set<string>();
                   return {
@@ -7131,7 +7193,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const result = await agentClient.prompt({
         sessionId,
         runId,
-        prompt: sessionPrompt || (multimodalImages.length > 0 ? "Please inspect the attached image(s)." : ""),
+        prompt: sessionPrompt || (multimodalImages.length > 0 ? IMAGE_ONLY_USER_PROMPT : ""),
         images: multimodalImages.map((image) => ({
           mimeType: image.mimeType,
           path: image.path
@@ -9844,6 +9906,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onJumpLatest={jumpAgentToLatest}
               attachments={agentImageAttachments}
               onRemoveAttachment={(id) => setAgentImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+              graphRefs={agentGraphContextRefs}
+              onRemoveGraphRef={(id) => setAgentGraphContextRefs((prev) => prev.filter((item) => item.id !== id))}
               slashOpen={agentSlashOpen}
               slashSuggestions={agentSlashSuggestions}
               slashActiveIndex={agentSlashActiveIndex}
@@ -9915,6 +9979,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                     activeAgentSessionBusy
                     && !agentPromptInput.trim()
                     && agentImageAttachments.length === 0
+                    && agentGraphContextRefs.length === 0
                   ) {
                     return;
                   }
@@ -10014,7 +10079,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               }}
               canSubmit={Boolean(
                 (activeAgentModel || "").trim()
-                && (agentPromptInput.trim() || agentImageAttachments.length > 0)
+                && (agentPromptInput.trim() || agentImageAttachments.length > 0 || agentGraphContextRefs.length > 0)
               )}
               onPrimaryAction={() => {
                 // busy + 有草稿 → runAgentPrompt 内入队；busy + 空 → 停止。
@@ -10059,7 +10124,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         <BrowserPanel url={browserPaneUrl} />
       ) : null}
       {rightPaneTab === "assetGraph" ? (
-        <AssetGraphPanel repoPath={repoPath} deferForContent={agentSessionLoading} currentSessionId={activeAgentSessionId} />
+        <AssetGraphPanel
+          repoPath={repoPath}
+          deferForContent={agentSessionLoading}
+          currentSessionId={activeAgentSessionId}
+          onCiteNode={handleCiteGraphNode}
+        />
       ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (

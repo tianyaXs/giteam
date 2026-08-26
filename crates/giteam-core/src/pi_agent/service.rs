@@ -405,6 +405,8 @@ impl PiAgentService {
         // 然后 vault 与该目录下的 auth.json 对齐。必须在任何 Pi session 创建前完成。
         let secrets = if load_catalog {
             ensure_pi_agent_dir_env();
+            // 须在首次 grep/find 前注入；pi 对 rg/fd 探测结果 OnceLock 缓存。
+            let _ = crate::pi_agent::ensure_agent_bins();
             // Pi 云端默认 HTTP 整请求超时 60s；子 agent 调研/长流式很容易踩中。
             // 桌面端强制抬到 30 分钟（除非用户显式设置了 PI_HTTP_REQUEST_TIMEOUT_SECS）。
             // 0 = 不限时。见 pi::http::client::DEFAULT_REMOTE_REQUEST_TIMEOUT_SECS。

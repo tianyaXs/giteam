@@ -5,6 +5,8 @@ export type AgentChatMessage = {
   /** 本地保留的运行失败信息；服务端历史不一定返回失败事件。 */
   error?: string;
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
+  /** 用户从资产图谱引用的节点（仅展示；模型上下文在发送时已注入）。 */
+  graphRefs?: import("./graphContextRefs").GraphContextRef[];
 };
 
 export type AgentChatSession = {
