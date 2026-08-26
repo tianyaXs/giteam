@@ -494,3 +494,32 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
   }
   return out;
 }
+
+/**
+ * 同一轮多次 runtime.retry 只留最后一条；failure 最多一条。
+ * 成功的重试不保留——否则会一直挂在最新正文下面。
+ */
+export function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
+  let latestRetry: AgentDetailedPart | null = null;
+  let failure: AgentDetailedPart | null = null;
+  const rest: AgentDetailedPart[] = [];
+  for (const part of parts) {
+    const type = String((part as { type?: string }).type || "");
+    if (type === "runtime.retry") {
+      const phase = String((part as { phase?: string }).phase || "").trim();
+      const success = (part as { success?: boolean | null }).success;
+      // 成功重试对用户已无信息量，丢弃以免黏在正文下方。
+      if (phase === "completed" && success === true) continue;
+      latestRetry = part;
+      continue;
+    }
+    if (type === "runtime.failure") {
+      failure = part;
+      continue;
+    }
+    rest.push(part);
+  }
+  if (latestRetry) rest.push(latestRetry);
+  if (failure) rest.push(failure);
+  return rest;
+}

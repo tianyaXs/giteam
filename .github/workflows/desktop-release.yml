@@ -120,18 +120,20 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## Windows 终端与命令执行
+            ## Agent 会话与子任务（0.2.43）
 
-            - 修复 Windows 集成终端无法启动：不再依赖 `/usr/bin/script` + zsh，改用 Git Bash / PowerShell / cmd
-            - 修复 Windows PATH 用 `:` 错误切分导致 git 等命令找不到的问题
-            - 优先 Git for Windows bash，跳过 WSL/Store bash；Git Bash 登录保留仓库目录（`CHERE_INVOKING`）
-            - `.cmd` / `.bat` 经 `cmd /C` 正确启动，避免 CreateProcess 失败
+            - 修复并行子任务误标失败/中断：正确吃下批任务终态
+            - 修复回合结束后最终回复被 history 同步冲掉
+            - 成功重试标签不再黏在最新正文下方
+            - 子任务会话不再短暂闪进左侧会话列表
+
+            ## Windows 终端（含 0.2.42）
+
+            - 集成终端改用 Git Bash / PowerShell / cmd，修复 PATH 与 `.cmd`/`.bat` 启动
 
             ## Agent 工具与记忆图谱（含 0.2.41）
 
-            - 自动准备私有 `rg` / `fd`（`~/.giteam/bin`）并注入 PATH
-            - 图谱节点可「引用到对话」：Composer chip + `<graph_context>`，气泡不显示注入块原文
-            - 图谱点击性能优化，减少误触发整图重建与转圈
+            - 私有 `rg` / `fd`、图谱引用 chip、点击性能优化
 
             ## 说明
 

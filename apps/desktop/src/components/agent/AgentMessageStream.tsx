@@ -10,7 +10,8 @@ import {
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
   summarizeAgentContextToolCounts,
-  type AgentAssistantRenderGroup
+  type AgentAssistantRenderGroup,
+  coalesceRuntimeParts
 } from "../../lib/agentParts";
 import type {
   AgentChatMessage,
@@ -1416,27 +1417,8 @@ function collapseDuplicateFailureRows(
   return out;
 }
 
-/** 同一轮里多次 runtime.retry 只保留最后一条；failure 最多一条，挂到末尾。 */
-function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
-  let latestRetry: AgentDetailedPart | null = null;
-  let failure: AgentDetailedPart | null = null;
-  const rest: AgentDetailedPart[] = [];
-  for (const part of parts) {
-    const type = String((part as { type?: string }).type || "");
-    if (type === "runtime.retry") {
-      latestRetry = part;
-      continue;
-    }
-    if (type === "runtime.failure") {
-      failure = part;
-      continue;
-    }
-    rest.push(part);
-  }
-  if (latestRetry) rest.push(latestRetry);
-  if (failure) rest.push(failure);
-  return rest;
-}
+/* coalesceRuntimeParts: 见 ../../lib/agentParts */
+
 
 /** live 非空时仍并入 history 里缺失的 toolCall，避免仅有 text:* live 整表盖掉工具 → 数量闪动。 */
 function mergeLiveWithFetchedParts(

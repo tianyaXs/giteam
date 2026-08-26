@@ -447,12 +447,19 @@ export function enrichTaskToolPart(part: AgentDetailedPart): AgentDetailedPart {
   const startedAtMs =
     Number((part as { startedAtMs?: number }).startedAtMs ?? details.startedAtMs ?? 0) || 0;
   const outputText = coalesceText(summary, (part as { output?: string }).output);
+  const existingSubagentStatus = normalizeText(
+    (part as { subagentStatus?: string }).subagentStatus
+  ).toLowerCase();
   const aborted =
     /abort/i.test(outputText)
     || /中止|暂停|已停止|Tool execution aborted/i.test(outputText)
-    || normalizeText((part as { subagentStatus?: string }).subagentStatus).toLowerCase() === "aborted";
+    || existingSubagentStatus === "aborted";
+  // status 已是终态时，丢弃过期的 running/pending，否则父回合 settled 后卡片会误标「中断/任务失败」。
+  const statusIsTerminal = status === "completed" || status === "error" || status === "failed";
+  const existingIsStaleRunning =
+    existingSubagentStatus === "running" || existingSubagentStatus === "pending";
   const subagentStatus = coalesceText(
-    (part as { subagentStatus?: string }).subagentStatus,
+    statusIsTerminal && existingIsStaleRunning ? "" : (part as { subagentStatus?: string }).subagentStatus,
     aborted ? "aborted" : status === "error" ? "failed" : status
   ) || "completed";
 
@@ -468,4 +475,77 @@ export function enrichTaskToolPart(part: AgentDetailedPart): AgentDetailedPart {
   if (startedAtMs > 0) (next as { startedAtMs?: number }).startedAtMs = startedAtMs;
   if (subagentStatus) (next as { subagentStatus?: string }).subagentStatus = subagentStatus;
   return next;
+}
+
+function partToolCallIdOf(part: AgentDetailedPart): string {
+  return (
+    normalizeText((part as { toolCallId?: string }).toolCallId)
+    || normalizeText((part as { id?: string }).id)
+  );
+}
+
+/**
+ * 从父 task 的 `details.tasks[]` 生成 `parent:index` 子卡终态。
+ * 用于 tool.completed 回写，以及 history 冷加载时补齐批并行子卡。
+ */
+export function buildBatchTaskChildPartsFromDetails(
+  parentToolCallId: string,
+  details: unknown,
+  existingParts: AgentDetailedPart[] = []
+): AgentDetailedPart[] {
+  const parentId = normalizeText(parentToolCallId);
+  if (!parentId || !details || typeof details !== "object") return [];
+  const tasks = Array.isArray((details as { tasks?: unknown }).tasks)
+    ? ((details as { tasks: unknown[] }).tasks)
+    : [];
+  if (tasks.length === 0) return [];
+
+  const existingById = new Map<string, AgentDetailedPart>();
+  for (const part of existingParts) {
+    const id = partToolCallIdOf(part);
+    if (id) existingById.set(id, part);
+  }
+
+  const out: AgentDetailedPart[] = [];
+  for (let i = 0; i < tasks.length; i += 1) {
+    const row = tasks[i];
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const rawIndex = Number(item.index);
+    const index = Number.isInteger(rawIndex) && rawIndex >= 0 ? rawIndex : i;
+    const childId = `${parentId}:${index}`;
+    const ok = item.ok !== false && !item.error;
+    const existing = existingById.get(childId);
+    const childSessionId = coalesceText(
+      item.childSessionId,
+      existing ? (existing as { childSessionId?: string }).childSessionId : ""
+    );
+    const summary = coalesceText(
+      item.error,
+      item.summary,
+      existing ? (existing as { summary?: string }).summary : "",
+      existing ? (existing as { output?: string }).output : ""
+    );
+    const toolCount =
+      Number(item.toolCount ?? (existing as { toolCount?: number } | undefined)?.toolCount ?? 0) || 0;
+    const elapsedMs =
+      Number(item.elapsedMs ?? (existing as { elapsedMs?: number } | undefined)?.elapsedMs ?? 0) || 0;
+    out.push(
+      enrichTaskToolPart({
+        ...(existing || {}),
+        id: childId,
+        type: "toolCall",
+        toolCallId: childId,
+        toolName: "task",
+        status: ok ? "completed" : "error",
+        subagentStatus: ok ? "completed" : "failed",
+        isError: !ok,
+        ...(childSessionId ? { childSessionId } : {}),
+        ...(summary ? { summary, output: summary } : {}),
+        ...(toolCount > 0 ? { toolCount } : {}),
+        ...(elapsedMs > 0 ? { elapsedMs } : {})
+      } as AgentDetailedPart)
+    );
+  }
+  return out;
 }

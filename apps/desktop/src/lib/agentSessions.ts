@@ -18,6 +18,8 @@ export type AgentChatSession = {
   provider?: string;
   /** 会话当前 model id（服务端真相）。 */
   model?: string;
+  parentId?: string;
+  sessionKind?: string;
   messages: AgentChatMessage[];
   turnStart: number;
   loaded: boolean;
@@ -35,6 +37,8 @@ export type ChatSessionSummary = {
   /** 会话绑定的 model id。 */
   model?: string;
   parentId?: string;
+  /** `"primary"` | `"subagent"`；子会话不得进侧栏。 */
+  sessionKind?: string;
   archivedAt?: number;
 };
 
@@ -116,6 +120,8 @@ export function newAgentSession(seedPrompt?: string, indexHint?: number): AgentC
 export function agentSessionFromSummary(summary: ChatSessionSummary, indexHint?: number): AgentChatSession {
   const provider = String(summary.provider || "").trim();
   const model = String(summary.model || "").trim();
+  const parentId = String(summary.parentId || "").trim();
+  const sessionKind = String(summary.sessionKind || "").trim();
   return {
     id: summary.id,
     title: toAgentSessionTitle(summary.title || "", indexHint),
@@ -123,6 +129,8 @@ export function agentSessionFromSummary(summary: ChatSessionSummary, indexHint?:
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
+    ...(parentId ? { parentId } : {}),
+    ...(sessionKind ? { sessionKind } : {}),
     messages: [],
     turnStart: 0,
     loaded: false,
@@ -158,9 +166,22 @@ export function isArchivedChatSessionSummary(
 }
 
 export function isChildChatSessionSummary(
-  summary: Pick<ChatSessionSummary, "parentId">
+  summary: Pick<ChatSessionSummary, "parentId" | "sessionKind">
 ): boolean {
+  const kind = String(summary.sessionKind || "").trim().toLowerCase();
+  if (kind === "subagent") return true;
   return Boolean(summary.parentId?.trim());
+}
+
+/** 主会话列表用：排除 task/subagent 子会话（与移动端 isPrimaryAgentSession 对齐）。 */
+export function isPrimaryAgentSessionSummary(
+  summary: Pick<{ sessionKind?: string; parentSessionId?: string; parentId?: string }, "sessionKind" | "parentSessionId" | "parentId">
+): boolean {
+  const kind = String(summary.sessionKind || "").trim().toLowerCase();
+  if (kind === "subagent") return false;
+  if (String(summary.parentSessionId || "").trim()) return false;
+  if (String(summary.parentId || "").trim()) return false;
+  return true;
 }
 
 export function filterRootAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
@@ -252,4 +273,50 @@ export function dropQueuedFollowUpsAlreadyInTranscript(
   );
   if (committed.size === 0) return queue;
   return queue.filter((item) => !committed.has(item.content.trim()));
+}
+
+/**
+ * history 比 live 短（JSONL 未落盘 / 同步过早）时，保留 live 末尾尚未入库的 assistant 气泡，
+ * 避免最终回复闪过后被残缺 history 整表替换抹掉。
+ */
+export function mergeHistoryMessagesPreservingLive(
+  history: AgentChatMessage[],
+  live: AgentChatMessage[],
+  options?: {
+    hasLiveParts?: (messageId: string) => boolean;
+    pickContent?: (historyContent: string, liveContent: string) => string;
+  }
+): AgentChatMessage[] {
+  if (!Array.isArray(live) || live.length === 0) return history;
+  if (!Array.isArray(history) || history.length === 0) {
+    return live.filter((row) => {
+      if (row.role !== "assistant") return false;
+      return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+    });
+  }
+
+  const historyIds = new Set(history.map((row) => row.id));
+  const liveById = new Map(live.map((row) => [row.id, row]));
+  const enriched = history.map((row) => {
+    if (row.role !== "assistant") return row;
+    const liveRow = liveById.get(row.id);
+    if (!liveRow) return row;
+    const content = options?.pickContent?.(row.content || "", liveRow.content || "") || row.content;
+    if (content && content !== row.content) return { ...row, content };
+    return row;
+  });
+
+  let lastSharedLiveIndex = -1;
+  for (let i = live.length - 1; i >= 0; i -= 1) {
+    if (historyIds.has(live[i].id)) {
+      lastSharedLiveIndex = i;
+      break;
+    }
+  }
+  const trailing = live.slice(lastSharedLiveIndex + 1).filter((row) => {
+    if (historyIds.has(row.id)) return false;
+    if (row.role !== "assistant") return false;
+    return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+  });
+  return trailing.length > 0 ? [...enriched, ...trailing] : enriched;
 }

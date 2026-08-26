@@ -293,6 +293,7 @@ import {
   clipAgentSessionTitle,
   compareAgentSessionActivity,
   filterActiveAgentSessionSummaries,
+  isPrimaryAgentSessionSummary,
   agentSessionFromSummary,
   modelRefFromChatSession,
   sortAgentSessionSummaries,
@@ -308,7 +309,8 @@ import {
   type AgentDetailedPart,
   type AgentMessagePageCacheEntry,
   type ChatSessionSummary,
-  type AgentTodoItem
+  type AgentTodoItem,
+  mergeHistoryMessagesPreservingLive
 } from "./lib/agentSessions";
 import {
   type AgentSkillInfo,
@@ -332,6 +334,7 @@ import {
 import { extractToolDetails, extractToolOutputText } from "./lib/agent/toolPresentation";
 import {
   applySubagentChildEventToPart,
+  buildBatchTaskChildPartsFromDetails,
   enrichTaskToolPart,
   extractTaskDescriptionFromParentInput,
   parseIndexedParentToolCallId
@@ -623,6 +626,7 @@ function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSum
   const parentId = String(summary.parentSessionId || "").trim();
   const provider = String(summary.provider || "").trim();
   const model = String(summary.model || "").trim();
+  const sessionKind = String(summary.sessionKind || "").trim();
   return {
     id: summary.sessionId,
     // 标题来自后端派生的首条用户消息摘要；空会话回退 id 前缀。
@@ -631,7 +635,8 @@ function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSum
     updatedAt,
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
-    ...(parentId ? { parentId } : {})
+    ...(parentId ? { parentId } : {}),
+    ...(sessionKind ? { sessionKind } : {})
   };
 }
 
@@ -792,6 +797,31 @@ async function hydrateTaskPartsFromChildSessions(
       });
       nextParts.push(enriched);
       changed = true;
+    }
+    // 批并行父 task：history 往往只有父 toolCall + details.tasks，没有 parent:index 子卡。
+    // 冷加载时从 details 补齐终态，避免 UI 只剩父壳或误标中断。
+    const existingIds = new Set(
+      nextParts.map((part) =>
+        String((part as { toolCallId?: string }).toolCallId || (part as { id?: string }).id || "").trim()
+      ).filter(Boolean)
+    );
+    for (const part of nextParts.slice()) {
+      if (String((part as { toolName?: string }).toolName || "").trim() !== "task") continue;
+      const toolCallId = String(
+        (part as { toolCallId?: string }).toolCallId || (part as { id?: string }).id || ""
+      ).trim();
+      if (!toolCallId || toolCallId.includes(":")) continue;
+      const details = (part as { details?: unknown }).details;
+      const children = buildBatchTaskChildPartsFromDetails(toolCallId, details, nextParts);
+      for (const child of children) {
+        const childId = String(
+          (child as { toolCallId?: string }).toolCallId || (child as { id?: string }).id || ""
+        ).trim();
+        if (!childId || existingIds.has(childId)) continue;
+        nextParts.push(child);
+        existingIds.add(childId);
+        changed = true;
+      }
     }
     if (changed) {
       next[messageId] = { ...detail, parts: nextParts };
@@ -2307,6 +2337,8 @@ export function App() {
   function upsertSidebarAgentSession(repoId: string, session: AgentChatSession) {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
+    // 子任务会话绝不能进侧栏（完成瞬间 list 竞态的最后一道防线）。
+    if (!isPrimaryAgentSessionSummary(session)) return;
     setSidebarAgentSessionsByRepo((prev) => {
       const limit = Math.max(AGENT_SESSION_PAGE_SIZE, getRepoSessionFetchLimit(id));
       const existing = prev[id] || [];
@@ -3596,7 +3628,8 @@ export function App() {
     }
     try {
       const listed = (await agentClient.listSessions())
-        .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg));
+        .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg))
+        .filter(isPrimaryAgentSessionSummary);
       const rows = listed
         .map(agentSummaryToChatSummary)
         // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
@@ -3664,7 +3697,8 @@ export function App() {
     const limit = Math.max(AGENT_SESSION_PAGE_SIZE, limitArg ?? agentSessionFetchLimit);
     appendAgentDebugLog("session.list requested");
     const listed = (await agentClient.listSessions())
-      .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath));
+      .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath))
+      .filter(isPrimaryAgentSessionSummary);
     const rows = listed
       .map(agentSummaryToChatSummary)
       // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
@@ -3870,6 +3904,21 @@ export function App() {
             return { ...item, content: richer };
           }
           return item;
+        });
+        // history 可能缺最终 assistant（JSONL 未落盘）：保留 live 末尾气泡，避免闪过后被抹掉。
+        mapped = mergeHistoryMessagesPreservingLive(mapped, currentSession.messages, {
+          hasLiveParts: (messageId) => {
+            const parts =
+              agentLivePartsByServerMessageIdRef.current[messageId]
+              || [];
+            return parts.some((part) => {
+              const type = String((part as { type?: string }).type || "");
+              if (type === "text") return Boolean(String((part as { text?: string }).text || "").trim());
+              return false;
+            });
+          },
+          pickContent: (historyContent, liveContent) =>
+            pickPreferredAgentContent(historyContent, liveContent)
         });
       }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
@@ -6199,10 +6248,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             next.push(part);
           }
         }
-        // 保留流式期写入的重试/失败/记忆事件（history message.parts 不含这些 ephemeral 类型）
+        // 保留流式期写入的重试/失败/记忆事件（history message.parts 不含这些 ephemeral 类型）。
+        // 成功重试不保留，避免「已重试」标签黏在最新正文下方。
         for (const part of current) {
           const type = String((part as { type?: string }).type || "");
           if (type !== "runtime.retry" && type !== "runtime.failure" && type !== "runtime.memory") continue;
+          if (
+            type === "runtime.retry"
+            && String((part as { phase?: string }).phase || "").trim() === "completed"
+            && (part as { success?: boolean | null }).success === true
+          ) {
+            continue;
+          }
           const id = String((part as { id?: string }).id || "").trim();
           if (!id) continue;
           if (next.some((item) => String((item as { id?: string }).id || "") === id)) continue;
@@ -6343,16 +6400,37 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       let id = messageId.trim();
       if (!id) return;
       if (frozenAssistantMessageIds.has(id)) {
-        // 已完成回合不再收新工具；挂到尚未冻结的当前回合，否则先缓冲到下一次 message.started。
+        const pid = String(
+          (part as { id?: string }).id
+          || (part as { toolCallId?: string }).toolCallId
+          || ""
+        ).trim();
+        const liveOnFrozen = agentLivePartsByServerMessageIdRef.current[id] || [];
+        const partIdOf = (item: AgentDetailedPart) =>
+          String(
+            (item as { id?: string }).id
+            || (item as { toolCallId?: string }).toolCallId
+            || ""
+          ).trim();
+        const existsOnFrozen = Boolean(pid && liveOnFrozen.some((item) => partIdOf(item) === pid));
+        const indexed = pid ? parseIndexedParentToolCallId(pid) : null;
+        const parentOnFrozen = Boolean(
+          indexed
+          && liveOnFrozen.some((item) => partIdOf(item) === indexed.parentId)
+        );
+        // 子任务终态/进度：工具卡已在该冻结消息上（或父 task 在其上）时必须写回，不能丢到下一条。
+        if (existsOnFrozen || parentOnFrozen) {
+          upsertAgentLivePart(id, part);
+          scrollToBottom();
+          return;
+        }
+        // 已完成回合不再收全新工具；挂到尚未冻结的当前回合，否则先缓冲到下一次 message.started。
         const current = currentServerAssistantId.trim();
         if (current && current !== id && !frozenAssistantMessageIds.has(current)) {
           id = current;
         } else {
-          const pid = String((part as { id?: string }).id || "").trim();
           if (pid) {
-            const hit = pendingToolsBeforeMessage.findIndex(
-              (item) => String((item as { id?: string }).id || "").trim() === pid
-            );
+            const hit = pendingToolsBeforeMessage.findIndex((item) => partIdOf(item) === pid);
             if (hit >= 0) pendingToolsBeforeMessage[hit] = { ...pendingToolsBeforeMessage[hit], ...part };
             else pendingToolsBeforeMessage.push(part);
           }
@@ -6598,20 +6676,34 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             } else if (phase === "started") {
               retryPart.maxAttempts = maxAttempts;
             }
-            upsertAgentLivePart(currentServerAssistantId, retryPart);
-            // 清掉旧版按 attempt/phase 生成的多行 retry:*，只留 runtime.retry 一条。
-            commitAgentLiveParts((prev) => {
-              const mid = currentServerAssistantId.trim();
-              const current = prev[mid];
-              if (!Array.isArray(current) || current.length === 0) return prev;
-              const next = current.filter((part) => {
-                const type = String((part as { type?: string }).type || "");
-                if (type !== "runtime.retry") return true;
-                return String((part as { id?: string }).id || "").trim() === "runtime.retry";
+            // 成功重试对用户已无信息量：直接移除，避免「已重试」永久挂在最新正文下方。
+            if (phase === "completed" && event.success) {
+              commitAgentLiveParts((prev) => {
+                const mid = currentServerAssistantId.trim();
+                const current = prev[mid];
+                if (!Array.isArray(current) || current.length === 0) return prev;
+                const next = current.filter(
+                  (part) => String((part as { type?: string }).type || "") !== "runtime.retry"
+                );
+                if (next.length === current.length) return prev;
+                return { ...prev, [mid]: next };
               });
-              if (next.length === current.length) return prev;
-              return { ...prev, [mid]: next };
-            });
+            } else {
+              upsertAgentLivePart(currentServerAssistantId, retryPart);
+              // 清掉旧版按 attempt/phase 生成的多行 retry:*，只留 runtime.retry 一条。
+              commitAgentLiveParts((prev) => {
+                const mid = currentServerAssistantId.trim();
+                const current = prev[mid];
+                if (!Array.isArray(current) || current.length === 0) return prev;
+                const next = current.filter((part) => {
+                  const type = String((part as { type?: string }).type || "");
+                  if (type !== "runtime.retry") return true;
+                  return String((part as { id?: string }).id || "").trim() === "runtime.retry";
+                });
+                if (next.length === current.length) return prev;
+                return { ...prev, [mid]: next };
+              });
+            }
           }
           setMessage(
             phase === "completed"
@@ -6739,12 +6831,46 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         case "tool.completed": {
           const toolCompletedId = String(event.toolCallId || "").trim();
           if (toolCompletedId) {
-            updateToolPart(currentServerAssistantId, buildToolPart({
+            const completedPart = buildToolPart({
               toolCallId: toolCompletedId,
               toolName: event.toolName || "",
               status: event.isError ? "error" : "completed",
               output: event.output
-            }));
+            });
+            updateToolPart(currentServerAssistantId, completedPart);
+            const toolName = String(
+              event.toolName
+              || (completedPart as { toolName?: string }).toolName
+              || ""
+            ).trim();
+            if (toolName === "task") {
+              const details = (completedPart as { details?: unknown }).details;
+              const live = agentLivePartsByServerMessageIdRef.current;
+              const partIdOf = (item: AgentDetailedPart) =>
+                String(
+                  (item as { id?: string }).id
+                  || (item as { toolCallId?: string }).toolCallId
+                  || ""
+                ).trim();
+              let targetMid = currentServerAssistantId.trim();
+              if (!(live[targetMid] || []).some((item) => partIdOf(item) === toolCompletedId)) {
+                for (const mid of frozenAssistantMessageIds) {
+                  if ((live[mid] || []).some((item) => partIdOf(item) === toolCompletedId)) {
+                    targetMid = mid;
+                    break;
+                  }
+                }
+              }
+              const existing = live[targetMid] || [];
+              const children = buildBatchTaskChildPartsFromDetails(
+                toolCompletedId,
+                details,
+                existing
+              );
+              for (const child of children) {
+                updateToolPart(targetMid, child);
+              }
+            }
           }
           break;
         }
@@ -7013,13 +7139,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           let nextParts = parts.map((part) => {
             const type = String((part as { type?: string }).type || "");
             if (type === "toolCall") {
+              const toolName = String((part as { toolName?: string }).toolName || "").trim();
               const st = String((part as { status?: string }).status || "").trim().toLowerCase();
-              if (st !== "running" && st !== "pending" && st !== "deciding") return part;
-              return {
+              const sub = String((part as { subagentStatus?: string }).subagentStatus || "").trim().toLowerCase();
+              const stillOpen =
+                st === "running" || st === "pending" || st === "deciding"
+                || (toolName === "task" && (sub === "running" || sub === "pending"));
+              if (!stillOpen) return part;
+              const next = {
                 ...(part as object),
                 status: settleStatus,
                 isError: Boolean(failure)
               } as AgentDetailedPart;
+              if (toolName === "task") {
+                (next as { subagentStatus?: string }).subagentStatus = failure ? "failed" : "completed";
+              }
+              return next;
             }
             // 中止/失败时把仍停在「重试中」的行收成终态，避免暂停后整段消失或一直 pulse。
             if (failure && type === "runtime.retry") {

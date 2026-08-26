@@ -311,6 +311,10 @@ struct ManagedSession {
     /// 遗留的消息在下次 prompt 的 run_loop 开头 drain（pi 自带边界）。
     /// Arc 供 fetcher 闭包无锁共享；上限与 pi MAX_STEERING_QUEUE_SIZE 对齐。
     pending_steers: Arc<Mutex<Vec<String>>>,
+    /// 内存侧会话类型；list 过滤优先读这里，避免 catalog 写入竞态把子会话漏进主列表。
+    session_kind: String,
+    parent_session_id: Option<String>,
+    parent_tool_call_id: Option<String>,
 }
 
 struct ActiveRun {
@@ -682,17 +686,12 @@ impl PiAgentService {
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             pending_steers,
+            session_kind: session_kind.clone(),
+            parent_session_id: parent_session_id.clone(),
+            parent_tool_call_id: parent_tool_call_id.clone(),
         });
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|error| PiAgentError::State(error.to_string()))?;
-        if sessions.contains_key(&session_id) {
-            return Err(PiAgentError::SessionAlreadyExists(session_id));
-        }
-        sessions.insert(session_id, managed);
-        drop(sessions);
-
+        // 先写 catalog，再进 sessions map：list_sessions 轮询若夹在中间，
+        // 会因无 record 默认 primary，把刚创建的子会话短暂漏进侧栏。
         if let Some(session_path) = session_path {
             let record = PersistedSessionRecord {
                 schema_version: 1,
@@ -719,6 +718,14 @@ impl PiAgentService {
                 .insert(summary.session_id.clone(), record);
             self.persist_catalog()?;
         }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?;
+        if sessions.contains_key(&session_id) {
+            return Err(PiAgentError::SessionAlreadyExists(session_id));
+        }
+        sessions.insert(session_id, managed);
         Ok(summary)
     }
 
@@ -799,13 +806,15 @@ impl PiAgentService {
         let mut summaries = Vec::with_capacity(sessions.len());
         let mut titles_to_cache: Vec<(String, String)> = Vec::new();
         for (session_id, session) in sessions {
-            // 子 agent：靠 kind 或 parent 标记排除，不进主列表（UI 靠 subagent.* 事件）。
-            // extract 子代理是 ephemeral 无记录会话：靠注册表排除（运行中的瞬态窗口）。
-            let kind = self.record_session_kind(&session_id);
-            if kind == "subagent"
-                || self.record_parent_session_id(&session_id).is_some()
-                || crate::asset_graph::extraction::is_extract_session(&session_id)
-            {
+            // 子 agent：优先读内存元数据（创建即有），catalog 仅作冷启动/恢复兜底。
+            // 旧逻辑只靠 record 且缺省 primary，会在 catalog 写入前把子会话漏进侧栏。
+            if session_hidden_from_primary_list(
+                &session.session_kind,
+                session.parent_session_id.as_deref(),
+                &session_id,
+                self.record_session_kind(&session_id).as_str(),
+                self.record_parent_session_id(&session_id).as_deref(),
+            ) {
                 continue;
             }
 
@@ -847,6 +856,19 @@ impl PiAgentService {
                     *snap = agent_messages;
                 }
             }
+            let session_kind = if !session.session_kind.trim().is_empty() {
+                session.session_kind.clone()
+            } else {
+                self.record_session_kind(&session_id)
+            };
+            let parent_session_id = session
+                .parent_session_id
+                .clone()
+                .or_else(|| self.record_parent_session_id(&session_id));
+            let parent_tool_call_id = session
+                .parent_tool_call_id
+                .clone()
+                .or_else(|| self.record_parent_tool_call_id(&session_id));
             summaries.push(PiSessionSummary {
                 session_id: live_id,
                 repo_path: session.repo_path.clone(),
@@ -855,9 +877,9 @@ impl PiAgentService {
                 message_count: state.message_count,
                 updated_at_ms: self.record_updated_at_ms(&session_id),
                 title,
-                session_kind: self.record_session_kind(&session_id),
-                parent_session_id: self.record_parent_session_id(&session_id),
-                parent_tool_call_id: self.record_parent_tool_call_id(&session_id),
+                session_kind,
+                parent_session_id,
+                parent_tool_call_id,
             });
         }
         if !titles_to_cache.is_empty() {
@@ -2533,6 +2555,9 @@ impl PiAgentService {
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             pending_steers,
+            session_kind: record.session_kind.clone(),
+            parent_session_id: record.parent_session_id.clone(),
+            parent_tool_call_id: record.parent_tool_call_id.clone(),
         });
         let mut sessions = self
             .sessions
@@ -3405,6 +3430,31 @@ fn migrate_repo_session_paths(records: &mut HashMap<String, PersistedSessionReco
     dirty
 }
 
+/// 主会话侧栏是否应隐藏该 session。内存元数据优先，catalog 作兜底。
+fn session_hidden_from_primary_list(
+    memory_kind: &str,
+    memory_parent: Option<&str>,
+    session_id: &str,
+    catalog_kind: &str,
+    catalog_parent: Option<&str>,
+) -> bool {
+    let kind = if !memory_kind.trim().is_empty() {
+        memory_kind
+    } else {
+        catalog_kind
+    };
+    if kind.eq_ignore_ascii_case("subagent") {
+        return true;
+    }
+    if memory_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    if catalog_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    crate::asset_graph::extraction::is_extract_session(session_id)
+}
+
 fn remove_session_files(path: &PathBuf) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(path.with_extension("jsonl.bak"));
@@ -3860,5 +3910,38 @@ mod tests {
             r#"Invalid 'input[2].call_id': string too long. Expected a string with maximum length 64, but got a string with length 1044 instead.","code":"string_above_max_length""#
         ));
         assert!(!is_tool_call_id_overflow_error("HTTP 400 invalid api key"));
+    }
+
+    #[test]
+    fn session_hidden_from_primary_list_prefers_memory_subagent_kind() {
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            None,
+            "child-1",
+            "primary",
+            None,
+        ));
+        assert!(session_hidden_from_primary_list(
+            "primary",
+            Some("parent-1"),
+            "child-2",
+            "primary",
+            None,
+        ));
+        assert!(!session_hidden_from_primary_list(
+            "primary",
+            None,
+            "main-1",
+            "primary",
+            None,
+        ));
+        // catalog 尚未写入时，仅靠内存 kind 也能挡住
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            Some("parent"),
+            "child-3",
+            "primary",
+            None,
+        ));
     }
 }
