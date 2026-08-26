@@ -120,16 +120,23 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## Agent 工具与记忆图谱
+            ## Windows 终端与命令执行
 
-            - 自动准备私有 `rg` / `fd`（`~/.giteam/bin`）并注入 PATH，减少缺工具导致的检索失败
-            - 图谱节点可「引用到对话」：Composer chip + 发送时注入 `<graph_context>`，气泡只显示用户原文与 chip
-            - 剥离文件附件 / 纯图片占位等注入块，避免历史消息把系统提示当正文渲染
-            - 图谱点击性能：邻居高亮预计算、reducer 复用、merge 排队避免误触发整图重建与转圈
+            - 修复 Windows 集成终端无法启动：不再依赖 `/usr/bin/script` + zsh，改用 Git Bash / PowerShell / cmd
+            - 修复 Windows PATH 用 `:` 错误切分导致 git 等命令找不到的问题
+            - 优先 Git for Windows bash，跳过 WSL/Store bash；Git Bash 登录保留仓库目录（`CHERE_INVOKING`）
+            - `.cmd` / `.bat` 经 `cmd /C` 正确启动，避免 CreateProcess 失败
+
+            ## Agent 工具与记忆图谱（含 0.2.41）
+
+            - 自动准备私有 `rg` / `fd`（`~/.giteam/bin`）并注入 PATH
+            - 图谱节点可「引用到对话」：Composer chip + `<graph_context>`，气泡不显示注入块原文
+            - 图谱点击性能优化，减少误触发整图重建与转圈
 
             ## 说明
 
             打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
+            Windows 建议安装 Git for Windows，终端体验更接近 macOS。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
