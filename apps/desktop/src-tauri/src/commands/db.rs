@@ -223,7 +223,11 @@ pub fn db_list_review_records(
 }
 
 #[tauri::command]
-pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<RepositoryEntry, String> {
+pub fn db_add_repository(
+    app_handle: AppHandle,
+    path: &str,
+    name: Option<String>,
+) -> Result<RepositoryEntry, String> {
     if path.trim().is_empty() {
         return Err("repository path is empty".to_string());
     }
@@ -237,11 +241,15 @@ pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<Repository
         .to_str()
         .ok_or_else(|| "repository path is not valid utf-8".to_string())?
         .to_string();
-    let name = canonical
+    let fallback = canonical
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("repo")
         .to_string();
+    let name = name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback);
     let id = format!("repo-{}", now_millis());
     let added_at = chrono_like_now();
 
@@ -252,6 +260,13 @@ pub fn db_add_repository(app_handle: AppHandle, path: &str) -> Result<Repository
         params![id, canonical_str, name, added_at, now_millis()],
     )
     .map_err(|e| format!("insert repository failed: {e}"))?;
+
+    // 已存在同路径时仍允许更新显示名。
+    conn.execute(
+        "UPDATE repositories SET name = ?1 WHERE path = ?2",
+        params![name, canonical_str],
+    )
+    .map_err(|e| format!("update repository name failed: {e}"))?;
 
     let mut stmt = conn
         .prepare("SELECT id, path, name, added_at FROM repositories WHERE path = ?1 LIMIT 1")

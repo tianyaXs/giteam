@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,9 @@ use super::types::AgentInteraction;
 use super::AgentSessionStatus;
 
 pub const AGENT_EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// 每个 run 保留的最近事件数，供 SSE 重连按 sequence 补洞。
+pub const EVENT_RING_CAPACITY: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +74,9 @@ pub enum AgentEvent {
     MessageStarted {
         #[serde(rename = "messageId")]
         message_id: String,
+        /// user/assistant/…——前端只应把 assistant 的 started 绑到回复气泡；
+        /// user 的 MessageStart 若误绑，会把用户正文渲染成「助手在打字」。
+        role: super::messages::AgentRole,
     },
     #[serde(rename = "message.completed")]
     MessageCompleted { message: AgentMessage },
@@ -117,6 +123,16 @@ pub enum AgentEvent {
     Compaction {
         phase: String,
         error: Option<String>,
+    },
+    /// steer 已入队（run 进行中用户补充指令）：当前步骤/工具批完成后由
+    /// follow_up fetcher 注入同一 run（对齐 Codex pending_input，不跳过工具）。
+    /// 前端据此即时显示排队中的用户消息。
+    #[serde(rename = "runtime.steerQueued")]
+    SteerQueued {
+        /// 排队中的补充指令全文（前端渲染用户气泡用）。
+        message: String,
+        /// 队列中排在它后面的转向条数（含本条从 1 计）。
+        position: u32,
     },
     #[serde(rename = "runtime.retry")]
     Retry {
@@ -205,18 +221,124 @@ pub enum AgentEvent {
         #[serde(rename = "childSessionId")]
         child_session_id: String,
     },
+    /// 旁路记忆抽取开始（资产图谱语义层；非用户可见的 task 子代理）。
+    /// 挂父 run 流，前端渲染为「写入记忆中」时间线条目，与 runtime.retry 同级。
+    #[serde(rename = "memory.extraction.started")]
+    MemoryExtractionStarted {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+    },
+    /// 旁路记忆抽取完成：实体/关系已入图（可为空批次）。
+    #[serde(rename = "memory.extraction.completed")]
+    MemoryExtractionCompleted {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+        #[serde(rename = "entityCount")]
+        entity_count: u32,
+        #[serde(rename = "relationCount")]
+        relation_count: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+        /// 入图实体摘要（type + title），供时间线展开预览；上限由发送方截断。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        entities: Vec<MemoryExtractionEntity>,
+        /// LLM 质量档（前端与后端门控对齐；仅 high / priority-high 应出卡）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quality: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<String>,
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
+    },
+    /// 旁路记忆抽取失败（LLM/解析/写库）；主流程不受影响。
+    #[serde(rename = "memory.extraction.failed")]
+    MemoryExtractionFailed {
+        #[serde(rename = "extractionId")]
+        extraction_id: String,
+        error: String,
+        #[serde(rename = "elapsedMs", default)]
+        elapsed_ms: u64,
+    },
+}
+
+/// 记忆抽取入图实体的轻量摘要（UI 预览用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryExtractionEntity {
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub title: String,
 }
 
 pub type EventSubscriberKey = (String, String);
 pub type EventSubscriberBus =
     Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>;
+pub type EventBufferBus = Arc<Mutex<HashMap<EventSubscriberKey, EventRingBuffer>>>;
 
-/// 向匹配 (session_id, run_id) 的订阅者广播事件（Control SSE 通道）。
-pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelope) {
+/// 单 run 事件环：容量满时丢最旧；重连用 `after(seq)` 取 seq 之后的帧。
+#[derive(Debug, Default)]
+pub struct EventRingBuffer {
+    events: VecDeque<AgentEventEnvelope>,
+    capacity: usize,
+}
+
+impl EventRingBuffer {
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(256)),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn push(&mut self, event: AgentEventEnvelope) {
+        while self.events.len() >= self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    #[must_use]
+    pub fn after(&self, after_seq: u64) -> Vec<AgentEventEnvelope> {
+        self.events
+            .iter()
+            .filter(|event| event.sequence > after_seq)
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn last_sequence(&self) -> Option<u64> {
+        self.events.back().map(|event| event.sequence)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// 向匹配 (session_id, run_id) 的订阅者广播事件，并写入环形缓冲供重连补洞。
+pub fn publish_event(
+    subscribers: &EventSubscriberBus,
+    buffers: &EventBufferBus,
+    event: &AgentEventEnvelope,
+) {
     let key = (
         event.session_id.clone(),
         event.run_id.clone().unwrap_or_default(),
     );
+    if let Ok(mut buffers) = buffers.lock() {
+        buffers
+            .entry(key.clone())
+            .or_insert_with(|| EventRingBuffer::with_capacity(EVENT_RING_CAPACITY))
+            .push(event.clone());
+    }
     if let Ok(mut subscribers) = subscribers.lock() {
         if let Some(senders) = subscribers.get_mut(&key) {
             senders.retain(|sender| sender.send(event.clone()).is_ok());
@@ -225,6 +347,50 @@ pub fn publish_event(subscribers: &EventSubscriberBus, event: &AgentEventEnvelop
             }
         }
     }
+    // extract 子会话（资产图谱语义抽取）是后台旁路：其事件不进 UI 通道，
+    // 否则前端 remote-live 会为每个抽取子会话幻影建行，把真实会话挤出列表。
+    // task 工具的 plan 子代理不受影响（其进度经父 run 的 subagent.* 投影上屏）。
+    if !crate::asset_graph::extraction::is_extract_session(&event.session_id) {
+        if let Some(hook) = UI_EVENT_HOOK.get() {
+            hook(event);
+        }
+    }
+    // 资产图谱旁路消费：completed 级事件进图，任何失败（含 panic）静默隔离，
+    // 绝不影响 agent 主流程（设计文档 docs/repo-asset-graph-agent.md §7）。
+    crate::asset_graph::on_event_published(event);
+}
+
+/// 取出 sequence > after_seq 的缓冲事件（不含 live 通道）。
+#[must_use]
+pub fn replay_events_after(
+    buffers: &EventBufferBus,
+    session_id: &str,
+    run_id: &str,
+    after_seq: u64,
+) -> Vec<AgentEventEnvelope> {
+    let key = (session_id.to_string(), run_id.to_string());
+    buffers
+        .lock()
+        .ok()
+        .and_then(|buffers| buffers.get(&key).map(|buf| buf.after(after_seq)))
+        .unwrap_or_default()
+}
+
+/// run 结束后可清缓冲，避免无限堆积；重连窗口内保留由调用方决定延迟清理。
+pub fn clear_event_buffer(buffers: &EventBufferBus, session_id: &str, run_id: &str) {
+    let key = (session_id.to_string(), run_id.to_string());
+    if let Ok(mut buffers) = buffers.lock() {
+        buffers.remove(&key);
+    }
+}
+
+type UiEventHook = Arc<dyn Fn(&AgentEventEnvelope) + Send + Sync>;
+
+static UI_EVENT_HOOK: OnceLock<UiEventHook> = OnceLock::new();
+
+/// Desktop registers a hook so HTTP/mobile prompts also emit into the Tauri UI.
+pub fn set_ui_event_hook(hook: UiEventHook) {
+    let _ = UI_EVENT_HOOK.set(hook);
 }
 
 #[derive(Debug)]
@@ -291,6 +457,7 @@ impl PiEventTranslator {
             }
             pi::sdk::AgentEvent::MessageStart { message } => Some(AgentEvent::MessageStarted {
                 message_id: pi_message_id(&message),
+                role: pi_message_role(&message),
             }),
             pi::sdk::AgentEvent::MessageUpdate {
                 message,
@@ -438,6 +605,15 @@ fn pi_message_id(message: &pi::sdk::Message) -> String {
         pi::sdk::Message::Assistant(message) => message_id("assistant", message.timestamp),
         pi::sdk::Message::ToolResult(message) => message_id("tool", message.timestamp),
         pi::sdk::Message::Custom(message) => message_id("custom", message.timestamp),
+    }
+}
+
+fn pi_message_role(message: &pi::sdk::Message) -> super::messages::AgentRole {
+    match message {
+        pi::sdk::Message::User(_) => super::messages::AgentRole::User,
+        pi::sdk::Message::Assistant(_) => super::messages::AgentRole::Assistant,
+        pi::sdk::Message::ToolResult(_) => super::messages::AgentRole::Tool,
+        pi::sdk::Message::Custom(_) => super::messages::AgentRole::Custom,
     }
 }
 

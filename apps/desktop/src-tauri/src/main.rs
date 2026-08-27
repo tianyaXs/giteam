@@ -249,7 +249,8 @@ fn main() {
     {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init());
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_deep_link::init());
     }
 
     let app = builder
@@ -286,6 +287,9 @@ fn main() {
             // 系统托盘：关闭最小化到托盘时，点托盘图标或菜单恢复窗口、或真正退出。
             let _ = build_tray(app.handle());
 
+            // 本地自动化调度（进程内 tick + 桌面通知）。
+            commands::automation::start_automation_scheduler(app.handle().clone());
+
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
@@ -295,6 +299,23 @@ fn main() {
                 giteam_core::pi_agent::set_ui_event_hook(std::sync::Arc::new(move |event| {
                     let _ = handle.emit("giteam://agent-event", event);
                 }));
+            }
+
+            // giteam://import?url=… 深链（落地页「在 Giteam 中打开」）→ 前端确认导入。
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let text = url.to_string();
+                        if text.starts_with("giteam://import") {
+                            show_main_window(&handle);
+                            commands::share::stash_pending_import_url(text.clone());
+                            let _ = handle.emit("giteam://share-import", text);
+                        }
+                    }
+                });
             }
 
             // 手机端模型开关 → 落盘 → 桌面低频轮询同步 UI（可见性仍互通）。
@@ -393,6 +414,7 @@ fn main() {
             commands::pi_agent::agent_prompt,
             commands::pi_agent::agent_steer,
             commands::pi_agent::agent_abort,
+            commands::pi_agent::agent_abort_session,
             commands::pi_agent::agent_delete_session,
             commands::pi_agent::agent_list_providers,
             commands::pi_agent::agent_list_models,
@@ -426,6 +448,17 @@ fn main() {
             commands::db::db_add_repository,
             commands::db::db_list_repositories,
             commands::db::db_remove_repository,
+            commands::share::share_create,
+            commands::share::share_import,
+            commands::share::share_take_pending_import,
+            commands::automation::automation_list_tasks,
+            commands::automation::automation_get_task,
+            commands::automation::automation_create_task,
+            commands::automation::automation_update_task,
+            commands::automation::automation_set_enabled,
+            commands::automation::automation_delete_task,
+            commands::automation::automation_list_runs,
+            commands::automation::automation_run_now,
             remote_repo::commands::remote_repo,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,

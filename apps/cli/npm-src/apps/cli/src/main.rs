@@ -100,8 +100,25 @@ enum Commands {
             help = "Only process selected plugins, e.g. --with git,entire,giteam"
         )]
         with: Vec<PluginName>,
+        #[arg(
+            long,
+            help = "Import a project from a share URL (skip dependency checks), e.g. https://<cloud>/s/<shareId>"
+        )]
+        from: Option<String>,
+        #[arg(long, help = "Target directory for --from (default ~/giteam-projects/<repo>)")]
+        dir: Option<String>,
+        #[arg(
+            long,
+            help = "Attach shared context to an existing local repo instead of cloning"
+        )]
+        attach: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+    #[command(about = "Share a project snapshot (code + sessions + memory) via cloud URL")]
+    Share {
+        #[command(subcommand)]
+        command: ShareCommands,
     },
     Plugin {
         #[command(subcommand)]
@@ -173,6 +190,46 @@ enum CloudCommands {
     ForgetKey {
         #[arg(help = "access key id (aki_…) or full gtm_aks_… secret")]
         key: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ShareCommands {
+    #[command(about = "Export the project snapshot and upload it; prints the share URL")]
+    Create {
+        #[arg(help = "Repository path (default: current directory)")]
+        path: Option<String>,
+        #[arg(long, help = "Bundle all refs instead of current branch + tags")]
+        all: bool,
+        #[arg(long, help = "Disable content redaction (not recommended)")]
+        no_redact: bool,
+        #[arg(long, help = "Do not include review records")]
+        no_reviews: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Import a shared project (alias of `giteam init --from <url>`)")]
+    Import {
+        #[arg(help = "Share URL (https://<cloud>/s/<shareId>) or giteam://import deep link")]
+        url: String,
+        #[arg(long, help = "Target directory (default ~/giteam-projects/<repo>)")]
+        dir: Option<String>,
+        #[arg(long, help = "Attach context to an existing local repo instead of cloning")]
+        attach: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "List shares published by this workspace")]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Revoke a share (artifact is deleted on the cloud)")]
+    Revoke {
+        #[arg(help = "share id (shr_…)")]
+        share_id: String,
         #[arg(long)]
         json: bool,
     },
@@ -2232,13 +2289,28 @@ fn app_support_dir() -> Result<PathBuf, String> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let appdata = appdata.trim();
+            if !appdata.is_empty() {
+                return Ok(PathBuf::from(appdata).join("giteam"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let home = home.trim();
+            if !home.is_empty() {
+                return Ok(PathBuf::from(home).join(".config").join("giteam"));
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_config_home = xdg_config_home.trim();
         if !xdg_config_home.is_empty() {
             return Ok(PathBuf::from(xdg_config_home).join("giteam"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let home = home.trim();
         if !home.is_empty() {
             return Ok(PathBuf::from(home).join(".config").join("giteam"));
@@ -2291,14 +2363,39 @@ fn clear_pid_file_if_matches(expected_pid: u32) {
 }
 
 fn pid_is_alive(pid: u32) -> bool {
-    Command::new("/bin/kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // tasklist prints "INFO: No tasks..." when missing; otherwise a row containing the pid.
+        text.lines().any(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && !line.to_ascii_uppercase().starts_with("INFO:")
+                && line.split_whitespace().any(|tok| tok == pid.to_string())
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("/bin/kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 fn find_pid_by_port(port: u16) -> Option<u32> {
@@ -2306,29 +2403,73 @@ fn find_pid_by_port(port: u16) -> Option<u32> {
 }
 
 fn find_pids_by_port(port: u16) -> Vec<u32> {
-    let output = Command::new("lsof")
-        .arg("-ti")
-        .arg(format!("tcp:{port}"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
     let current_pid = std::process::id();
     let mut pids = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(pid) = line.trim().parse::<u32>() else {
-            continue;
+
+    #[cfg(windows)]
+    {
+        let output = Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
         };
-        if pid != current_pid && !pids.contains(&pid) {
-            pids.push(pid);
+        if !output.status.success() {
+            return Vec::new();
         }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let upper = line.to_ascii_uppercase();
+            if !upper.contains("LISTENING") {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // Proto LocalAddress ForeignAddress State PID
+            if parts.len() < 5 {
+                continue;
+            }
+            let local = parts[1];
+            let local_port = local
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.trim_end_matches(']').parse::<u16>().ok());
+            if local_port != Some(port) {
+                continue;
+            }
+            let Ok(pid) = parts[parts.len() - 1].parse::<u32>() else {
+                continue;
+            };
+            if pid != 0 && pid != current_pid && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        return pids;
     }
-    pids
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("lsof")
+            .arg("-ti")
+            .arg(format!("tcp:{port}"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Ok(pid) = line.trim().parse::<u32>() else {
+                continue;
+            };
+            if pid != current_pid && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        pids
+    }
 }
 
 /// 升级 / reload 前释放控制口：停掉 pid 文件进程，并清掉仍占端口的孤儿实例。
@@ -2479,13 +2620,28 @@ fn wait_for_stopped(port: u16, timeout_ms: u64) -> bool {
 fn runtime_view() -> Result<RuntimeView, String> {
     let control = control::get_control_server_settings()?;
     let log_path = log_file_path()?.display().to_string();
+    let bound = control::control_bound_port().unwrap_or(0);
+    let probe_port = if bound > 0 { bound } else { control.port };
     let pid_state = read_pid_state();
     let pid = pid_state
         .as_ref()
         .map(|v| v.pid)
-        .or_else(|| find_pid_by_port(control.port));
+        .or_else(|| find_pid_by_port(probe_port))
+        .or_else(|| {
+            if probe_port != control.port {
+                find_pid_by_port(control.port)
+            } else {
+                None
+            }
+        });
     let pid_alive = pid.map(pid_is_alive).unwrap_or(false);
-    let health = fetch_health(control.port);
+    let health = fetch_health(probe_port).or_else(|| {
+        if probe_port != control.port {
+            fetch_health(control.port)
+        } else {
+            None
+        }
+    });
     Ok(RuntimeView {
         running: health.is_some(),
         pid,
@@ -2849,19 +3005,42 @@ fn start_background(warmup: bool, json: bool) -> Result<(), String> {
 }
 
 fn signal_pid(pid: u32, force: bool) -> Result<(), String> {
-    let sig = if force { "-KILL" } else { "-TERM" };
-    let status = Command::new("/bin/kill")
-        .arg(sig)
-        .arg(pid.to_string())
-        .status()
-        .map_err(|e| format!("signal process failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "signal process {} failed with status {}",
-            pid, status
-        ))
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("taskkill");
+        if force {
+            cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        } else {
+            cmd.args(["/PID", &pid.to_string()]);
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| format!("signal process failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "signal process {} failed with status {}",
+                pid, status
+            ))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let sig = if force { "-KILL" } else { "-TERM" };
+        let status = Command::new("/bin/kill")
+            .arg(sig)
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| format!("signal process failed: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "signal process {} failed with status {}",
+                pid, status
+            ))
+        }
     }
 }
 
@@ -3123,6 +3302,9 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
                 cloud::LinkDeviceOptions {
                     force_new,
                     key_name,
+                    // CLI 不传 tunnel_owner：保留已存值；首次 link 为空 → 视为 cli，
+                    // 由本 CLI 进程负责 tunnel（control.rs 判 owner != "desktop" 才拉）。
+                    tunnel_owner: None,
                 },
             )?;
             let port = control::get_control_server_settings()?.port;
@@ -3245,6 +3427,162 @@ fn run_cloud_command(command: CloudCommands) -> Result<(), String> {
     }
 }
 
+fn run_share_create(
+    path: Option<String>,
+    all: bool,
+    no_redact: bool,
+    no_reviews: bool,
+    json: bool,
+) -> Result<(), String> {
+    let repo = path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let opts = giteam_core::share::ExportOptions {
+        all_refs: all,
+        no_redact,
+        include_reviews: !no_reviews,
+        out_file: None,
+    };
+    if !json {
+        eprintln!("正在导出并上传项目快照…");
+    }
+    let created = giteam_core::share::create_share(&repo, &opts).map_err(|e| e.to_string())?;
+    let manifest = &created.manifest;
+    if json {
+        let payload = serde_json::json!({
+            "shareId": created.share_id,
+            "shareUrl": created.share_url,
+            "gitUrl": created.git_url,
+            "repo": manifest.repo.name,
+            "headCommit": manifest.repo.head_commit,
+            "repoSizeBytes": manifest.package.size_bytes,
+            "contextSizeBytes": manifest.package.context_size_bytes,
+            "sizeBytes": manifest.package.size_bytes.saturating_add(manifest.package.context_size_bytes),
+            "sha256": manifest.package.sha256,
+            "contextSha256": manifest.package.context_sha256,
+            "sessions": manifest.context.session_count,
+            "memory": manifest.context.has_memory_db,
+            "attachments": manifest.context.has_attachments,
+            "reviews": manifest.context.review_record_count,
+            "redactions": manifest.context.redactions,
+            "warnings": created.warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        for warning in &created.warnings {
+            eprintln!("警告: {warning}");
+        }
+        println!("分享地址: {}", created.share_url);
+        println!("Git remote: {}", created.git_url);
+        println!(
+            "体积: 代码 {:.1} MiB + 上下文 {:.1} MiB",
+            manifest.package.size_bytes as f64 / 1_048_576.0,
+            manifest.package.context_size_bytes as f64 / 1_048_576.0,
+        );
+        println!(
+            "内容: {} 个会话 / 记忆库 {} / 附件 {} / review {} 条 / 脱敏 {} 处",
+            manifest.context.session_count,
+            if manifest.context.has_memory_db { "含" } else { "无" },
+            if manifest.context.has_attachments { "含" } else { "无" },
+            manifest.context.review_record_count,
+            manifest.context.redactions,
+        );
+        println!("接收方执行: giteam init --from {}", created.share_url);
+    }
+    Ok(())
+}
+
+fn run_share_import(
+    url: &str,
+    dir: Option<String>,
+    attach: Option<String>,
+    json: bool,
+) -> Result<(), String> {
+    let opts = giteam_core::share::ImportOptions {
+        dir: dir.map(PathBuf::from),
+        attach: attach.map(PathBuf::from),
+        name: None,
+    };
+    if !json {
+        eprintln!("正在下载并初始化分享项目…");
+    }
+    let outcome = giteam_core::share::import_share(url, &opts).map_err(|e| e.to_string())?;
+    if json {
+        let payload = serde_json::json!({
+            "targetDir": outcome.target_dir,
+            "shareId": outcome.share_id,
+            "repoName": outcome.repo_name,
+            "sessionsImported": outcome.sessions_imported,
+            "catalogRecordsMerged": outcome.catalog_records_merged,
+            "memoryImported": outcome.memory_imported,
+            "attachmentsImported": outcome.attachments_imported,
+            "reviewsImported": outcome.reviews_imported,
+            "rekeyedEntries": outcome.rekeyed_entries,
+            "warnings": outcome.warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        for warning in &outcome.warnings {
+            eprintln!("警告: {warning}");
+        }
+        println!("导入完成: {}", outcome.target_dir.display());
+        println!(
+            "恢复: {} 个会话（catalog 合并 {} 条）/ 记忆库 {} / 附件 {} 个 / review {} 条 / 路径重写 {} 处",
+            outcome.sessions_imported,
+            outcome.catalog_records_merged,
+            if outcome.memory_imported { "已导入" } else { "无" },
+            outcome.attachments_imported,
+            outcome.reviews_imported,
+            outcome.rekeyed_entries,
+        );
+    }
+    Ok(())
+}
+
+fn run_share_list(json: bool) -> Result<(), String> {
+    let settings = cloud::get_cloud_link_settings();
+    if settings.device_token.trim().is_empty() {
+        return Err("尚未 link 云端，请先执行 `giteam cloud link`".into());
+    }
+    let shares = giteam_core::share::list_shares(&settings.cloud_base_url, &settings.device_token)
+        .map_err(|e| e.to_string())?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&shares).unwrap_or_default());
+        return Ok(());
+    }
+    if shares.is_empty() {
+        println!("暂无分享");
+        return Ok(());
+    }
+    for share in &shares {
+        println!(
+            "{}\t{}\t{}\t{} bytes\t下载 {} 次\t过期 {}",
+            share.share_id,
+            share.status,
+            share.repo_name,
+            share.size_bytes,
+            share.download_count,
+            share.expires_at,
+        );
+    }
+    Ok(())
+}
+
+fn run_share_revoke(share_id: &str, json: bool) -> Result<(), String> {
+    let settings = cloud::get_cloud_link_settings();
+    if settings.device_token.trim().is_empty() {
+        return Err("尚未 link 云端，请先执行 `giteam cloud link`".into());
+    }
+    giteam_core::share::revoke_share(&settings.cloud_base_url, &settings.device_token, share_id)
+        .map_err(|e| e.to_string())?;
+    if json {
+        println!("{}", serde_json::json!({ "revoked": share_id }));
+    } else {
+        println!("已撤销: {share_id}");
+    }
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command.unwrap_or(Commands::Serve {
@@ -3285,20 +3623,44 @@ fn main() {
             install_missing,
             interactive,
             with,
+            from,
+            dir,
+            attach,
             json,
         } => {
-            let use_interactive = !json
-                && !install_missing
-                && (interactive
-                    || (with.is_empty()
-                        && io::stdin().is_terminal()
-                        && io::stdout().is_terminal()));
-            if use_interactive {
-                run_init_interactive(with)
+            if let Some(url) = from {
+                run_share_import(&url, dir, attach, json)
             } else {
-                run_init(with, install_missing, json)
+                let use_interactive = !json
+                    && !install_missing
+                    && (interactive
+                        || (with.is_empty()
+                            && io::stdin().is_terminal()
+                            && io::stdout().is_terminal()));
+                if use_interactive {
+                    run_init_interactive(with)
+                } else {
+                    run_init(with, install_missing, json)
+                }
             }
         }
+        Commands::Share { command } => match command {
+            ShareCommands::Create {
+                path,
+                all,
+                no_redact,
+                no_reviews,
+                json,
+            } => run_share_create(path, all, no_redact, no_reviews, json),
+            ShareCommands::Import {
+                url,
+                dir,
+                attach,
+                json,
+            } => run_share_import(&url, dir, attach, json),
+            ShareCommands::List { json } => run_share_list(json),
+            ShareCommands::Revoke { share_id, json } => run_share_revoke(&share_id, json),
+        },
         Commands::Plugin { command } => match command {
             PluginCommands::List { json } => print_plugin_status(None, json),
             PluginCommands::Check { name, json } => print_plugin_status(Some(name), json),

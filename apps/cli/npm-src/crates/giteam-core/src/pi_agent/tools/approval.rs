@@ -65,6 +65,15 @@ impl Tool for ApprovalTool {
             }
             return self.inner.execute(tool_call_id, input, on_update).await;
         }
+        // 命令级只读白名单（仅 bash）：ls/cat/git status 这类探测命令直行，
+        // 不逐条弹审批（对照 Codex execpolicy safe 白名单）。保守 fail-closed：
+        // 复合命令每段只读才放行；替换/重定向/变量/路径执行一律仍走审批。
+        if tool == "bash" && readonly_bash_input(&input) {
+            if let Some(context) = self.hub.run_context() {
+                publish_auto_approval(&context);
+            }
+            return self.inner.execute(tool_call_id, input, on_update).await;
+        }
         let Some(context) = self.hub.run_context() else {
             // 无运行上下文属异常状态，fail-closed 拒绝执行。
             return Ok(denied_output(&tool, "缺少运行上下文，无法发起审批"));
@@ -117,6 +126,36 @@ fn publish_auto_approval(context: &super::super::interactions::InteractionRunCon
         resolution: "auto".to_string(),
         automatic: true,
     });
+}
+
+/// bash 输入是否整体只读（走命令安全白名单）；非 bash 或缺 command 字段
+/// 一律 `false`（fail-closed，继续走审批）。
+fn readonly_bash_input(input: &Value) -> bool {
+    input
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(super::command_safety::is_readonly_command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readonly_bash_input;
+    use serde_json::json;
+
+    #[test]
+    fn readonly_bash_input_accepts_probing_commands() {
+        assert!(readonly_bash_input(&json!({ "command": "git status" })));
+        assert!(readonly_bash_input(&json!({ "command": "ls -la" })));
+    }
+
+    #[test]
+    fn readonly_bash_input_rejects_mutating_or_malformed() {
+        assert!(!readonly_bash_input(&json!({ "command": "rm -rf /tmp/x" })));
+        assert!(!readonly_bash_input(&json!({ "command": "git status && rm x" })));
+        assert!(!readonly_bash_input(&json!({})));
+        assert!(!readonly_bash_input(&json!({ "command": 1 })));
+        assert!(!readonly_bash_input(&json!({ "cmd": "git status" })));
+    }
 }
 
 #[must_use]

@@ -1926,12 +1926,26 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
-        if run_id.is_empty() {
-            return (400, serde_json::json!({ "error": "runId is required" }));
+        if !run_id.is_empty() {
+            return (
+                200,
+                serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            );
+        }
+        let session_id = raw
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if session_id.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "runId or sessionId is required" }),
+            );
         }
         return (
             200,
-            serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            serde_json::json!({ "ok": PiAgentService::global().abort_session(session_id) }),
         );
     }
 

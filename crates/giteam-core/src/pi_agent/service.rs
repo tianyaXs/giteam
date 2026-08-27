@@ -479,6 +479,15 @@ impl PiAgentService {
         self.active_runs.lock().map_or(0, |runs| runs.len())
     }
 
+    /// 指定会话是否有进行中的 run（自动化 runner 用于 busy → skipped）。
+    #[must_use]
+    pub fn has_active_run_for_session(&self, session_id: &str) -> bool {
+        self.active_runs
+            .lock()
+            .map(|runs| runs.values().any(|run| run.session_id == session_id))
+            .unwrap_or(false)
+    }
+
     /// Stop accepting work owned by this service and release all in-process
     /// session handles. Pi's abort handle is synchronous, so shutdown can be
     /// called from Tauri/CLI exit callbacks without blocking the runtime.
@@ -1276,45 +1285,63 @@ impl PiAgentService {
                     let cb = Arc::clone(&on_event);
                     move |event| cb(event)
                 };
-                let attempt_result = if image_degraded_retry {
-                    // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
+                // 与 abort 竞速整次 prompt（含 provider.stream().await 建连）：
+                // pi 只在 stream.next 循环里 select abort，connect/send 阶段听不到停止。
+                // 这里 drop 掉 prompt future，打断卡死的 HTTP 建连。
+                let do_image_degraded = image_degraded_retry;
+                if do_image_degraded {
                     image_degraded_retry = false;
-                    handle
-                        .prompt_with_abort(
-                            degraded_image_prompt.clone(),
-                            abort_signal_for_prompt.clone(),
-                            on_event_cb,
-                        )
-                        .await
-                } else if retry_count == 0 {
-                    match &content_blocks {
-                        None => {
+                }
+                let attempt_result = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => {
+                        Err(pi::error::Error::session("aborted".to_string()))
+                    }
+                    result = async {
+                        if do_image_degraded {
+                            // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
                             handle
                                 .prompt_with_abort(
-                                    effective_prompt.clone(),
+                                    degraded_image_prompt.clone(),
+                                    abort_signal_for_prompt.clone(),
+                                    on_event_cb,
+                                )
+                                .await
+                        } else if retry_count == 0 {
+                            match &content_blocks {
+                                None => {
+                                    handle
+                                        .prompt_with_abort(
+                                            effective_prompt.clone(),
+                                            abort_signal_for_prompt.clone(),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                                Some(blocks) => {
+                                    handle
+                                        .session_mut()
+                                        .run_with_content_with_abort(
+                                            blocks.clone(),
+                                            Some(abort_signal_for_prompt.clone()),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                            }
+                        } else {
+                            handle
+                                .continue_turn_with_abort(
                                     abort_signal_for_prompt.clone(),
                                     on_event_cb,
                                 )
                                 .await
                         }
-                        Some(blocks) => {
-                            handle
-                                .session_mut()
-                                .run_with_content_with_abort(
-                                    blocks.clone(),
-                                    Some(abort_signal_for_prompt.clone()),
-                                    on_event_cb,
-                                )
-                                .await
-                        }
-                    }
-                } else {
-                    handle
-                        .continue_turn_with_abort(abort_signal_for_prompt.clone(), on_event_cb)
-                        .await
+                    } => result,
                 };
 
                 if abort_signal.is_aborted() {
+                    let _ = handle.session_mut().revert_incomplete_response().await;
                     final_error = Some(
                         attempt_result
                             .as_ref()
@@ -1417,17 +1444,12 @@ impl PiAgentService {
                     error_message,
                 });
 
-                // block_on 路径下用短睡切片检查 abort，避免一次长 sleep 无法响应停止。
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(u64::from(delay_ms));
-                let mut cancelled = false;
-                while std::time::Instant::now() < deadline {
-                    if abort_signal.is_aborted() {
-                        cancelled = true;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                // 重试等待与 abort 竞速，避免长 sleep / 阻塞线程导致停止迟钝。
+                let cancelled = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => true,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))) => false,
+                };
                 if cancelled {
                     emit_pi(pi::sdk::AgentEvent::AutoRetryEnd {
                         success: false,
@@ -1571,6 +1593,32 @@ impl PiAgentService {
                 .reject_run(&child_session_id, &child_run_id, "aborted");
         }
         true
+    }
+
+    /// 按 session 中止当前活跃 run（无 runId 时的前端兜底）。
+    #[must_use]
+    pub fn abort_session(&self, session_id: &str) -> bool {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return false;
+        }
+        let Ok(runs) = self.active_runs.lock() else {
+            return false;
+        };
+        let targets: Vec<String> = runs
+            .iter()
+            .filter(|(_, run)| run.session_id == session_id)
+            .map(|(run_id, _)| run_id.clone())
+            .collect();
+        drop(runs);
+        if targets.is_empty() {
+            return false;
+        }
+        let mut any = false;
+        for run_id in targets {
+            any |= self.abort(&run_id);
+        }
+        any
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<bool, PiAgentError> {

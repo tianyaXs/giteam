@@ -271,6 +271,11 @@ pub fn agent_abort(run_id: String) -> bool {
 }
 
 #[tauri::command]
+pub fn agent_abort_session(session_id: String) -> bool {
+    service().abort_session(&session_id)
+}
+
+#[tauri::command]
 pub fn agent_delete_session(session_id: String) -> Result<bool, String> {
     service()
         .delete_session(&session_id)

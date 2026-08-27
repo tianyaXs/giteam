@@ -7,8 +7,6 @@ import {
   type RightPaneTab,
 } from "../common/AppChromeIcons";
 import { cn } from "../../lib/utils";
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
 import {
   Sidebar,
   SidebarContent,
@@ -85,71 +83,69 @@ export function RightSidebar({
       } as CSSProperties}
     >
       <SidebarHeader className="h-10 shrink-0 border-b-0 bg-background py-0 pl-2 pr-11">
-        <div className="flex h-full min-w-0 items-center gap-1" data-tauri-drag-region>
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex h-full min-w-0 items-center" data-tauri-drag-region>
+          {/* 轻量 tab 区：选中态是柔和胶囊底色，图标与关闭钮保持细粒度，去掉描边与厚重 Badge */}
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {openTabs.map((tab) => {
               const Icon = RIGHT_PANE_TAB_ICONS[tab];
               const isActive = activeTab === tab;
               const isPinned = tab === PINNED_RIGHT_PANE_TAB;
 
               return (
-                <Badge
+                <div
                   key={tab}
-                  variant={isActive ? "secondary" : "outline"}
                   className={cn(
-                    "h-7 shrink-0 gap-0 rounded-md border-[color-mix(in_srgb,#8f8270_16%,transparent)] px-0.5 font-normal",
+                    "group/tab flex h-7 shrink-0 items-center rounded-full text-xs transition-[background-color,color]",
                     isActive
-                      ? "bg-[color-mix(in_srgb,#8f8270_17%,var(--bg)_83%)] text-sidebar-foreground"
-                      : "bg-transparent text-muted-foreground"
+                      ? "bg-[color-mix(in_srgb,#8f8270_15%,var(--bg)_85%)] text-sidebar-foreground"
+                      : "text-muted-foreground hover:bg-[color-mix(in_srgb,#8f8270_8%,transparent)] hover:text-sidebar-foreground"
                   )}
                 >
-                  <Button
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 gap-1 rounded-sm px-1.5 hover:bg-transparent"
+                    className={cn(
+                      "flex h-full min-w-0 items-center gap-1.5 rounded-full border-0 bg-transparent pl-2.5 outline-none ring-sidebar-ring focus-visible:ring-2",
+                      isPinned ? "pr-2.5" : "pr-1"
+                    )}
                     title={tabLabels[tab]}
                     aria-label={tabLabels[tab]}
                     aria-pressed={isActive}
                     onClick={() => onSelectTab(tab)}
                   >
-                    <Icon data-icon="inline-start" aria-hidden="true" />
-                    <span className="max-w-[88px] truncate text-xs">{tabLabels[tab]}</span>
-                  </Button>
+                    <Icon className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+                    <span className={cn("max-w-[88px] truncate", isActive && "font-medium")}>{tabLabels[tab]}</span>
+                  </button>
                   {!isPinned ? (
-                    <Button
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
+                      className={cn(
+                        "mr-1.5 flex size-4 shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-muted-foreground outline-none ring-sidebar-ring transition-[opacity,background-color,color] hover:bg-[color-mix(in_srgb,#8f8270_16%,transparent)] hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2",
+                        isActive ? "opacity-70" : "opacity-0 group-hover/tab:opacity-70"
+                      )}
                       title={`${closeTabLabel} ${tabLabels[tab]}`}
                       aria-label={`${closeTabLabel} ${tabLabels[tab]}`}
                       onClick={() => onCloseTab(tab)}
                     >
-                      <XIcon aria-hidden="true" />
-                    </Button>
+                      <XIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
+                    </button>
                   ) : null}
-                </Badge>
+                </div>
               );
             })}
 
             {fileTabLabel ? (
-              <Badge
-                variant="secondary"
-                className="h-7 min-w-0 max-w-[min(240px,55vw)] shrink-0 gap-1 rounded-md border-[color-mix(in_srgb,#8f8270_16%,transparent)] bg-[color-mix(in_srgb,#8f8270_17%,var(--bg)_83%)] px-2 text-sidebar-foreground normal-case tracking-normal"
-              >
-                <span className="min-w-0 truncate text-xs font-semibold">{fileTabLabel}</span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+              <div className="flex h-7 min-w-0 max-w-[min(240px,55vw)] shrink-0 items-center gap-1 rounded-full bg-[color-mix(in_srgb,#8f8270_15%,var(--bg)_85%)] pl-2.5 pr-1.5 text-xs text-sidebar-foreground">
+                <span className="min-w-0 truncate font-medium">{fileTabLabel}</span>
+                <button
+                  type="button"
+                  className="flex size-4 shrink-0 items-center justify-center rounded-full border-0 bg-transparent text-muted-foreground outline-none ring-sidebar-ring transition-[background-color,color] hover:bg-[color-mix(in_srgb,#8f8270_16%,transparent)] hover:text-foreground focus-visible:ring-2"
                   title={closeFileLabel}
                   aria-label={closeFileLabel}
                   onClick={onCloseFileTab}
                 >
-                  <XIcon data-icon="inline-start" aria-hidden="true" />
-                </Button>
-              </Badge>
+                  <XIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
+                </button>
+              </div>
             ) : null}
           </div>
         </div>

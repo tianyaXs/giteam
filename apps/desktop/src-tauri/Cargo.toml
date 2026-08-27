@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.43"
+version = "0.2.44"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -49,8 +49,10 @@ objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "objc2-core-fo
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"
-tauri-plugin-single-instance = "2"
+# deep-link feature：Windows/Linux 上二次启动把 URL 交给已运行实例，而不是再起一个进程。
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2.10.1"
+tauri-plugin-deep-link = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -4,6 +4,7 @@ import {
   formatLocalFileAttachmentHint,
   formatUiOnlyFileAttachmentHint,
   IMAGE_ONLY_USER_PROMPT,
+  isCompactionSummaryUserText,
   makeGraphContextRef,
   normalizeUserMessageForDisplay,
   parseGraphContextBlock,
@@ -54,6 +55,19 @@ describe("stripInjectedUserPromptBlocks", () => {
       .filter(Boolean)
       .join("\n\n");
     expect(stripInjectedUserPromptBlocks(raw)).toBe("review this");
+  });
+
+  it("strips pi compaction summary injected as user message", () => {
+    const raw = [
+      "The conversation history before this point was compacted into the following summary:",
+      "",
+      "<summary>",
+      "## 目标",
+      "1. 在 A100 服务器上运行 AI 服务",
+      "</summary>",
+    ].join("\n");
+    expect(isCompactionSummaryUserText(raw)).toBe(true);
+    expect(stripInjectedUserPromptBlocks(raw)).toBe("");
   });
 });
 

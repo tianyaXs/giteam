@@ -18,6 +18,7 @@ import {
   ArrowDownIcon
 } from "./components/icons";
 import { AgentApiDialog } from "./components/agent/AgentApiDialog";
+import { AddProjectDialog } from "./components/AddProjectDialog";
 import { AgentAuthDialog } from "./components/agent/AgentAuthDialog";
 import { AgentCustomProviderDialog, normalizeOpenAICompatibleBaseUrl } from "./components/agent/AgentCustomProviderDialog";
 import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentModulePanel";
@@ -25,6 +26,7 @@ import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPicke
 import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
 import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
 import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentChatFrame";
+import { AutomationView } from "./components/automation/AutomationView";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
@@ -34,6 +36,7 @@ import {
   formatLocalFileAttachmentHint,
   formatUiOnlyFileAttachmentHint,
   IMAGE_ONLY_USER_PROMPT,
+  isCompactionSummaryUserText,
   normalizeUserMessageForDisplay,
   type GraphContextRef,
 } from "./lib/graphContextRefs";
@@ -191,6 +194,7 @@ import {
   getCommitFilePatch,
   getGitWorktreeFileContent,
   getGitWorktreeFilePatch,
+  getLocalBranches,
   readRepoTerminalOutput,
   resizeRepoTerminalSession,
   sendRepoTerminalInput,
@@ -257,6 +261,8 @@ import {
   mergeAgentMessageErrors,
   mergeAgentStreamText,
   pickPreferredAgentContent,
+  appendMissingTextPartsToLive,
+  livePartsHaveTextPart,
   dedupeAgentDuplicateTextParts,
   readAgentTodosFromPart,
   toDisplayJson
@@ -310,7 +316,8 @@ import {
   type AgentMessagePageCacheEntry,
   type ChatSessionSummary,
   type AgentTodoItem,
-  mergeHistoryMessagesPreservingLive
+  mergeHistoryMessagesPreservingLive,
+  reconcilePromptTailFromHistory
 } from "./lib/agentSessions";
 import {
   type AgentSkillInfo,
@@ -351,6 +358,12 @@ import {
   saveReviewAction,
   saveReviewRecord
 } from "./lib/storage";
+import {
+  shareCreate,
+  shareImport,
+  type ShareCreateResult,
+  type ShareImportResult
+} from "./lib/share";
 import {
   appendTerminalError,
   createTerminalTabState,
@@ -599,6 +612,8 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
   let content = rawContent;
   let graphRefs: GraphContextRef[] | undefined;
   if (message.role === "user") {
+    // Pi messages() 在压缩点注入 synthetic user 摘要；事件流不会推该气泡，history 对账需跳过。
+    if (isCompactionSummaryUserText(rawContent)) return null;
     const normalized = normalizeUserMessageForDisplay({ content: rawContent });
     content = normalized.content;
     graphRefs = normalized.graphRefs;
@@ -1043,6 +1058,8 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
+  const [mainMode, setMainMode] = useState<"agent" | "automation">("agent");
+  const [automationFormOpen, setAutomationFormOpen] = useState(false);
   const [browserPaneUrl, setBrowserPaneUrl] = useState("");
   const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
   const rightOpenTabs = useMemo(
@@ -1066,6 +1083,20 @@ export function App() {
   const [stagingFile, setStagingFile] = useState("");
   const [unstagingFile, setUnstagingFile] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shareBusyRepoId, setShareBusyRepoId] = useState<string | null>(null);
+  const [shareResult, setShareResult] = useState<{ repoName: string; result: ShareCreateResult } | null>(null);
+  const [shareError, setShareError] = useState("");
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
+  const [addProjectStep, setAddProjectStep] = useState<"type" | "local" | "remote">("type");
+  const [addProjectSource, setAddProjectSource] = useState<"local" | "remote">("local");
+  const [addProjectName, setAddProjectName] = useState("");
+  const [addProjectLocalPath, setAddProjectLocalPath] = useState("");
+  const [addProjectTargetPath, setAddProjectTargetPath] = useState("");
+  const [addProjectShareUrl, setAddProjectShareUrl] = useState("");
+  const [shareImportBusy, setShareImportBusy] = useState(false);
+  const [shareImportResult, setShareImportResult] = useState<ShareImportResult | null>(null);
+  const [shareImportError, setShareImportError] = useState("");
+  const [addProjectBusy, setAddProjectBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -2425,6 +2456,8 @@ export function App() {
   }
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
+    setMainMode("agent");
+    setAutomationFormOpen(false);
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
     agentSessionsRepoIdRef.current = repo.id;
@@ -3434,6 +3467,7 @@ export function App() {
   }
 
   function openSidebarAgentSession(repo: RepositoryEntry, session: ChatSessionSummary) {
+    setMainMode("agent");
     pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
     const cachedSession = agentSessions.find((item) => item.id === session.id) ?? null;
     // 远程 run 过程中会话可能已有 live 消息：直接展示，避免 hydration 卡在 getMessages 锁上转圈。
@@ -4119,6 +4153,7 @@ export function App() {
   }
 
   async function createAndSwitchAgentSessionForSidebar(seedPrompt?: string) {
+    setMainMode("agent");
     const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
     if (!targetRepo) {
       setError("请先导入并选择一个工作区。");
@@ -4576,6 +4611,180 @@ export function App() {
     }
   }
 
+  // 项目分享：右键「分享项目…」→ 导出快照上传云端，弹窗展示分享地址。
+  async function shareRepository(repo: RepositoryEntry) {
+    setShareBusyRepoId(repo.id);
+    setShareError("");
+    try {
+      const result = await shareCreate(repo.path);
+      setShareResult({ repoName: repo.name, result });
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setShareBusyRepoId(null);
+    }
+  }
+
+  // 落地页「在 Giteam 中打开」→ giteam://import?url=… 深链 → 确认导入。
+  // 冷启动时 Opened 可能早于 React 挂载：listen 之外再拉一次 pending。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const openImport = (raw: string) => {
+      if (disposed || !raw.trim()) return;
+      setShareImportError("");
+      setShareImportResult(null);
+      setAddProjectShareUrl(raw.trim());
+      setAddProjectName("");
+      setAddProjectLocalPath("");
+      setAddProjectTargetPath("");
+      setAddProjectSource("remote");
+      setAddProjectStep("remote");
+      setAddProjectOpen(true);
+    };
+
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<string>("giteam://share-import", (event) => {
+          openImport(event.payload);
+        })
+      )
+      .then(async (fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+        // listen 就绪后再取 pending，避免冷启动 Opened 落在两者之间丢失。
+        try {
+          const pending = await invoke<string | null>("share_take_pending_import");
+          if (pending) openImport(pending);
+        } catch {
+          /* 旧包无此命令时忽略 */
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  function resetAddProjectDialog() {
+    setShareImportError("");
+    setAddProjectShareUrl("");
+    setAddProjectName("");
+    setAddProjectLocalPath("");
+    setAddProjectTargetPath("");
+    setAddProjectSource("local");
+    setAddProjectStep("type");
+    setAddProjectBusy(false);
+  }
+
+  function sanitizeProjectName(raw: string): string {
+    return raw.trim().replace(/[\\/]+/g, "-").replace(/^\.+/, "");
+  }
+
+  function joinProjectPath(parent: string, name: string): string {
+    const base = parent.trim().replace(/[/\\]+$/, "");
+    const leaf = sanitizeProjectName(name);
+    const sep = base.includes("\\") ? "\\" : "/";
+    return `${base}${sep}${leaf}`;
+  }
+
+  async function confirmShareImport() {
+    const url = addProjectShareUrl.trim();
+    const parent = addProjectTargetPath.trim();
+    const name = sanitizeProjectName(addProjectName);
+    if (!url || shareImportBusy) return;
+    if (!parent) {
+      setShareImportError("请选择保存位置");
+      return;
+    }
+    if (!name) {
+      setShareImportError("请填写项目名称");
+      return;
+    }
+    setShareImportBusy(true);
+    setShareImportError("");
+    try {
+      const targetDir = joinProjectPath(parent, name);
+      const result = await shareImport(url, targetDir, undefined, name);
+      setShareImportResult(result);
+      setAddProjectOpen(false);
+      resetAddProjectDialog();
+      await refreshRepositories();
+      const all = await listRepositories();
+      const imported = all.find((repo) => repo.path === result.targetDir);
+      if (imported) setSelectedRepo(imported);
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setShareImportBusy(false);
+    }
+  }
+
+  function openAddProjectDialog() {
+    if (busy || shareImportBusy || addProjectBusy) return;
+    resetAddProjectDialog();
+    setAddProjectOpen(true);
+  }
+
+  function continueAddProjectStep() {
+    if (addProjectSource === "local") {
+      setAddProjectStep("local");
+      return;
+    }
+    setAddProjectStep("remote");
+  }
+
+  async function pickAddProjectLocalPath() {
+    setShareImportError("");
+    try {
+      const path = await pickRepositoryFolder();
+      if (!path) return;
+      setAddProjectLocalPath(path);
+      if (!addProjectName.trim()) {
+        const base = path.split(/[/\\]/).filter(Boolean).pop() || "";
+        if (base) setAddProjectName(base);
+      }
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function pickAddProjectTargetPath() {
+    setShareImportError("");
+    try {
+      const path = await pickRepositoryFolder();
+      if (!path) return;
+      setAddProjectTargetPath(path);
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function confirmAddProjectLocal() {
+    const path = addProjectLocalPath.trim();
+    if (!path || addProjectBusy) return;
+    setAddProjectBusy(true);
+    setShareImportError("");
+    try {
+      const entry = await addRepository(path, sanitizeProjectName(addProjectName) || undefined);
+      await refreshRepositories();
+      setSelectedRepo(entry);
+      setGitPaneRepo(entry);
+      setMessage(`已导入仓库: ${entry.name}`);
+      setAddProjectOpen(false);
+      resetAddProjectDialog();
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAddProjectBusy(false);
+    }
+  }
+
   // 启动屏隐藏判定：首批仓库列表 + 运行时检测 + agent 会话首轮加载均就绪后，
   // 补足最小展示时长再淡出——避免界面先露出"会话未加载完"的中间态。
   // 启动屏本体是 index.html 的内联 CSS 节点——transform/opacity 动画由合成器线程
@@ -4604,6 +4813,7 @@ export function App() {
   const {
     activateLinkedWorktree,
     checkoutBranchFromTopology,
+    createAndCheckoutBranch,
     checkoutRemoteBranchFromTopology,
     activateBranchWorkspace,
     deleteBranchFromTopology,
@@ -6050,6 +6260,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const localId = ensureLocalAssistant(message.id);
       const mapped = agentMessageToChatMessage(message);
       if (!mapped) return;
+      const softAppendCompletedTextToLive = () => {
+        const textBlocks = message.parts
+          .filter(
+            (part): part is Extract<AgentPart, { type: "text" }> =>
+              part.type === "text" && Boolean(part.text.trim())
+          )
+          .map((part) => part.text);
+        if (textBlocks.length === 0) return;
+        commitAgentLiveParts((prev) => {
+          const current = prev[message.id] || [];
+          const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
+          if (!changed) return prev;
+          return { ...prev, [message.id]: parts };
+        });
+      };
       updateAgentSessionById(sessionId, (session) => {
         const current = session.messages.find((item) => item.id === localId);
         // 手动暂停后 history replace 常不带 error；保留本地已写入的「已暂停」，避免被冲掉后又由 finalize 再塞一条。
@@ -6057,8 +6282,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         // 完成态若暂时没有 text block，不要用空/更短 content 盖掉已流式正文。
         // 但若 live 因 merge 拼出「双份假更长」，优先折叠后的完成态/单份正文。
         const nextContent = pickPreferredAgentContent(mapped.content, current?.content);
+        if (!current) {
+          return {
+            ...session,
+            messages: appendAssistantMessage(session.messages, {
+              ...mapped,
+              id: localId,
+              content: nextContent,
+              ...(preservedError ? { error: preservedError } : {})
+            }),
+            updatedAt: Date.now()
+          };
+        }
         if (
-          current &&
           current.content === nextContent &&
           String(current.error || "").trim() === preservedError
         ) {
@@ -6080,7 +6316,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         };
       });
       // 流式结束后的最终 replace 不要重建 live：否则刚稳定的时间线会被 history 结构换掉，列表闪一下。
-      if (options?.rebuildLive === false) return;
+      if (options?.rebuildLive === false) {
+        softAppendCompletedTextToLive();
+        return;
+      }
       // 按完成态消息的 block 顺序重建 live：与 session jsonl 一致（thinking → toolCall* → text），
       // 丢掉流式期乱序/幽灵工具；status/output 仍从旧 live 按 toolCallId 继承。
       const finalTools = message.parts.filter(
@@ -7238,6 +7477,81 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           });
         }
 
+        // Pi 式兜底：JSONL/history 已有最终总结但 live 漏事件时，只 patch 当前轮 tail，禁止整表 reload。
+        if (!failure) {
+          try {
+            const agentMessages = await agentClient.getMessages(sessionId);
+            const toolResults = agentToolResultsByCallId(agentMessages);
+            const historyChat = agentMessages
+              .map(agentMessageToChatMessage)
+              .filter((row): row is AgentChatMessage => Boolean(row));
+            let touchedAssistantIds: string[] = [];
+            updateAgentSessionById(sessionId, (session) => {
+              const result = reconcilePromptTailFromHistory(session.messages, historyChat, {
+                pickContent: pickPreferredAgentContent,
+                hasLiveParts: (messageId) => {
+                  const parts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
+                  return parts.some((part) => {
+                    const type = String((part as { type?: string }).type || "");
+                    return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+                  });
+                }
+              });
+              touchedAssistantIds = result.touchedAssistantIds;
+              if (!result.changed) return session;
+              return { ...session, messages: result.messages, updatedAt: Date.now() };
+            });
+            const touchedIdSet = new Set(touchedAssistantIds);
+            const detailsPatch: Record<string, AgentDetailedMessage> = {};
+            for (const agentMsg of agentMessages) {
+              if (agentMsg.role !== "assistant" || !touchedIdSet.has(agentMsg.id)) continue;
+              const textBlocks = agentMsg.parts
+                .filter(
+                  (part): part is Extract<AgentPart, { type: "text" }> =>
+                    part.type === "text" && Boolean(part.text.trim())
+                )
+                .map((part) => part.text);
+              let liveHasText = livePartsHaveTextPart(
+                agentLivePartsByServerMessageIdRef.current[agentMsg.id]
+              );
+              if (textBlocks.length > 0) {
+                commitAgentLiveParts((prev) => {
+                  const current = prev[agentMsg.id] || [];
+                  const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
+                  if (!changed) return prev;
+                  liveHasText = true;
+                  return { ...prev, [agentMsg.id]: parts };
+                });
+              }
+              // live 已有 text part 时不再写 details：避免 fetched text:0 与 live text:soft 双轨。
+              if (liveHasText) continue;
+              const incoming = agentMessageToDetailedMessage(agentMsg, toolResults);
+              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
+              if (liveParts.length === 0) {
+                detailsPatch[agentMsg.id] = incoming;
+              }
+            }
+            if (Object.keys(detailsPatch).length > 0) {
+              setAgentDetailsByMessageId((prev) => {
+                const next = { ...prev };
+                for (const [messageId, incoming] of Object.entries(detailsPatch)) {
+                  const existing = prev[messageId];
+                  const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
+                  const incomingParts = Array.isArray(incoming.parts) ? incoming.parts : [];
+                  if (existingParts.length > incomingParts.length) continue;
+                  next[messageId] = incoming;
+                }
+                return next;
+              });
+            }
+            appendAgentDebugLog(
+              `agent.prompt.tailReconcile session=${sessionId} touched=${touchedAssistantIds.length}`
+            );
+          } catch (error) {
+            appendAgentDebugLog(`agent.prompt.tailReconcile.error session=${sessionId} ${String(error)}`);
+          }
+        }
+
         // 工具收口后再清 busy/streaming，避免「运行中→已运行」与 parts 切换分两帧闪。
         agentRunBusyBySessionRef.current[sessionId] = false;
         setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
@@ -7354,11 +7668,38 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   async function stopAgentPrompt(sessionIdInput?: string) {
     const sid = (sessionIdInput || activeAgentSessionId || "").trim();
     if (!sid) return;
-    const runId = agentRunIdBySessionRef.current[sid];
-    if (!runId) return;
+
+    // 乐观停止：立刻清 busy / 流式态，按钮可再发；runId 留给后台 finalize 收口。
+    agentRunBusyBySessionRef.current[sid] = false;
+    setAgentRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
+    const streamingId = String(agentStreamingAssistantIdBySession[sid] || "").trim();
+    setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+    updateAgentSessionById(sid, (session) => {
+      const targetId =
+        streamingId
+        || [...session.messages].reverse().find((item) => item.role === "assistant")?.id
+        || "";
+      if (!targetId) return session;
+      return {
+        ...session,
+        messages: session.messages.map((item) =>
+          item.id === targetId
+            ? { ...item, error: item.error || "已暂停" }
+            : item
+        ),
+        updatedAt: Date.now(),
+      };
+    });
+
+    const runId = String(agentRunIdBySessionRef.current[sid] || "").trim();
     try {
-      const aborted = await agentClient.abort(runId);
-      appendAgentDebugLog("agent.prompt.abort session=" + sid + " run=" + runId + " ok=" + (aborted ? 1 : 0));
+      if (runId) {
+        const aborted = await agentClient.abort(runId);
+        appendAgentDebugLog("agent.prompt.abort session=" + sid + " run=" + runId + " ok=" + (aborted ? 1 : 0));
+      } else {
+        const aborted = await agentClient.abortSession(sid);
+        appendAgentDebugLog("agent.prompt.abort.session session=" + sid + " ok=" + (aborted ? 1 : 0));
+      }
     } catch (e) {
       appendAgentDebugLog("agent.prompt.abort.error session=" + sid + " " + String(e));
     }
@@ -8095,6 +8436,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     if (tab === "skills") void warmSkillsMarketplace();
   }
 
+  // 分支选择浮层打开时的轻量刷新：只拉分支列表，不触碰提交图与状态栏消息。
+  async function refreshBranchListForPicker() {
+    if (!selectedRepo) return;
+    try {
+      const branchList = await getLocalBranches(repoPath);
+      setBranches(branchList);
+    } catch {
+      // 浮层用的是已有分支快照，刷新失败静默忽略
+    }
+  }
+
   async function openToolFileInRightPane(input: {
     filePath: string;
     line?: number;
@@ -8743,6 +9095,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => { });
     };
   }, [applyAgentModelVisibility]);
+
+  // 自动化完成/失败通知：尊重全局 notificationsAgent。
+  useEffect(() => {
+    const unlistenPromise = listen<{ title?: string; body?: string }>(
+      "giteam://automation-notify",
+      (event) => {
+        if (!generalSettings.notificationsAgent) return;
+        const title = String(event.payload?.title || "自动化").trim() || "自动化";
+        const body = String(event.payload?.body || "").trim();
+        void showSettingsNotification(title, body);
+      }
+    );
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [generalSettings.notificationsAgent]);
 
   // 手机经云端/HTTP 发 prompt 时，桌面自己的 subscribeEvents 不会挂上该 runId。
   // 全局 hook：流式事件直接写 UI；终态再拉权威快照对账。
@@ -9880,7 +10248,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       isRepoSessionsLoading={isRepoSessionsLoading}
       isRepoSessionsPaging={isRepoSessionsPaging}
       isRepoSessionsLoaded={hasLoadedSidebarRepoSessions}
-      onImportRepository={() => void pickAndImportRepository()}
+      onImportRepository={() => openAddProjectDialog()}
       onCreateSession={() => void createAndSwitchAgentSessionForSidebar()}
       onOpenSearch={() => setSearchPanelOpen(true)}
       onToggleRepoSessions={toggleRepoSessions}
@@ -9900,6 +10268,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       rightPaneTab={rightPaneTab}
       rightOptionalTabs={rightOptionalTabs}
       rightModules={rightModuleVisibility}
+      branchPicker={selectedRepo ? {
+        repoName: selectedRepo.name,
+        currentBranch: worktreeOverview.branch || selectedBranch,
+        branches,
+        uncommittedCount: worktreeChangeStats.total,
+        busy,
+        onCheckoutBranch: (branchName) => void checkoutBranchFromTopology(branchName),
+        onCreateAndCheckout: (branchName) => createAndCheckoutBranch(branchName),
+        onRefreshBranches: () => void refreshBranchListForPicker(),
+      } : null}
       onOpenRightPane={openRightPane}
       onOpenSettings={() => {
         setSettingsInitialSection("general");
@@ -9909,6 +10287,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       mobileClientConnected={mobileClientConnected}
       remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
       onOpenRemoteRepos={openRemoteRepoInspector}
+      automationActive={mainMode === "automation"}
+      onOpenAutomation={() => {
+        setMainMode("automation");
+        setAutomationFormOpen(false);
+        // 内嵌浏览器子 webview 可能盖在主区域上，进自动化前先全部隐藏。
+        if (IS_TAURI) {
+          void invoke("hide_all_browser").catch(() => {});
+        }
+      }}
     />
   );
 
@@ -10565,7 +10952,39 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden"
   );
 
-  const editor = (
+  const editor = mainMode === "automation" ? (
+    <motion.div
+      key="automation-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+      <AutomationView
+        repos={repos}
+        getRepoSessions={getVisibleRepoSessions}
+        ensureRepoSessions={(repo) => {
+          if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
+          void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+        }}
+        onOpenImportProject={() => openAddProjectDialog()}
+        onFormOpenChange={setAutomationFormOpen}
+        modelOptions={agentConfiguredModelCandidates.map((ref) => {
+          const slash = ref.indexOf("/");
+          const provider = slash >= 0 ? ref.slice(0, slash) : "";
+          const modelId = slash >= 0 ? ref.slice(slash + 1) : ref;
+          const display = getAgentModelDisplay(ref);
+          return {
+            ref,
+            label: display.label || ref,
+            provider,
+            modelId,
+          };
+        })}
+        modelInfoByRef={agentModelInfoByRef}
+      />
+    </motion.div>
+  ) : (
     <div
       className={editorShellClass}
       style={{ containerType: "inline-size", "--chat-content-left": CHAT_CONTENT_LEFT_CSS } as CSSProperties}
@@ -10845,12 +11264,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         title={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
         onClick={() => setLeftDrawerOpen((open) => !open)}
       />
-      <ShellPanelToggle
-        side="right"
-        className="pointer-events-auto fixed top-2.5 right-3 z-[1001]"
-        title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
-        onClick={toggleRightDrawer}
-      />
+      {/* 自动化创建/详情面板打开时，右侧关闭按钮会与侧栏切换重叠，暂时隐藏后者。 */}
+      {!(mainMode === "automation" && automationFormOpen) ? (
+        <ShellPanelToggle
+          side="right"
+          className="pointer-events-auto fixed top-2.5 right-3 z-[1001]"
+          title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
+          onClick={toggleRightDrawer}
+        />
+      ) : null}
     </div>
   );
 
@@ -11947,6 +12369,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               {pinnedRepoIds.includes(repoContextMenu.repo.id) ? appText.unpinProject : appText.pinProject}
             </DropdownMenuItem>
             <DropdownMenuItem
+              onSelect={() => void shareRepository(repoContextMenu.repo)}
+              disabled={busy || shareBusyRepoId === repoContextMenu.repo.id}
+            >
+              {shareBusyRepoId === repoContextMenu.repo.id ? "分享中…" : "分享项目…"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onSelect={() => void closeRepository(repoContextMenu.repo)}
               disabled={busy}
             >
@@ -11954,6 +12382,137 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
+
+        <Dialog
+          open={Boolean(shareResult)}
+          onOpenChange={(open) => {
+            if (!open) setShareResult(null);
+          }}
+        >
+          <DialogContent className="w-[min(520px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>分享已创建 — {shareResult?.repoName}</DialogTitle>
+              <DialogDescription>
+                把地址发给协作者，对方打开后即可完成项目初始化（含代码、AI 会话与记忆）。
+              </DialogDescription>
+            </DialogHeader>
+            {shareResult ? (
+              <div className="flex flex-col gap-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border px-3 py-2 text-xs">
+                    {shareResult.result.shareUrl}
+                  </code>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void navigator.clipboard.writeText(shareResult.result.shareUrl)}
+                  >
+                    复制
+                  </Button>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {shareResult.result.sessions} 个会话 · {shareResult.result.memory ? "含记忆库" : "无记忆库"} ·{" "}
+                  {shareResult.result.reviews} 条 review · 脱敏 {shareResult.result.redactions} 处 ·{" "}
+                  代码 {(shareResult.result.repoSizeBytes / 1048576).toFixed(1)} MiB + 上下文{" "}
+                  {(shareResult.result.contextSizeBytes / 1048576).toFixed(1)} MiB
+                </div>
+                {shareResult.result.warnings.length > 0 ? (
+                  <div className="flex flex-col gap-1 text-xs text-amber-500">
+                    {shareResult.result.warnings.map((warning) => (
+                      <div key={warning}>⚠ {warning}</div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="text-xs text-muted-foreground">
+                  接收方也可在终端执行：giteam init --from {shareResult.result.shareUrl}
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(shareError)}
+          onOpenChange={(open) => {
+            if (!open) setShareError("");
+          }}
+        >
+          <DialogContent className="w-[min(440px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>分享失败</DialogTitle>
+              <DialogDescription className="break-all">{shareError}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline" size="sm">
+                  关闭
+                </Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <AddProjectDialog
+          open={addProjectOpen}
+          step={addProjectStep}
+          source={addProjectSource}
+          projectName={addProjectName}
+          localPath={addProjectLocalPath}
+          targetPath={addProjectTargetPath}
+          shareUrl={addProjectShareUrl}
+          busy={shareImportBusy || addProjectBusy}
+          error={shareImportError}
+          onOpenChange={(open) => {
+            if (!open && (shareImportBusy || addProjectBusy)) return;
+            setAddProjectOpen(open);
+            if (!open) resetAddProjectDialog();
+          }}
+          onSourceChange={setAddProjectSource}
+          onProjectNameChange={setAddProjectName}
+          onShareUrlChange={(url) => {
+            setAddProjectShareUrl(url);
+            if (shareImportError) setShareImportError("");
+          }}
+          onBackToType={() => {
+            setAddProjectStep("type");
+            setShareImportError("");
+          }}
+          onContinue={continueAddProjectStep}
+          onPickLocalPath={() => pickAddProjectLocalPath()}
+          onPickTargetPath={() => pickAddProjectTargetPath()}
+          onConfirmLocal={() => confirmAddProjectLocal()}
+          onConfirmRemote={() => confirmShareImport()}
+        />
+
+        <Dialog
+          open={Boolean(shareImportResult)}
+          onOpenChange={(open) => {
+            if (!open) setShareImportResult(null);
+          }}
+        >
+          <DialogContent className="w-[min(520px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>导入完成 — {shareImportResult?.repoName}</DialogTitle>
+              <DialogDescription className="break-all">{shareImportResult?.targetDir}</DialogDescription>
+            </DialogHeader>
+            {shareImportResult ? (
+              <div className="flex flex-col gap-2 text-sm">
+                <div className="text-xs text-muted-foreground">
+                  恢复 {shareImportResult.sessionsImported} 个会话 ·{" "}
+                  {shareImportResult.memoryImported ? "含记忆库" : "无记忆库"} · 附件{" "}
+                  {shareImportResult.attachmentsImported} 个 · review {shareImportResult.reviewsImported} 条
+                </div>
+                {shareImportResult.warnings.length > 0 ? (
+                  <div className="flex flex-col gap-1 text-xs text-amber-500">
+                    {shareImportResult.warnings.map((warning) => (
+                      <div key={warning}>⚠ {warning}</div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
 
         {sessionContextMenu ? (
           <FloatingContextMenu

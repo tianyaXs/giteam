@@ -449,6 +449,34 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     }
   }
 
+  /** 成功返回 null，失败返回错误文案（供弹窗内联展示）。 */
+  async function createAndCheckoutBranch(branchName: string): Promise<string | null> {
+    if (!ensureRepoSelected()) return "未选择仓库";
+    const name = branchName.trim();
+    if (!name) return "分支名不能为空";
+    setBusy(true);
+    setError("");
+    setMessage(`创建并检出分支: ${name}...`);
+    try {
+      if (branches.some((b) => b.name === name)) {
+        throw new Error(`分支 "${name}" 已存在`);
+      }
+      await createGitBranch(repoPath, name);
+      await gitCheckoutBranch(repoPath, name);
+      setSelectedBranch(name);
+      await Promise.all([refreshBranchesAndCommits(), refreshWorktreeData(selectedWorktreeFile)]);
+      setMessage(`已创建并检出分支: ${name}`);
+      return null;
+    } catch (error) {
+      const detail = String(error);
+      setError(detail);
+      setMessage(`创建分支失败: ${name}`);
+      return detail;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function checkoutRemoteBranchFromTopology(remoteBranch: string) {
     if (!ensureRepoSelected()) return;
     setTopologyContextMenu(null);
@@ -1180,6 +1208,7 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
   return {
     activateLinkedWorktree,
     checkoutBranchFromTopology,
+    createAndCheckoutBranch,
     checkoutRemoteBranchFromTopology,
     activateBranchWorkspace,
     deleteBranchFromTopology,

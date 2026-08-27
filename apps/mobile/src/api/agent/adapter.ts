@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentPart } from './types';
+import { isCompactionSummaryUserText, stripInjectedSessionSummaryBlocks } from '../../lib/compactionDisplay';
 
 /**
  * pi_agent AgentMessage/AgentPart → 手机端渲染管线消费的 legacy 行结构
@@ -109,7 +110,13 @@ export function agentMessageToLegacyRow(
     if (part.type === 'text') {
       const text = String(part.text || '');
       if (!text.trim()) continue;
-      parts.push({ id: `${id}:text:${textIndex++}`, type: 'text', text });
+      if (isCompactionSummaryUserText(text)) {
+        parts.push({ id: `${id}:compaction`, type: 'compaction' });
+        continue;
+      }
+      const displayText = stripInjectedSessionSummaryBlocks(text);
+      if (!displayText.trim()) continue;
+      parts.push({ id: `${id}:text:${textIndex++}`, type: 'text', text: displayText });
       continue;
     }
     if (part.type === 'reasoning') {

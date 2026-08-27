@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::channel::oneshot;
 use serde_json::Value;
 
-use super::events::{publish_event, AgentEvent, EventSubscriberBus, PiEventTranslator};
+use super::events::{publish_event, AgentEvent, EventBufferBus, EventSubscriberBus, PiEventTranslator};
 use super::service::AgentEventSink;
 use super::types::{AgentInteraction, AgentInteractionReply};
 
@@ -31,12 +31,13 @@ pub struct InteractionRunContext {
     pub translator: Arc<PiEventTranslator>,
     pub sink: AgentEventSink,
     pub subscribers: EventSubscriberBus,
+    pub event_buffers: EventBufferBus,
 }
 
 impl InteractionRunContext {
     pub fn publish(&self, event: AgentEvent) {
         let envelope = self.translator.envelope(event);
-        publish_event(&self.subscribers, &envelope);
+        publish_event(&self.subscribers, &self.event_buffers, &envelope);
         (self.sink)(envelope);
     }
 }
@@ -59,7 +60,9 @@ impl InteractionRisk {
         match tool {
             // task：启动子 session 本身不写盘（子内写操作仍走 Approval）。
             "read" | "grep" | "find" | "ls" | "bash_output" | "task" | "todowrite"
-            | "question" => Self::Read,
+            | "question"
+            // 资产图谱三件套：只读 SQLite，无副作用。
+            | "asset_context" | "asset_search" | "asset_precedents" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
             "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,
@@ -543,6 +546,7 @@ mod tests {
                 let _ = sink_tx.send(envelope);
             }),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
+            event_buffers: Arc::new(Mutex::new(HashMap::new())),
         };
         (context, sink_rx)
     }

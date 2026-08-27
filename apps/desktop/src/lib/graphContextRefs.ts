@@ -93,6 +93,26 @@ export const INJECTED_USER_PROMPT_BLOCK_TAGS = ["graph_context"] as const;
 
 const GRAPH_CONTEXT_BLOCK_RE = /\n*<graph_context>[\s\S]*?<\/graph_context>\n*/gi;
 
+/** Pi session.rs COMPACTION_SUMMARY_* — 压缩摘要注入 user 消息，仅模型可见。 */
+const COMPACTION_SUMMARY_BLOCK_RE =
+  /\n*The conversation history before this point was compacted into the following summary:\n\n<summary>\n[\s\S]*?\n<\/summary>\n*/g;
+
+/** Pi session.rs BRANCH_SUMMARY_* */
+const BRANCH_SUMMARY_BLOCK_RE =
+  /\n*The following is a summary of a branch that this conversation came back from:\n\n<summary>\n[\s\S]*?<\/summary>\n*/g;
+
+/** Pi 自动压缩后插入的 user 正文（messages API 首条常为该块）。 */
+export function isCompactionSummaryUserText(content: string): boolean {
+  const trimmed = String(content || "").trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith(
+      "The conversation history before this point was compacted into the following summary:",
+    )
+    || (trimmed.includes("compacted into the following summary") && trimmed.includes("<summary>"))
+  );
+}
+
 /** 本地路径附件注入 hint（与 App.tsx 发送时组装一致）。 */
 export function formatLocalFileAttachmentHint(filename: string, sourcePath: string): string {
   return [
@@ -141,9 +161,17 @@ export function stripImageOnlyPlaceholder(content: string): string {
   return content;
 }
 
+function stripInjectedSessionSummaryBlocks(content: string): string {
+  let value = content ?? "";
+  value = value.replace(COMPACTION_SUMMARY_BLOCK_RE, "\n");
+  value = value.replace(BRANCH_SUMMARY_BLOCK_RE, "\n");
+  return value;
+}
+
 /** 去掉所有已知 Agent 注入块，只保留用户可见输入。 */
 export function stripInjectedUserPromptBlocks(content: string): string {
   let value = content ?? "";
+  value = stripInjectedSessionSummaryBlocks(value);
   for (const tag of INJECTED_USER_PROMPT_BLOCK_TAGS) {
     if (tag === "graph_context") {
       value = value.replace(GRAPH_CONTEXT_BLOCK_RE, "\n");

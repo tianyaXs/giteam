@@ -22,6 +22,7 @@ import {
   type WorkspaceDetail,
   type WorkspaceItem,
 } from "./api";
+import SharePage from "./SharePage";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
@@ -29,6 +30,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     ["/", "Overview"],
     ["/devices", "Devices"],
     ["/workspaces", "Workspaces"],
+    ["/shares", "Shares"],
     ["/audit", "Audit"],
     ["/settings", "Settings"],
   ] as const;
@@ -1316,10 +1318,238 @@ function AuditPage() {
   );
 }
 
+type AdminShareItem = {
+  id: string;
+  workspaceId: string;
+  name: string;
+  repoName: string;
+  defaultBranch: string;
+  headCommit: string;
+  sizeBytes: number;
+  encrypted: boolean;
+  status: string;
+  expiresAt?: string | null;
+  downloadCount: number;
+  createdAt: string;
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
+}
+
+const SHARE_STATUS_LABEL: Record<string, string> = {
+  active: "有效",
+  uploading: "上传中",
+  revoked: "已撤销",
+  expired: "已过期",
+};
+
+function SharesPage() {
+  const list = useListQueryState({ pageSize: 20 });
+  const [status, setStatus] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [data, setData] = useState<PageResponse<AdminShareItem> | null>(null);
+  const [error, setError] = useState("");
+  const [acting, setActing] = useState("");
+
+  async function load() {
+    try {
+      const res = await adminFetch<PageResponse<AdminShareItem>>(
+        `/cloud/v1/admin/shares${buildQuery({
+          q: list.q,
+          status,
+          workspaceId,
+          page: list.page,
+          pageSize: list.pageSize,
+        })}`,
+      );
+      setData(res);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.q, list.page, list.pageSize, status, workspaceId]);
+
+  async function revokeShare(id: string) {
+    if (!window.confirm(`确认撤销分享 ${id}？产物将被删除，链接立即失效。`)) return;
+    setActing(id);
+    try {
+      await adminFetch(`/cloud/v1/admin/shares/${encodeURIComponent(id)}/revoke`, {
+        method: "POST",
+      });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setActing("");
+    }
+  }
+
+  const items = data?.items ?? [];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h1 className="text-2xl font-semibold">Shares</h1>
+      <form
+        onSubmit={list.applySearch}
+        className="flex flex-wrap gap-2 items-end bg-[var(--card)] border border-[var(--border)] rounded-xl p-3"
+      >
+        <label className="flex flex-col gap-1 text-xs text-[var(--muted)] flex-1 min-w-[160px]">
+          搜索
+          <input
+            className="border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--foreground)]"
+            value={list.qDraft}
+            onChange={(e) => list.setQDraft(e.target.value)}
+            placeholder="shareId / 项目名"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-[var(--muted)] min-w-[140px]">
+          状态
+          <select
+            className="border border-[var(--border)] rounded-md px-3 py-2 text-sm bg-white"
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              list.resetPage();
+            }}
+          >
+            <option value="">全部</option>
+            <option value="active">有效</option>
+            <option value="uploading">上传中</option>
+            <option value="revoked">已撤销</option>
+            <option value="expired">已过期</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-[var(--muted)] min-w-[140px]">
+          Workspace
+          <input
+            className="border border-[var(--border)] rounded-md px-3 py-2 text-sm font-mono text-[var(--foreground)]"
+            value={workspaceId}
+            onChange={(e) => {
+              setWorkspaceId(e.target.value.trim());
+              list.resetPage();
+            }}
+          />
+        </label>
+        <button
+          type="submit"
+          className="rounded-md bg-[var(--primary)] text-[var(--primary-fg)] px-3 py-2 text-sm"
+        >
+          搜索
+        </button>
+      </form>
+
+      {error ? <div className="text-[var(--bad)] text-sm">{error}</div> : null}
+
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-[var(--background)] text-left">
+            <tr>
+              <th className="p-3">Share ID</th>
+              <th className="p-3">项目</th>
+              <th className="p-3">Workspace</th>
+              <th className="p-3">大小</th>
+              <th className="p-3">状态</th>
+              <th className="p-3">下载次数</th>
+              <th className="p-3">创建时间</th>
+              <th className="p-3">过期时间</th>
+              <th className="p-3">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="p-6 text-center text-[var(--muted)]">
+                  暂无分享记录
+                </td>
+              </tr>
+            ) : (
+              items.map((s) => (
+                <tr key={s.id} className="border-t border-[var(--border)] align-top">
+                  <td className="p-3 font-mono text-xs">{s.id}</td>
+                  <td className="p-3">
+                    <div className="font-medium">{s.repoName || s.name || "—"}</div>
+                    <div className="text-xs text-[var(--muted)] font-mono">
+                      {s.defaultBranch} @ {s.headCommit.slice(0, 8)}
+                      {s.encrypted ? " · E2E" : ""}
+                    </div>
+                  </td>
+                  <td className="p-3 font-mono text-xs">
+                    <Link
+                      className="underline"
+                      to={`/workspaces/${encodeURIComponent(s.workspaceId)}`}
+                    >
+                      {s.workspaceId}
+                    </Link>
+                  </td>
+                  <td className="p-3 whitespace-nowrap">{formatBytes(s.sizeBytes)}</td>
+                  <td className="p-3">
+                    <span
+                      className={`inline-block rounded px-2 py-0.5 text-xs ${
+                        s.status === "active"
+                          ? "bg-green-100 text-green-800"
+                          : s.status === "revoked"
+                            ? "bg-red-100 text-red-800"
+                            : s.status === "expired"
+                              ? "bg-gray-100 text-gray-600"
+                              : "bg-yellow-100 text-yellow-800"
+                      }`}
+                    >
+                      {SHARE_STATUS_LABEL[s.status] ?? s.status}
+                    </span>
+                  </td>
+                  <td className="p-3">{s.downloadCount}</td>
+                  <td className="p-3 text-xs text-[var(--muted)] whitespace-nowrap">
+                    {s.createdAt ? new Date(s.createdAt).toLocaleString() : "—"}
+                  </td>
+                  <td className="p-3 text-xs text-[var(--muted)] whitespace-nowrap">
+                    {s.expiresAt ? new Date(s.expiresAt).toLocaleString() : "—"}
+                  </td>
+                  <td className="p-3">
+                    {s.status === "active" || s.status === "uploading" ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-40"
+                        disabled={acting === s.id}
+                        onClick={() => void revokeShare(s.id)}
+                      >
+                        撤销
+                      </button>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <PaginationBar
+        page={list.page}
+        pageSize={list.pageSize}
+        total={data?.total ?? 0}
+        onPageChange={list.setPage}
+        onPageSizeChange={list.changePageSize}
+      />
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/s/:shareId" element={<SharePage />} />
       <Route
         path="/"
         element={
@@ -1357,6 +1587,14 @@ export default function App() {
         element={
           <RequireAuth>
             <AuditPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/shares"
+        element={
+          <RequireAuth>
+            <SharesPage />
           </RequireAuth>
         }
       />

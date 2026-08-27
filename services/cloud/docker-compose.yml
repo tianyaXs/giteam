@@ -30,7 +30,12 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8787}
       LISTEN_ADDR: ${LISTEN_ADDR:-0.0.0.0:8787}
       STATIC_DIR: /app/static
+      SHARE_STORAGE_DIR: /app/data/shares
+      SHARE_TTL_SECS: ${SHARE_TTL_SECS:-2592000}
+      SHARE_QUOTA_BYTES: ${SHARE_QUOTA_BYTES:-5368709120}
       RUST_LOG: ${RUST_LOG:-info,giteam_cloud_gateway=info}
+    volumes:
+      - sharedata:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,3 +46,4 @@ services:
 
 volumes:
   pgdata:
+  sharedata:

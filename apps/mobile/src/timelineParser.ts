@@ -7,6 +7,7 @@ import {
   summarizeAgentContextProgress,
   summarizeAgentContextToolCounts
 } from './lib/agentParts';
+import { isCompactionSummaryUserText, stripInjectedSessionSummaryBlocks } from './lib/compactionDisplay';
 import { humanizeAgentError } from './lib/humanizeAgentError';
 import { readTaskTimeline } from './lib/subagentTimeline';
 import type {
@@ -81,6 +82,24 @@ function collectUserImageAttachments(parts: any[]): MobileImageAttachment[] {
 
 function hasCompactionPart(parts: any[]): boolean {
   return parts.some((p: any) => normalizeText(p?.type) === 'compaction');
+}
+
+const COMPACTION_DIVIDER_LABEL = '会话已压缩';
+
+function isCompactionDividerItem(item: MobileTimelineItem): boolean {
+  return item.kind === 'divider' && normalizeText(item.divider.label) === COMPACTION_DIVIDER_LABEL;
+}
+
+/** 合并 sync 残留的多条 compaction synthetic user → 只保留一条 divider。 */
+function collapseConsecutiveCompactionDividers(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const out: MobileTimelineItem[] = [];
+  for (const item of items) {
+    if (isCompactionDividerItem(item) && out.length > 0 && isCompactionDividerItem(out[out.length - 1])) {
+      continue;
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 function toolMode(tool: string): string {
@@ -598,7 +617,23 @@ export function parseConversation(raw: unknown): ParsedConversation {
           sizeLimitSyntheticCount += 1;
         }
       }
-      const text = collectVisibleTexts(parts).join('\n\n').trim();
+      const rawText = collectVisibleTexts(parts).join('\n\n').trim();
+      if (isCompactionSummaryUserText(rawText)) {
+        timelineRows.push({
+          order: seq++,
+          item: {
+            kind: 'divider',
+            createdAt,
+            divider: {
+              id: `divider:${id}`,
+              label: '会话已压缩',
+              createdAt
+            }
+          }
+        });
+        continue;
+      }
+      const text = stripInjectedSessionSummaryBlocks(rawText);
       const attachments = collectUserImageAttachments(parts);
       if (!text && attachments.length === 0) continue;
       timelineRows.push({
@@ -813,7 +848,9 @@ export function parseConversation(raw: unknown): ParsedConversation {
     timeline.push(item);
   }
 
-  const normalizedTimeline = batchAdjacentToolEvents(mergeAdjacentContextItems(timeline));
+  const normalizedTimeline = batchAdjacentToolEvents(
+    mergeAdjacentContextItems(collapseConsecutiveCompactionDividers(timeline))
+  );
 
   if (!hasAssistantRenderable && sizeLimitSyntheticCount > 0) {
     const userOnly = normalizedTimeline.filter((t): t is Extract<MobileTimelineItem, { kind: 'chat' }> => t.kind === 'chat' && t.message.role === 'user');

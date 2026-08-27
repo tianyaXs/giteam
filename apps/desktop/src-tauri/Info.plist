@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- macOS 深链：Safari「在 Giteam 中打开」依赖 CFBundleURLTypes；
+	     tauri-plugin-deep-link 的 desktop.schemes 不会自动写入本文件，必须显式声明。 -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.giteam.desktop</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>giteam</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -31,12 +31,20 @@ uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 which = "6"
 html2text = "0.17.1"
+tar = "0.4"
+zstd = "0.13"
+regex = "1"
+tempfile = "3"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+tiny_http = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 [patch.crates-io]
 # Windows HTTPS 出站修复（asupersync#35），见 apps/desktop/src-tauri/Cargo.toml 注释。

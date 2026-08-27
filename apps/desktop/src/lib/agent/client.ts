@@ -271,6 +271,8 @@ export type AgentClient = {
   /** run 进行中排队转向（当前 turn 完成后自动续跑）；idle 表示无活跃 run。 */
   steer(sessionId: string, message: string): Promise<AgentSteerOutcome>;
   abort(runId: string): Promise<boolean>;
+  /** 无 runId 时按 session 中止活跃 run。 */
+  abortSession(sessionId: string): Promise<boolean>;
   deleteSession(sessionId: string): Promise<boolean>;
   listProviders(): Promise<AgentProviderInfo[]>;
   listModels(): Promise<AgentModelInfo[]>;
@@ -344,6 +346,7 @@ function createTauriAgentClient(): AgentClient {
     prompt: (input) => invoke<AgentPromptResult>("agent_prompt", { request: withRunId(input) }),
     steer: (sessionId, message) => invoke<AgentSteerOutcome>("agent_steer", { sessionId, message }),
     abort: (runId) => invoke<boolean>("agent_abort", { runId }),
+    abortSession: (sessionId) => invoke<boolean>("agent_abort_session", { sessionId }),
     deleteSession: (sessionId) => invoke<boolean>("agent_delete_session", { sessionId }),
     listProviders: () => invoke<AgentProviderInfo[]>("agent_list_providers"),
     listModels: () => invoke<AgentModelInfo[]>("agent_list_models"),
@@ -447,6 +450,11 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ runId }),
+    })).ok,
+    abortSession: async (sessionId) => (await request<{ ok: boolean }>("/api/v1/agent/abort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
     })).ok,
     deleteSession: async (sessionId) => (await request<{ deleted: boolean }>(`/api/v1/agent/session?sessionId=${encodeURIComponent(sessionId)}`, { method: "DELETE" })).deleted,
     listProviders: () => request<AgentProviderInfo[]>("/api/v1/agent/providers"),

@@ -223,7 +223,10 @@ interface SceneTheme {
   nodeScaffold: string;
   /** 悬停强调色（淡入插值目标）。 */
   nodeHover: string;
-  nodeMuted: string;
+  /** 聚焦时不相关节点的淡化填充色（低对比实心点，不是空圆）。 */
+  nodeFaded: string;
+  /** 聚焦时不相关节点的淡化标签色（canvas 2D 用，无需预乘）。 */
+  labelFaded: string;
   nodeOutline: string;
   /** 选中/焦点细描边。 */
   nodeFocusRing: string;
@@ -261,7 +264,8 @@ function sceneTheme(mode: GraphThemeMode): SceneTheme {
       nodeHub: "#8b8b8b",
       nodeScaffold: "#c8c8d0",
       nodeHover: "#7c5cbf",
-      nodeMuted: sigmaRgba(148, 163, 184, 0.30),
+      nodeFaded: sigmaRgba(148, 163, 184, 0.16),
+      labelFaded: "rgba(100, 116, 139, 0.32)",
       nodeOutline: sigmaRgba(255, 255, 255, 0.85),
       nodeFocusRing: "#6d28d9",
       hoverCard: {
@@ -285,7 +289,8 @@ function sceneTheme(mode: GraphThemeMode): SceneTheme {
     nodeHub: "#7a7a82",
     nodeScaffold: "#3a3a44",
     nodeHover: "#b794f6",
-    nodeMuted: sigmaRgba(138, 145, 158, 0.16),
+    nodeFaded: sigmaRgba(138, 145, 158, 0.10),
+    labelFaded: "rgba(200, 205, 214, 0.24)",
     nodeOutline: sigmaRgba(8, 12, 20, 0.9),
     nodeFocusRing: "#c4b5fd",
     hoverCard: {
@@ -348,27 +353,6 @@ function edgeBaseColor(tier: EdgeTier, theme: SceneTheme): string {
   }
 }
 
-// ---------- zoom LOD（对齐 semantica zoomTiers 的精简版） ----------
-
-type ZoomTier = "overview" | "structure" | "inspection";
-
-function zoomTierOf(ratio: number): ZoomTier {
-  if (ratio > 1.15) return "overview";
-  if (ratio > 0.55) return "structure";
-  return "inspection";
-}
-
-function labelThresholdFor(tier: ZoomTier): number {
-  switch (tier) {
-    case "overview":
-      return 5.5;
-    case "structure":
-      return 4.2;
-    case "inspection":
-      return 3;
-  }
-}
-
 // ---------- 工具 ----------
 
 function ageLabel(ms: number): string {
@@ -412,7 +396,6 @@ function drawRoundedRect(
 type SigmaSceneState = {
   hovered: string | null;
   selected: string | null;
-  zoomTier: ZoomTier;
 };
 
 /** 场景的命令式焦点接口：切会话时换金环 + 相机飞入，不重建场景。 */
@@ -490,6 +473,7 @@ function buildSigmaScene(options: {
       color: tierColor(tier, theme),
       // 外层只显示语义标题；防御性剥掉历史 ×N / xN 后缀（旧版二进制曾写入）。
       label: resolveNodeLabel(node.nodeType, node.label || "", node.props),
+      labelColor: theme.label,
       nodeType: node.nodeType,
       isCenter: isCenter(node.nodeId),
       isFocus: isFocus(node.nodeId),
@@ -560,13 +544,55 @@ function buildSigmaScene(options: {
 
   const sigma = new Sigma(graph, container, {
     renderLabels: true,
-    labelColor: { color: theme.label },
+    // attribute 模式：标签色走每个节点的 labelColor 属性（无属性时回退 color），
+    // 这样聚焦时不相关节点的标签可以单独淡化而不是直接消失。
+    labelColor: { attribute: "labelColor", color: theme.label },
     labelFont: "system-ui, -apple-system, sans-serif",
     labelSize: 11,
     labelWeight: "400",
-    labelRenderedSizeThreshold: labelThresholdFor("overview"),
+    // 官方标签 LOD 方案（sigma settings，无自定义渲染器）：
+    // - labelRenderedSizeThreshold：节点在屏幕上的尺寸小于阈值就不画名称。
+    //   5500+ 节点全图 fit 时渲染尺寸约 5-6px，阈值 8 让远景/进入时天然无文字；
+    //   用户拉近（ratio 约 0.65 以下）节点变大后名称才出现——拉近哪里就显示哪里。
+    // - labelDensity + labelGridCellSize：官方网格抽稀，每个 110px 格子最多一个标签，避免拥挤。
+    // - hideLabelsOnMove：相机移动时暂时收起标签，停下再渲染。
+    // - 悬停/选中/焦点节点经 nodeReducer 的 forceLabel 始终显示名称（官方推荐做法）。
+    labelRenderedSizeThreshold: 8,
     labelDensity: 0.55,
     labelGridCellSize: 110,
+    hideLabelsOnMove: true,
+    // 官方 drawDiscNodeLabel 的同款实现（labelColor/font/size/weight 设置照常生效），
+    // 仅把文字位置从节点右侧改为节点正下方居中——这是 sigma 官方预留的标签位置扩展点。
+    // 长文本按最大宽度截断为省略号，避免长标题铺满整屏。
+    defaultDrawNodeLabel: (context, data, settings) => {
+      if (!data.label) return;
+      const size = settings.labelSize;
+      const font = settings.labelFont;
+      const weight = settings.labelWeight;
+      const color = (settings.labelColor.attribute
+        ? String((data as unknown as Record<string, unknown>)[settings.labelColor.attribute] ?? settings.labelColor.color ?? "#000")
+        : settings.labelColor.color) ?? "#000";
+      context.save();
+      context.fillStyle = color;
+      context.font = `${weight} ${size}px ${font}`;
+      context.textAlign = "center";
+      context.textBaseline = "top";
+      const maxWidth = size * 10;
+      let label = data.label;
+      if (context.measureText(label).width > maxWidth) {
+        // 二分查找能放下的最长前缀，再补省略号
+        let lo = 0;
+        let hi = label.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (context.measureText(`${label.slice(0, mid)}…`).width <= maxWidth) lo = mid;
+          else hi = mid - 1;
+        }
+        label = `${label.slice(0, lo)}…`;
+      }
+      context.fillText(label, data.x, data.y + data.size + 3);
+      context.restore();
+    },
     stagePadding: 20,
     zIndex: true,
     minCameraRatio: 0.04,
@@ -586,17 +612,6 @@ function buildSigmaScene(options: {
       drawHoverCard(context, data as unknown as { x: number; y: number; size: number; label: string }, meta);
     },
   });
-
-  const onCameraUpdated = () => {
-    const ratio = sigma.getCamera().getState().ratio;
-    const tier = zoomTierOf(ratio);
-    if (tier !== stateRef.current.zoomTier) {
-      stateRef.current.zoomTier = tier;
-      sigma.setSetting("labelRenderedSizeThreshold", labelThresholdFor(tier));
-      sigma.refresh();
-    }
-  };
-  sigma.getCamera().on("updated", onCameraUpdated);
 
   let draggedNode: string | null = null;
   let dragMoved = false;
@@ -680,7 +695,7 @@ function buildSigmaScene(options: {
         };
       }
       if (tier === "entity") {
-        return { ...base, forceLabel: true, zIndex: 2 };
+        return { ...base, zIndex: 2 };
       }
       return base;
     }
@@ -704,12 +719,14 @@ function buildSigmaScene(options: {
     if (neighborSet?.has(node)) {
       return { ...base, zIndex: 2, color: lerpHex(baseColor, theme.nodeHover, 0.25) };
     }
+    // 不相关节点：淡出淡化（实心低对比点 + 淡化标签），不要换成空圆。
+    // borderColor 保持常态描边色——置 undefined 会让 NodeBorderProgram 回落到默认黑边，才出现「空圆」。
     return {
       ...base,
       zIndex: 0,
-      color: theme.nodeMuted,
-      label: null,
-      borderColor: undefined,
+      color: theme.nodeFaded,
+      labelColor: theme.labelFaded,
+      borderColor: theme.nodeOutline,
       borderSize: 0,
     } as typeof data;
   });
@@ -740,13 +757,11 @@ function buildSigmaScene(options: {
   let sim: Simulation<SimNode, undefined> | null = null;
   let simNodes: SimNode[] = [];
   const simNodeById = new Map<string, SimNode>();
-  let reheatTimer: number | null = null;
+  /** 悬停时被钉住（fx/fy）的节点：只固定指针下这一个，其余节点保持力导运动。 */
+  let hoverPinnedNode: string | null = null;
 
   const killSim = () => {
-    if (reheatTimer !== null) {
-      window.clearInterval(reheatTimer);
-      reheatTimer = null;
-    }
+    hoverPinnedNode = null;
     sim?.stop();
     sim = null;
     simNodes = [];
@@ -812,12 +827,7 @@ function buildSigmaScene(options: {
         }
       });
     sim = simInst;
-    // 周期性轻加热：闲时在平衡位置附近缓慢扩散。
-    // 悬停中不加热，避免节点在指针下被力推开。
-    reheatTimer = window.setInterval(() => {
-      if (syncDisposed || !sim || draggedNode || stateRef.current.hovered) return;
-      if (sim.alpha() < 0.02) sim.alpha(0.03).restart();
-    }, 7000);
+    // 不做周期性保温：布局收敛后全图完全静止，只有拖拽/新节点并入等交互才重新加热。
   };
 
   /**
@@ -861,13 +871,14 @@ function buildSigmaScene(options: {
     stateRef.current.hovered = node;
     driveHoverFade(1);
     applyState();
-    // 对齐 sigma 官方 use-reducers：悬停只刷新外观，不改布局坐标。
-    // 冻结力导并清零速度，避免 charge/collide 把节点从指针下推走。
+    // 对齐 sigma 官方 use-reducers 与 Obsidian：悬停只改外观，不冻结布局。
+    // 把指针下的节点 fx/fy 钉住（与拖拽同一机制），其余节点保持力导运动。
     if (sim && !draggedNode) {
-      sim.alpha(0).alphaTarget(0).stop();
-      for (const n of simNodes) {
-        n.vx = 0;
-        n.vy = 0;
+      const simNode = simNodeById.get(node);
+      if (simNode) {
+        hoverPinnedNode = node;
+        simNode.fx = graph.getNodeAttribute(node, "x") as number;
+        simNode.fy = graph.getNodeAttribute(node, "y") as number;
       }
     }
   });
@@ -875,6 +886,15 @@ function buildSigmaScene(options: {
     stateRef.current.hovered = null;
     driveHoverFade(0);
     applyState();
+    // 释放钉住的节点即可，不再轻加热——图保持完全静止。
+    if (hoverPinnedNode && !draggedNode) {
+      const simNode = simNodeById.get(hoverPinnedNode);
+      if (simNode) {
+        simNode.fx = null;
+        simNode.fy = null;
+      }
+      hoverPinnedNode = null;
+    }
   });
 
   /**
@@ -1179,7 +1199,6 @@ function buildSigmaScene(options: {
     killSim();
     focusApiRef.current = null;
     sigma.getCamera().enable();
-    sigma.getCamera().removeListener("updated", onCameraUpdated);
     sigma.off("downNode", onDownNode);
     mouseCaptor.off("mousemovebody", onMoveBody);
     mouseCaptor.off("mouseup", onUp);
@@ -1203,7 +1222,6 @@ function useSigmaScene(
   const stateRef = useRef<SigmaSceneState>({
     hovered: null,
     selected: null,
-    zoomTier: "overview",
   });
   const selectCbRef = useRef(onSelectNode);
   selectCbRef.current = onSelectNode;

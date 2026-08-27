@@ -320,3 +320,112 @@ export function mergeHistoryMessagesPreservingLive(
   });
   return trailing.length > 0 ? [...enriched, ...trailing] : enriched;
 }
+
+function assistantTailAfterUser(messages: AgentChatMessage[], userIndex: number): AgentChatMessage[] {
+  if (userIndex < 0 || userIndex >= messages.length) return [];
+  const tail: AgentChatMessage[] = [];
+  for (let i = userIndex + 1; i < messages.length; i += 1) {
+    const row = messages[i];
+    if (row.role === "user") break;
+    if (row.role === "assistant") tail.push(row);
+  }
+  return tail;
+}
+
+function findHistoryUserAnchor(
+  history: AgentChatMessage[],
+  currentUser: AgentChatMessage | undefined
+): number {
+  if (!currentUser) return -1;
+  const byId = history.findIndex((row) => row.id === currentUser.id);
+  if (byId >= 0) return byId;
+  const content = String(currentUser.content || "").trim();
+  if (!content) return -1;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const row = history[i];
+    if (row.role !== "user") continue;
+    if (String(row.content || "").trim() === content) return i;
+  }
+  return -1;
+}
+
+/**
+ * Pi 式收口：run 结束后用 history 对账「当前轮」assistant 尾部，只 append/patch，不整表替换。
+ * 补齐 JSONL 已有、live 漏掉的最终总结，且保留现有 id / 时间线 DOM。
+ */
+export function reconcilePromptTailFromHistory(
+  current: AgentChatMessage[],
+  history: AgentChatMessage[],
+  options?: {
+    pickContent?: (historyContent: string, currentContent: string) => string;
+    hasLiveParts?: (messageId: string) => boolean;
+  }
+): { messages: AgentChatMessage[]; changed: boolean; touchedAssistantIds: string[] } {
+  if (!Array.isArray(current) || current.length === 0 || !Array.isArray(history) || history.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  let lastUserIdx = -1;
+  for (let i = current.length - 1; i >= 0; i -= 1) {
+    if (current[i]?.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  const historyUserIdx = findHistoryUserAnchor(history, current[lastUserIdx]);
+  if (historyUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+
+  const historyTail = assistantTailAfterUser(history, historyUserIdx);
+  const currentTail = assistantTailAfterUser(current, lastUserIdx);
+  if (historyTail.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+
+  const pickContent =
+    options?.pickContent
+    || ((historyContent: string, liveContent: string) =>
+      liveContent.length > historyContent.length ? liveContent : historyContent);
+  const touchedAssistantIds: string[] = [];
+  const historyIds = new Set(historyTail.map((row) => row.id));
+  const currentById = new Map(currentTail.map((row) => [row.id, row]));
+  const mergedTail: AgentChatMessage[] = [];
+
+  for (const historyRow of historyTail) {
+    const existing = currentById.get(historyRow.id);
+    if (existing) {
+      const content = pickContent(historyRow.content || "", existing.content || "");
+      if (content !== existing.content) {
+        mergedTail.push({ ...existing, content });
+        touchedAssistantIds.push(historyRow.id);
+      } else {
+        mergedTail.push(existing);
+      }
+      continue;
+    }
+    mergedTail.push({ ...historyRow });
+    touchedAssistantIds.push(historyRow.id);
+  }
+
+  for (const row of currentTail) {
+    if (historyIds.has(row.id)) continue;
+    const keep =
+      Boolean(String(row.content || "").trim())
+      || Boolean(options?.hasLiveParts?.(row.id));
+    if (keep) mergedTail.push(row);
+  }
+
+  const prefix = current.slice(0, lastUserIdx + 1);
+  const suffix = current.slice(lastUserIdx + 1 + currentTail.length);
+  const next = [...prefix, ...mergedTail, ...suffix];
+  const changed =
+    next.length !== current.length
+    || next.some((row, index) => row.id !== current[index]?.id || row.content !== current[index]?.content);
+  if (!changed) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  return { messages: next, changed: true, touchedAssistantIds };
+}
