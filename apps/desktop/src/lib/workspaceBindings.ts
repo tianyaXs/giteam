@@ -14,6 +14,12 @@ export function normalizeWorkspacePath(path: string): string {
   return path.trim();
 }
 
+/** 跨平台路径等价比较（Windows 分隔符 / 大小写）。 */
+export function sameRepoPath(a: string, b: string): boolean {
+  const norm = (p: string) => p.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
 export function readWorkspaceAgentBindings(): Record<string, WorkspaceAgentBinding> {
   try {
     const raw = window.localStorage.getItem(WORKSPACE_AGENT_BINDINGS_KEY);

@@ -406,6 +406,7 @@ import {
   readBranchParentMap,
   readWorkspaceAgentBindings,
   readWorktreeParentMap,
+  sameRepoPath,
   writeBranchParentMap,
   writeWorkspaceAgentBindings,
   writeWorktreeParentMap,
@@ -4716,7 +4717,7 @@ export function App() {
       resetAddProjectDialog();
       await refreshRepositories();
       const all = await listRepositories();
-      const imported = all.find((repo) => repo.path === result.targetDir);
+      const imported = all.find((repo) => sameRepoPath(repo.path, result.targetDir));
       if (imported) setSelectedRepo(imported);
     } catch (error) {
       setShareImportError(error instanceof Error ? error.message : String(error));
