@@ -95,10 +95,23 @@ textarea,
 .gt-subtle-scrollbar::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+  /* WKWebView/WebKit 经典滚动条需显式关闭原生外观：否则轨道仍画系统灰底+两侧边框线，
+     看起来像给滚动条加了一圈边框。Chromium 设了 width 会自动关闭，WebKit 必须手动关。 */
+  -webkit-appearance: none;
+  background: transparent;
 }
 
-.gt-subtle-scrollbar::-webkit-scrollbar-track {
+.gt-subtle-scrollbar::-webkit-scrollbar-track,
+.gt-subtle-scrollbar::-webkit-scrollbar-track-piece {
   background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.gt-subtle-scrollbar::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .gt-subtle-scrollbar::-webkit-scrollbar-thumb {

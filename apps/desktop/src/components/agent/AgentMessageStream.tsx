@@ -1856,10 +1856,13 @@ export function AgentMessageStream({
   const scrollerElRef = useRef<HTMLElement | null>(null);
   /**
    * 用户「贴底跟随」意图：默认 true。wheel/touch 主动上滚置 false（区分「用户上滚」与
-   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）。
+   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）；
+   * 原生滚动条拖拽/键盘上滚不触发 wheel/touch，由下方 rAF 钉底逐帧比对 scrollTop 发现后置 false。
    * atBottom 回到 true（贴底/跳最新）或 stickResetSignal（发送）恢复 true。驱动持续 rAF 钉底。
    */
   const stickToBottomRef = useRef(true);
+  // 上一帧滚动位置基线：rAF 钉底逐帧比对用（识别原生滚动条拖拽把 scrollTop 拉低）。
+  const lastPinTopRef = useRef(-1);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
@@ -2238,17 +2241,31 @@ export function AgentMessageStream({
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
-      if (
-        stickToBottomRef.current &&
-        !pendingLocateIdRef.current &&
-        !locatedThisSessionRef.current
-      ) {
-        const sc = scrollerElRef.current;
-        if (sc) {
-          const max = sc.scrollHeight - sc.clientHeight;
-          if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+      const sc = scrollerElRef.current;
+      if (sc) {
+        const max = sc.scrollHeight - sc.clientHeight;
+        const top = sc.scrollTop;
+        // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
+        if (
+          stickToBottomRef.current &&
+          !pendingLocateIdRef.current &&
+          !locatedThisSessionRef.current &&
+          max >= 0
+        ) {
+          // 贴底期间 scrollTop 被外部拉低且确实离开底部 = 用户在向上拖拽原生滚动条/键盘上滚
+          //（原生滚动条拖拽不触发 wheel/touch，scroll 事件又会被同帧钉底回写合并掩盖，
+          // 只能在 rAF 里逐帧比对发现）→ 取消贴底跟随，否则每帧被钉回底部，
+          // 向上拖拽时反复闪回最新位置。
+          // 内容变矮的浏览器钳位 / Virtuoso 锚点补偿也会拉低 scrollTop，但补偿后 top==max
+          //（仍在底部），用 top < max - 2 排除，不误取消跟随。
+          if (lastPinTopRef.current >= 0 && top < lastPinTopRef.current - 2 && top < max - 2) {
+            stickToBottomRef.current = false;
+          } else if (top < max) {
+            sc.scrollTop = max;
+          }
         }
+        // 每帧跟踪（含 stick=false 期间），保证 stick 恢复时比对基线是新鲜值，不误判。
+        lastPinTopRef.current = sc.scrollTop;
       }
       raf = requestAnimationFrame(tick);
     };

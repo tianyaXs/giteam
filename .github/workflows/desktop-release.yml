@@ -120,17 +120,16 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.48）
+            ## 本版重点（0.2.49）
 
-            - 钉钉通知默认 **markdown**，失败自动回退 text
-            - 超长摘要分段发送；通知用完整正文，历史列表仍截断
-            - 修复分享导入对话框点空白误关闭
+            - 修复消息流滚动条多余轨道边框（macOS/WKWebView）
+            - 修复拖拽原生滚动条时被贴底跟随反复钉回底部
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.48.md`
+            - 详细说明见 `docs/releases/desktop-v0.2.49.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
