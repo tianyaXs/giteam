@@ -124,9 +124,9 @@ jobs:
           ## 安装
 
           \`\`\`bash
-          npm install -g giteam@0.1.52
+          npm install -g giteam@0.1.53
           \`\`\`
 
-          桌面端请同步升级至 **desktop-v0.2.44** 以使用分享 UI 与自动化模块。
+          桌面端请同步升级至 **desktop-v0.2.45** 以使用分享 UI 与自动化模块。
           EOF
           )"

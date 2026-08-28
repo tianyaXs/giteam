@@ -1001,7 +1001,6 @@ function TaskListPane(props: {
                 onClick={onCreate}
               >
                 创建
-                <ChevronDown className="size-3.5 opacity-80" />
               </Button>
             </div>
           </motion.div>
