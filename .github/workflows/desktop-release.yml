@@ -120,16 +120,16 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.49）
+            ## 本版重点（0.2.50）
 
-            - 修复消息流滚动条多余轨道边框（macOS/WKWebView）
-            - 修复拖拽原生滚动条时被贴底跟随反复钉回底部
+            - Agent：禁假性许可问（「直接跑一遍吗？」类），明显下一步直接做
+            - Agent：真决策只走 question；与会被否决的 bash/write 同轮互斥
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.49.md`
+            - 详细说明见 `docs/releases/desktop-v0.2.50.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

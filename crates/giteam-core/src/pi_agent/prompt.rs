@@ -141,7 +141,10 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
     }
     if has_tool("question") {
         workflow.push(
-            "When a task is too ambiguous to start safely or needs a decision only the user can make, batch the few blocking questions into a single question call; for minor or obvious choices, make a reasonable assumption and proceed instead of asking.",
+            "When a task is too ambiguous to start safely or needs a decision only the user can make, batch the few blocking questions into a single question call; for minor or obvious choices, make a reasonable assumption and proceed instead of asking. Never ask permission-seeking filler like \"Should I proceed?\", \"Run it now?\", or \"直接跑一遍吗？\" — just do it; if the action is risky, let command approval gate it. A question in plain reply text is not a wait state: only a question tool call waits for the user.",
+        );
+        workflow.push(
+            "A real question and the actions its answer would veto are mutually exclusive in one turn: when the user's answer decides whether or how to run something, emit only the question this turn (harmless read-only exploration may accompany it) — do not also launch the bash/write the answer might cancel.",
         );
     }
     if has_tool("task") {
@@ -320,7 +323,7 @@ mod tests {
     fn guideline_sections_are_capped_and_structured() {
         let prompt = default_system_prompt(None);
         let sections: [(&str, usize); 5] = [
-            ("## Workflow", 7),
+            ("## Workflow", 8),
             ("## Editing discipline", 5),
             ("## Verification and safety", 5),
             ("## Repository memory", 3),
@@ -477,6 +480,10 @@ mod tests {
         // 工具描述承载「优先用工具而非纯文本」，Workflow 节承载时机/批次语义。
         assert!(prompt.contains("Prefer calling this tool over writing the questions as plain reply text"));
         assert!(prompt.contains("batch the few blocking questions into a single question call"));
+        // 反假性许可问 + 真问/副作用同轮互斥（对齐 OpenCode 禁 "Should I proceed?" 反模式）。
+        assert!(prompt.contains("Should I proceed?"));
+        assert!(prompt.contains("not a wait state"));
+        assert!(prompt.contains("mutually exclusive in one turn"));
         // 旧的强制措辞 MUST/ALWAYS 已移除。
         assert!(!prompt.contains("ALWAYS call the question tool"));
 

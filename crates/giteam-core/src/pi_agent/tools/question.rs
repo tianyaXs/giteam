@@ -36,7 +36,7 @@ impl Tool for QuestionTool {
     }
 
     fn description(&self) -> &str {
-        "Clarify requirements or have the user choose between options. Prefer calling this tool over writing the questions as plain text when a task is too ambiguous to start, when choosing between approaches, or when a decision only the user can make is missing. Supports single-choice, multi-choice, and free-text answers; keep options to four or fewer."
+        "Clarify requirements or have the user choose between options. Prefer calling this tool over writing the questions as plain text when a task is too ambiguous to start, when choosing between approaches, or when a decision only the user can make is missing. Supports single-choice, multi-choice, and free-text answers; keep options to four or fewer. Never use this tool for pseudo-confirmation such as \"Shall I proceed?\" or \"Run it now?\" — just do the obvious next step, or rely on command approval if the action is risky."
     }
 
     fn parameters(&self) -> Value {
