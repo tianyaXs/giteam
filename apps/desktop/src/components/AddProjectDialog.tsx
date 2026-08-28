@@ -161,6 +161,8 @@ export function AddProjectDialog({
       <DialogContent
         className="w-[min(460px,calc(100vw-32px))] gap-0 rounded-[28px] border-border/50 bg-background p-0 shadow-2xl"
         aria-labelledby={titleId}
+        onPointerDownOutside={(event) => event.preventDefault()}
+        onInteractOutside={(event) => event.preventDefault()}
         onOpenAutoFocus={(event) => {
           const focusId =
             step === "remote"

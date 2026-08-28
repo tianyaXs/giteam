@@ -195,14 +195,16 @@ pub async fn execute_task(
 
     match prompt_result {
         Ok(message) => {
-            let summary = resolve_run_summary(service, &session_id, &message).await;
+            let full_summary = resolve_run_summary(service, &session_id, &message).await;
+            // 历史列表保留较短摘要；通知正文用完整文本（钉钉侧再按上限切分）。
+            let stored_summary = truncate(&full_summary, 800);
             let finished = with_store(|s| {
                 let run = s.finish_run(
                     &run.id,
                     RunStatus::Success,
                     Some(&session_id),
                     None,
-                    Some(&summary),
+                    Some(stored_summary.as_str()).filter(|s| !s.is_empty()),
                 )?;
                 let task = s.mark_task_finished(
                     &task.id,
@@ -212,10 +214,10 @@ pub async fn execute_task(
                 Ok((run, task))
             })?;
             let should_notify = should_notify_run(&finished.1, RunStatus::Success);
-            let body = if summary.trim().is_empty() {
+            let body = if full_summary.trim().is_empty() {
                 "已完成".to_string()
             } else {
-                summary
+                full_summary
             };
             Ok(RunOutcome {
                 notify_title: finished.1.title.clone(),
@@ -384,7 +386,7 @@ async fn resolve_run_summary(
 ) -> String {
     let from_prompt = assistant_text_only(prompt_message);
     if !from_prompt.is_empty() {
-        return truncate(&from_prompt, 480);
+        return from_prompt;
     }
     if let Ok(messages) = service.messages(session_id).await {
         for message in messages.iter().rev() {
@@ -393,7 +395,7 @@ async fn resolve_run_summary(
             }
             let text = assistant_text_only(message);
             if !text.is_empty() {
-                return truncate(&text, 480);
+                return text;
             }
         }
     }

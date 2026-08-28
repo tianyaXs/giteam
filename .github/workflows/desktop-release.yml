@@ -120,26 +120,17 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.47）
+            ## 本版重点（0.2.48）
 
-            - 自动化任务支持**钉钉群机器人**通知（按任务配置 Webhook / 加签）
-            - 只推送最终摘要；标题为「任务：…」；表单内可测试发送
-            - 修复渠道保存错乱、成功不发、残留 running 无法立即运行等问题
-            - 列表运行状态与会话同步；创建后收起表单；深色主题选中/状态更清晰
-            - 拖拽侧栏分隔线时不再整页选中文本
-
-            ## 自动化
-
-            - 通知渠道：系统通知 / 钉钉 / 不通知
-            - 立即运行前自动保存表单；运行中状态与 Agent 会话对齐
-            - 去掉详情右上角关闭按钮（避免与右侧栏冲突），可用底部「取消」
+            - 钉钉通知默认 **markdown**，失败自动回退 text
+            - 超长摘要分段发送；通知用完整正文，历史列表仍截断
+            - 修复分享导入对话框点空白误关闭
 
             ## 说明
 
-            - 钉钉一期以出站通知为主；群 @ 反向触发能力已预留，暂未开放入口
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.47.md`
+            - 详细说明见 `docs/releases/desktop-v0.2.48.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
