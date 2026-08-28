@@ -335,6 +335,15 @@ pub enum SteerOutcome {
 
 type EventSubscriberKey = (String, String);
 
+/// 冷启动恢复失败缓存：避免 list_sessions 轮询时反复尝试重建并刷屏日志。
+struct RestoreFailure {
+    message: String,
+    at: Instant,
+}
+
+/// 同一错误在此窗口内不再重试 restore / 不再打日志。
+const RESTORE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+
 pub struct PiAgentService {
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     records: Mutex<HashMap<String, PersistedSessionRecord>>,
@@ -356,6 +365,8 @@ pub struct PiAgentService {
     self_weak: Mutex<Option<Weak<PiAgentService>>>,
     /// 旁路抽取串行锁：parent_session_id → 锁。同父多轮抽取排队，避免并发打爆 provider。
     extract_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// session_id → 最近一次 restore 失败（模型缺失 / API Key 等）。
+    restore_failures: Mutex<HashMap<String, RestoreFailure>>,
 }
 
 impl Default for PiAgentService {
@@ -431,6 +442,7 @@ impl PiAgentService {
             browser_controller: Mutex::new(None),
             self_weak: Mutex::new(None),
             extract_locks: Mutex::new(HashMap::new()),
+            restore_failures: Mutex::new(HashMap::new()),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -779,8 +791,15 @@ impl PiAgentService {
         let mut catalog_dirty = false;
         let mut degraded_session_ids: Vec<String> = Vec::new();
         for session_id in record_ids {
+            // 冷却期内跳过 restore：仍以 catalog 元数据入列，避免反复打 Pi SDK / 刷日志。
+            if self.has_restore_failure_cooldown(&session_id) {
+                degraded_session_ids.push(session_id);
+                continue;
+            }
             match self.get_session(&session_id).await {
-                Ok(_) => {}
+                Ok(_) => {
+                    self.clear_restore_failure(&session_id);
+                }
                 Err(error) => {
                     let message = error.to_string();
                     if message.contains("Session not found") {
@@ -792,10 +811,13 @@ impl PiAgentService {
                                 );
                             }
                         }
+                        self.clear_restore_failure(&session_id);
                     } else {
-                        eprintln!(
-                            "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
-                        );
+                        if self.note_restore_failure(&session_id, &message) {
+                            eprintln!(
+                                "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
+                            );
+                        }
                         degraded_session_ids.push(session_id);
                     }
                 }
@@ -1716,17 +1738,26 @@ impl PiAgentService {
 
     /// 保存 provider 的 api key 到统一 vault（0600，原子写）。
     pub fn save_api_key(&self, provider: &str, key: &str) -> Result<(), PiAgentError> {
-        self.secret_store()?.set_api_key(provider, key)
+        self.secret_store()?.set_api_key(provider, key)?;
+        // 凭据变更后允许重新 restore 曾因 missing key / model 降级的会话。
+        self.clear_all_restore_failures();
+        Ok(())
     }
 
     /// 保存/更新自定义 provider（models.json），api key 只进 vault。
     pub fn save_custom_provider(&self, input: &CustomProviderInput) -> Result<(), PiAgentError> {
-        self.provider_catalog()?.save_custom_provider(input)
+        self.provider_catalog()?.save_custom_provider(input)?;
+        self.clear_all_restore_failures();
+        Ok(())
     }
 
     /// 删除自定义供应商（models.json 整项 + vault 凭据）。
     pub fn remove_custom_provider(&self, provider: &str) -> Result<bool, PiAgentError> {
-        self.provider_catalog()?.remove_custom_provider(provider)
+        let removed = self.provider_catalog()?.remove_custom_provider(provider)?;
+        if removed {
+            self.clear_all_restore_failures();
+        }
+        Ok(removed)
     }
 
     /// 连接 OpenAI Completions 兼容自定义端点（拉模型 + 写 models.json + vault）。
@@ -1738,8 +1769,11 @@ impl PiAgentService {
         name: &str,
         provider: Option<&str>,
     ) -> Result<(String, Vec<String>), PiAgentError> {
-        self.provider_catalog()?
-            .connect_openai_compatible(base_url, api_key, name, provider)
+        let outcome = self
+            .provider_catalog()?
+            .connect_openai_compatible(base_url, api_key, name, provider)?;
+        self.clear_all_restore_failures();
+        Ok(outcome)
     }
 
     /// 更新已有 provider 的 baseUrl（及可选 api），保留 models 列表。
@@ -2611,10 +2645,58 @@ impl PiAgentService {
             .sessions
             .lock()
             .map_err(|error| PiAgentError::State(error.to_string()))?;
+        self.clear_restore_failure(session_id);
         Ok(sessions
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::clone(&managed))
             .clone())
+    }
+
+    /// 冷却期内是否已有 restore 失败记录（同错不重试）。
+    fn has_restore_failure_cooldown(&self, session_id: &str) -> bool {
+        let Ok(mut map) = self.restore_failures.lock() else {
+            return false;
+        };
+        let Some(entry) = map.get(session_id) else {
+            return false;
+        };
+        if entry.at.elapsed() < RESTORE_FAILURE_COOLDOWN {
+            return true;
+        }
+        map.remove(session_id);
+        false
+    }
+
+    /// 记录 restore 失败。返回 `true` 表示应打印日志（首次或错误文案变化）。
+    fn note_restore_failure(&self, session_id: &str, message: &str) -> bool {
+        let Ok(mut map) = self.restore_failures.lock() else {
+            return true;
+        };
+        match map.get(session_id) {
+            Some(prev) if prev.message == message => false,
+            _ => {
+                map.insert(
+                    session_id.to_string(),
+                    RestoreFailure {
+                        message: message.to_string(),
+                        at: Instant::now(),
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    fn clear_restore_failure(&self, session_id: &str) {
+        if let Ok(mut map) = self.restore_failures.lock() {
+            map.remove(session_id);
+        }
+    }
+
+    fn clear_all_restore_failures(&self) {
+        if let Ok(mut map) = self.restore_failures.lock() {
+            map.clear();
+        }
     }
 
     fn persist_catalog(&self) -> Result<(), PiAgentError> {

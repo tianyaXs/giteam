@@ -361,7 +361,11 @@ import {
 import {
   shareCreate,
   shareImport,
+  shareImportCancel,
+  listenShareImportProgress,
+  isShareImportCancelled,
   type ShareCreateResult,
+  type ShareImportProgress,
   type ShareImportResult
 } from "./lib/share";
 import {
@@ -1095,6 +1099,7 @@ export function App() {
   const [addProjectTargetPath, setAddProjectTargetPath] = useState("");
   const [addProjectShareUrl, setAddProjectShareUrl] = useState("");
   const [shareImportBusy, setShareImportBusy] = useState(false);
+  const [shareImportProgress, setShareImportProgress] = useState<ShareImportProgress | null>(null);
   const [shareImportResult, setShareImportResult] = useState<ShareImportResult | null>(null);
   const [shareImportError, setShareImportError] = useState("");
   const [addProjectBusy, setAddProjectBusy] = useState(false);
@@ -4674,6 +4679,7 @@ export function App() {
 
   function resetAddProjectDialog() {
     setShareImportError("");
+    setShareImportProgress(null);
     setAddProjectShareUrl("");
     setAddProjectName("");
     setAddProjectLocalPath("");
@@ -4709,7 +4715,16 @@ export function App() {
     }
     setShareImportBusy(true);
     setShareImportError("");
+    setShareImportProgress({
+      stage: "meta",
+      message: "正在准备导入…",
+      percent: 1,
+    });
+    let unlistenProgress: (() => void) | undefined;
     try {
+      unlistenProgress = await listenShareImportProgress((progress) => {
+        setShareImportProgress(progress);
+      });
       const targetDir = joinProjectPath(parent, name);
       const result = await shareImport(url, targetDir, undefined, name);
       setShareImportResult(result);
@@ -4720,9 +4735,35 @@ export function App() {
       const imported = all.find((repo) => sameRepoPath(repo.path, result.targetDir));
       if (imported) setSelectedRepo(imported);
     } catch (error) {
+      if (isShareImportCancelled(error)) {
+        setShareImportError("");
+        setShareImportProgress(null);
+        setShareImportBusy(false);
+        setAddProjectOpen(false);
+        resetAddProjectDialog();
+        return;
+      }
       setShareImportError(error instanceof Error ? error.message : String(error));
+      setShareImportProgress(null);
     } finally {
+      unlistenProgress?.();
       setShareImportBusy(false);
+    }
+  }
+
+  async function cancelShareImport() {
+    if (!shareImportBusy) return;
+    setShareImportProgress((prev) => ({
+      stage: prev?.stage || "meta",
+      message: "正在取消…",
+      percent: prev?.percent ?? 0,
+      bytesDone: prev?.bytesDone ?? null,
+      bytesTotal: prev?.bytesTotal ?? null,
+    }));
+    try {
+      await shareImportCancel();
+    } catch {
+      // ignore
     }
   }
 
@@ -12462,9 +12503,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           targetPath={addProjectTargetPath}
           shareUrl={addProjectShareUrl}
           busy={shareImportBusy || addProjectBusy}
+          importProgress={shareImportBusy ? shareImportProgress : null}
           error={shareImportError}
           onOpenChange={(open) => {
-            if (!open && (shareImportBusy || addProjectBusy)) return;
+            if (!open && shareImportBusy) {
+              void cancelShareImport();
+              return;
+            }
+            if (!open && addProjectBusy) return;
             setAddProjectOpen(open);
             if (!open) resetAddProjectDialog();
           }}
@@ -12483,6 +12529,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onPickTargetPath={() => pickAddProjectTargetPath()}
           onConfirmLocal={() => confirmAddProjectLocal()}
           onConfirmRemote={() => confirmShareImport()}
+          onCancelRemote={() => cancelShareImport()}
         />
 
         <Dialog

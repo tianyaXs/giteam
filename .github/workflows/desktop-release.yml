@@ -120,52 +120,42 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 自动化（新）
+            ## 本版重点（0.2.46）
 
-            - 左侧栏新增「自动化」入口，主界面可在 Agent / 自动化之间切换
-            - 为已导入项目创建定时任务：到点由本机 Agent 静默执行目标 prompt（需保持 Giteam 运行）
-            - 支持新会话 / 已有会话；目标会话 busy 时自动跳过并写入历史
-            - 调度：每天 / 工作日 / 每周 / 间隔 / 自定义；可指定模型、推理强度、通知级别
-            - 三栏 UI：任务列表 + 创建/详情表单（Codex 风格）+ 运行历史；支持立即运行、暂停、搜索过滤
-            - 运行完成未读蓝点；打开详情后标记已读；桌面通知尊重「Agent 通知」总开关
-            - 本地存储 `~/.giteam/automation.db`
+            - 远程导入：进度条（阶段 / 百分比 / 已传体积）+ 可取消
+            - 去掉「将导入到 …」重复文案；自动化「创建」去掉多余箭头
+            - Agent：`list_sessions` restore 失败冷却，避免模型缺失 / 无 Key 时日志刷屏
 
-            ## 项目分享（新）
+            ## 自动化
 
-            - 将项目快照（代码 + 会话 + 记忆 + 附件）导出上传云端，生成分享链接
-            - 导出自动脱敏 API Key / Token / 私钥；代码（git bundle）与上下文分包上传
-            - 项目右键「分享项目…」；弹窗展示链接、体积、会话数与 CLI 导入命令
-            - 新增「添加项目」向导：本地文件夹导入，或凭分享链接远程导入
-            - 支持 `giteam://import` 深链与冷启动 pending URL；可选 `--attach` 合并到已有仓库
+            - 左侧栏「自动化」入口；已导入项目可建定时任务（需保持 Giteam 运行）
+            - 新会话 / 已有会话；busy 时跳过；每天 / 工作日 / 每周 / 间隔 / 自定义
+            - 可指定模型、推理强度、通知级别；未读蓝点；本地 `~/.giteam/automation.db`
+
+            ## 项目分享
+
+            - 导出上传云端生成分享链接；脱敏敏感信息；代码与上下文分包
+            - 「添加项目」向导：本地导入或分享链接远程导入；`giteam://import` 深链
+            - 导入进度与取消；Windows 路径兼容
 
             ## Agent 与会话
 
-            - 会话结束后用 history 对账补全漏掉的最终回复，避免整表替换闪动
-            - 过滤 Pi 自动压缩注入的 user 摘要块，UI 不再展示模型专用英文摘要
-            - 停止响应更快：prompt 与 abort 竞速；支持按 session 中止活跃 run
-            - abort 时 revert 未完成响应，避免残留半截 assistant 消息
+            - history 对账补全最终回复；过滤 compaction 摘要块
+            - 更快停止 / abort；restore 失败降级入列且不再刷屏
 
             ## 桌面界面
 
-            - 分支切换移至左侧 `BranchPickerNavItem`（搜索 / 切换 / 新建分支）
-            - 资产图谱标签 LOD：拉近显示名称、聚焦时非相关节点淡化
-            - 右侧栏 tab 轻量胶囊样式；设置「工作树」文案统一为「分支」
+            - 左侧分支选择；资产图谱 LOD；右侧栏胶囊 tab
 
-            ## 云端 Gateway（自托管）
-
-            - Project Share API：分块上传、finalize、公开 clone 端点、管理员撤销
-            - Cloud 管理后台 Shares 页；公开落地页展示体积、CLI 命令与深链
-
-            ## CLI（需单独升级至 0.1.52）
+            ## CLI（请升级至 0.1.53）
 
             - `giteam share create / import / list / revoke`
-            - `giteam init --from <url>` 与 `--attach` 远程/合并导入
+            - `giteam init --from <url>` 与 `--attach`
 
             ## 说明
 
             打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
-            Windows 建议安装 Git for Windows，终端体验更接近 macOS。
-            使用项目分享或自动化前，请先将 Giteam 更新至本版本。
+            Windows 建议安装 Git for Windows。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

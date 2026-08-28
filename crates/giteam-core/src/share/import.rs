@@ -3,12 +3,33 @@
 use super::manifest::ShareManifest;
 use super::{client, pack, ShareError, ShareResult};
 use rusqlite::params;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Default)]
+/// 导入进度回调（Desktop UI 可选注入）。
+pub type ImportProgressHook = Arc<dyn Fn(ImportProgress) + Send + Sync>;
+
+/// 取消标志：`true` 时导入应尽快退出。
+pub type ImportCancelFlag = Arc<AtomicBool>;
+
+/// 导入进度快照（整体 percent + 可选字节进度）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProgress {
+    /// `meta` / `download_context` / `unpack` / `clone` / `download_repo` / `apply` / `done`
+    pub stage: String,
+    pub message: String,
+    /// 0–100。
+    pub percent: u8,
+    pub bytes_done: Option<u64>,
+    pub bytes_total: Option<u64>,
+}
+
+#[derive(Clone, Default)]
 pub struct ImportOptions {
     /// 显式目标目录（默认 `~/giteam-projects/<repo-name>`，冲突自动追加序号）。
     pub dir: Option<PathBuf>,
@@ -16,6 +37,54 @@ pub struct ImportOptions {
     pub attach: Option<PathBuf>,
     /// 覆盖显示名与默认目标文件夹名（默认用 manifest.repo.name）。
     pub name: Option<String>,
+    /// 进度回调（None = 静默）。
+    pub on_progress: Option<ImportProgressHook>,
+    /// 取消标志（置位后下载/克隆循环会返回 `Cancelled`）。
+    pub cancel: Option<ImportCancelFlag>,
+}
+
+fn is_cancelled(opts: &ImportOptions) -> bool {
+    opts.cancel
+        .as_ref()
+        .map(|flag| flag.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn check_cancelled(opts: &ImportOptions) -> ShareResult<()> {
+    if is_cancelled(opts) {
+        Err(ShareError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn emit_progress(
+    opts: &ImportOptions,
+    stage: &str,
+    message: &str,
+    percent: u8,
+    bytes_done: Option<u64>,
+    bytes_total: Option<u64>,
+) {
+    let Some(hook) = opts.on_progress.as_ref() else {
+        return;
+    };
+    hook(ImportProgress {
+        stage: stage.to_string(),
+        message: message.to_string(),
+        percent: percent.min(100),
+        bytes_done,
+        bytes_total,
+    });
+}
+
+fn map_download_percent(start: u8, end: u8, done: u64, total: Option<u64>) -> u8 {
+    let span = end.saturating_sub(start);
+    let Some(total) = total.filter(|t| *t > 0) else {
+        return start;
+    };
+    let ratio = (done as f64 / total as f64).clamp(0.0, 1.0);
+    start.saturating_add((ratio * f64::from(span)).round() as u8)
 }
 
 #[derive(Debug)]
@@ -100,6 +169,62 @@ fn run_git(repo: &Path, args: &[&str]) -> ShareResult<String> {
 fn run_git_in(dir: &Path, args: &[String]) -> ShareResult<String> {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run_git(dir, &refs)
+}
+
+/// 可取消的 git 子进程（用于长时间 clone）；取消时 kill 并返回 `Cancelled`。
+fn run_git_in_cancellable(
+    opts: &ImportOptions,
+    dir: &Path,
+    args: &[String],
+) -> ShareResult<String> {
+    check_cancelled(opts)?;
+    let Some(cancel) = opts.cancel.clone() else {
+        return run_git_in(dir, args);
+    };
+    let mut child = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| ShareError::Git(format!("spawn git: {e}")))?;
+    let mut stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| ShareError::Git("missing git stdout".into()))?;
+    let mut stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| ShareError::Git("missing git stderr".into()))?;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ShareError::Cancelled);
+        }
+        match child
+            .try_wait()
+            .map_err(|e| ShareError::Git(format!("wait git: {e}")))?
+        {
+            Some(status) => {
+                use std::io::Read;
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                let _ = stdout_pipe.read_to_string(&mut stdout);
+                let _ = stderr_pipe.read_to_string(&mut stderr);
+                if !status.success() {
+                    return Err(ShareError::Git(format!(
+                        "git {} failed: {}",
+                        args.join(" "),
+                        stderr.trim()
+                    )));
+                }
+                return Ok(stdout.trim().to_string());
+            }
+            None => std::thread::sleep(Duration::from_millis(120)),
+        }
+    }
 }
 
 fn home_dir() -> ShareResult<PathBuf> {
@@ -509,7 +634,10 @@ pub fn import_share(share_url: &str, opts: &ImportOptions) -> ShareResult<Import
         ));
     }
 
+    emit_progress(opts, "meta", "正在读取分享信息…", 2, None, None);
+    check_cancelled(opts)?;
     let meta = client::fetch_share_meta(&base, &share_id)?;
+    check_cancelled(opts)?;
     if meta.status != "active" {
         return Err(ShareError::InvalidInput(format!(
             "share is not downloadable (status: {})",
@@ -549,16 +677,70 @@ pub fn import_share(share_url: &str, opts: &ImportOptions) -> ShareResult<Import
     fs::create_dir_all(&staging)?;
 
     let result = if is_split {
-        let context_pkg =
-            client::download_share_artifact(&base, &share_id, "context", &context_sha)?;
+        let context_hint = meta
+            .context_size_bytes
+            .max(
+                meta.meta
+                    .get("contextSizeBytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            );
+        let context_pkg = download_with_progress(
+            opts,
+            &base,
+            &share_id,
+            "context",
+            &context_sha,
+            "download_context",
+            "正在下载会话与记忆…",
+            5,
+            42,
+            if context_hint > 0 {
+                Some(context_hint)
+            } else {
+                None
+            },
+        )?;
         let import_result =
             import_split(&base, &share_id, &context_pkg, &staging, &meta, opts, &mut warnings);
         let _ = fs::remove_file(&context_pkg);
         import_result
     } else {
         // P1 单包兼容：整包 tar.zst 内含 repo.bundle + context。
-        let package = client::download_share_artifact(&base, &share_id, "blob", &meta.content_sha256)
-            .or_else(|_| client::download_share(&base, &share_id, &meta.content_sha256))?;
+        let package = download_with_progress(
+            opts,
+            &base,
+            &share_id,
+            "blob",
+            &meta.content_sha256,
+            "download_context",
+            "正在下载分享包…",
+            5,
+            55,
+            if meta.size_bytes > 0 {
+                Some(meta.size_bytes)
+            } else {
+                None
+            },
+        )
+        .or_else(|_| {
+            download_with_progress(
+                opts,
+                &base,
+                &share_id,
+                "context",
+                &meta.content_sha256,
+                "download_context",
+                "正在下载分享包…",
+                5,
+                55,
+                if meta.size_bytes > 0 {
+                    Some(meta.size_bytes)
+                } else {
+                    None
+                },
+            )
+        })?;
         let import_result =
             import_from_legacy_package(&package, &staging, &base, &share_id, opts, &mut warnings);
         let _ = fs::remove_file(&package);
@@ -567,7 +749,73 @@ pub fn import_share(share_url: &str, opts: &ImportOptions) -> ShareResult<Import
     let _ = fs::remove_dir_all(&staging);
     let mut outcome = result?;
     outcome.warnings.append(&mut warnings);
+    emit_progress(opts, "done", "导入完成", 100, None, None);
     Ok(outcome)
+}
+
+fn download_with_progress(
+    opts: &ImportOptions,
+    base: &str,
+    share_id: &str,
+    artifact: &str,
+    expected_sha: &str,
+    stage: &str,
+    message: &str,
+    percent_start: u8,
+    percent_end: u8,
+    size_hint: Option<u64>,
+) -> ShareResult<PathBuf> {
+    check_cancelled(opts)?;
+    emit_progress(
+        opts,
+        stage,
+        message,
+        percent_start,
+        Some(0),
+        size_hint,
+    );
+    let mut last_percent = percent_start;
+    let mut last_emit_done = 0u64;
+    let hook = opts.on_progress.clone();
+    let cancel = opts.cancel.clone();
+    let stage_owned = stage.to_string();
+    let message_owned = message.to_string();
+    let mut on_bytes = |done: u64, total: Option<u64>| -> ShareResult<()> {
+        if cancel
+            .as_ref()
+            .map(|flag| flag.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
+            return Err(ShareError::Cancelled);
+        }
+        let total = total.or(size_hint);
+        let percent = map_download_percent(percent_start, percent_end, done, total);
+        let should_emit = percent > last_percent
+            || done.saturating_sub(last_emit_done) >= 256 * 1024
+            || total.map(|t| done >= t).unwrap_or(false);
+        if !should_emit {
+            return Ok(());
+        }
+        last_percent = percent;
+        last_emit_done = done;
+        if let Some(hook) = hook.as_ref() {
+            hook(ImportProgress {
+                stage: stage_owned.clone(),
+                message: message_owned.clone(),
+                percent,
+                bytes_done: Some(done),
+                bytes_total: total,
+            });
+        }
+        Ok(())
+    };
+    client::download_share_artifact_with_progress(
+        base,
+        share_id,
+        artifact,
+        expected_sha,
+        Some(&mut on_bytes),
+    )
 }
 
 fn import_split(
@@ -579,7 +827,10 @@ fn import_split(
     opts: &ImportOptions,
     warnings: &mut Vec<String>,
 ) -> ShareResult<ImportOutcome> {
+    check_cancelled(opts)?;
+    emit_progress(opts, "unpack", "正在解压上下文…", 45, None, None);
     pack::unpack_archive(context_package, staging)?;
+    check_cancelled(opts)?;
     let manifest_bytes = fs::read(staging.join("manifest.json"))
         .map_err(|e| ShareError::Package(format!("manifest missing: {e}")))?;
     let manifest = ShareManifest::parse(&manifest_bytes).map_err(ShareError::Package)?;
@@ -615,28 +866,50 @@ fn import_split(
         let target = resolve_target_dir(&display_name, opts.dir.as_ref())?;
         let target_arg = target.to_string_lossy().to_string();
         // 优先 clone 云端 dumb-HTTP；失败时回退下载 repo.bundle。
-        let clone_remote = run_git_in(
+        emit_progress(opts, "clone", "正在克隆代码仓库…", 50, None, None);
+        let clone_remote = run_git_in_cancellable(
+            opts,
             &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             &["clone".into(), git_url.clone(), target_arg.clone()],
         );
         if let Err(error) = clone_remote {
             let _ = fs::remove_dir_all(&target);
+            if matches!(error, ShareError::Cancelled) {
+                return Err(error);
+            }
             warnings.push(format!(
                 "从 git remote clone 失败，回退下载 repo.bundle：{error}"
             ));
-            let bundle = client::download_share_artifact(
+            let repo_hint = meta.size_bytes.max(
+                meta.meta
+                    .get("repoSizeBytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            );
+            let bundle = download_with_progress(
+                opts,
                 base,
                 share_id,
                 "repo",
                 &meta.content_sha256,
+                "download_repo",
+                "正在下载代码包…",
+                52,
+                82,
+                if repo_hint > 0 { Some(repo_hint) } else { None },
             )?;
             let bundle_arg = bundle.to_string_lossy().to_string();
-            let result = run_git_in(
+            emit_progress(opts, "clone", "正在从代码包还原仓库…", 84, None, None);
+            let result = run_git_in_cancellable(
+                opts,
                 &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 &["clone".into(), bundle_arg, target_arg],
             );
             let _ = fs::remove_file(&bundle);
-            result?;
+            if let Err(error) = result {
+                let _ = fs::remove_dir_all(&target);
+                return Err(error);
+            }
         }
         (fs::canonicalize(&target).unwrap_or(target), true)
     };
@@ -651,6 +924,7 @@ fn import_split(
         staging,
         &display_name,
         warnings,
+        opts,
     )
 }
 
@@ -662,6 +936,7 @@ fn import_from_legacy_package(
     opts: &ImportOptions,
     warnings: &mut Vec<String>,
 ) -> ShareResult<ImportOutcome> {
+    emit_progress(opts, "unpack", "正在解压分享包…", 58, None, None);
     pack::unpack_archive(package, staging)?;
     let manifest_bytes = fs::read(staging.join("manifest.json"))
         .map_err(|e| ShareError::Package(format!("manifest missing: {e}")))?;
@@ -694,7 +969,9 @@ fn import_from_legacy_package(
         let bundle = staging.join("repo.bundle");
         let bundle_arg = bundle.to_string_lossy().to_string();
         let target_arg = target.to_string_lossy().to_string();
-        run_git_in(
+        emit_progress(opts, "clone", "正在从代码包还原仓库…", 70, None, None);
+        run_git_in_cancellable(
+            opts,
             &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             &["clone".into(), bundle_arg, target_arg.clone()],
         )?;
@@ -711,6 +988,7 @@ fn import_from_legacy_package(
         staging,
         &display_name,
         warnings,
+        opts,
     )
 }
 
@@ -724,7 +1002,10 @@ fn finish_import(
     staging: &Path,
     display_name: &str,
     warnings: &mut Vec<String>,
+    opts: &ImportOptions,
 ) -> ShareResult<ImportOutcome> {
+    check_cancelled(opts)?;
+    emit_progress(opts, "apply", "正在导入会话与记忆…", 88, None, None);
     // 幂等提示：已导入过同一分享。
     if let Ok(existing) = run_git(target, &["config", "--get", "giteam.shareId"]) {
         if existing == share_id {
@@ -755,6 +1036,7 @@ fn finish_import(
     let origin_hint = manifest.repo.origin_path_hint.as_str();
     let sessions_dir_hint = manifest.context.sessions_dir_hint.as_str();
 
+    emit_progress(opts, "apply", "正在写入会话…", 90, None, None);
     let (sessions_imported, rekeyed_sessions) = import_sessions(
         &staging.join("context").join("sessions"),
         &new_sessions_dir,
@@ -767,6 +1049,7 @@ fn finish_import(
         &new_repo_path,
         &new_sessions_dir,
     )?;
+    emit_progress(opts, "apply", "正在写入记忆与附件…", 94, None, None);
     let (memory_imported, rekeyed_memory) = import_memory_db(
         &staging.join("context").join("memory.db"),
         target,
@@ -791,6 +1074,7 @@ fn finish_import(
     }
 
     // 4) review 记录 + 仓库注册（统一走 client.db）
+    emit_progress(opts, "apply", "正在注册项目…", 97, None, None);
     let mut reviews_imported = 0usize;
     if let Some(conn) = open_client_db()? {
         reviews_imported = import_reviews(

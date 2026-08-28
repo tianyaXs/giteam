@@ -338,6 +338,8 @@ fn share_roundtrip_export_upload_download_import() {
             dir: Some(target.clone()),
             attach: None,
             name: None,
+            on_progress: None,
+            cancel: None,
         },
     )
     .unwrap();

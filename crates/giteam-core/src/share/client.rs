@@ -252,11 +252,28 @@ pub fn fetch_share_meta(cloud_base_url: &str, share_id: &str) -> ShareResult<Sha
 }
 
 /// 下载指定 artifact 并校验 sha256；返回临时文件路径。
+/// `on_bytes`：每读一块调用 `(done, total_hint)`；`total_hint` 优先 Content-Length。
 pub fn download_share_artifact(
     cloud_base_url: &str,
     share_id: &str,
     artifact: &str,
     expected_sha256: &str,
+) -> ShareResult<std::path::PathBuf> {
+    download_share_artifact_with_progress(
+        cloud_base_url,
+        share_id,
+        artifact,
+        expected_sha256,
+        None,
+    )
+}
+
+pub fn download_share_artifact_with_progress(
+    cloud_base_url: &str,
+    share_id: &str,
+    artifact: &str,
+    expected_sha256: &str,
+    mut on_bytes: Option<&mut dyn FnMut(u64, Option<u64>) -> ShareResult<()>>,
 ) -> ShareResult<std::path::PathBuf> {
     let artifact = match artifact.trim() {
         "" | "context" => "context",
@@ -277,6 +294,7 @@ pub fn download_share_artifact(
         .send()
         .map_err(|e| ShareError::Network(e.to_string()))?;
     let mut resp = check_status(resp, "share download")?;
+    let total_hint = resp.content_length();
     let ext = if artifact == "context" || artifact == "blob" {
         "tar.zst"
     } else {
@@ -289,21 +307,65 @@ pub fn download_share_artifact(
         artifact,
         ext
     ));
-    let mut file = fs::File::create(&tmp)?;
+    let cleanup = |path: &std::path::Path| {
+        let _ = fs::remove_file(path);
+    };
+    let mut file = match fs::File::create(&tmp) {
+        Ok(f) => f,
+        Err(e) => return Err(ShareError::Io(e)),
+    };
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
+    let mut done = 0u64;
+    let mut last_emit = 0u64;
+    if let Some(cb) = on_bytes.as_mut() {
+        if let Err(err) = cb(0, total_hint) {
+            cleanup(&tmp);
+            return Err(err);
+        }
+    }
     loop {
-        let read = resp.read(&mut buf).map_err(|e| ShareError::Network(e.to_string()))?;
+        let read = match resp.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                cleanup(&tmp);
+                return Err(ShareError::Network(e.to_string()));
+            }
+        };
         if read == 0 {
             break;
         }
         hasher.update(&buf[..read]);
-        file.write_all(&buf[..read])?;
+        if let Err(e) = file.write_all(&buf[..read]) {
+            cleanup(&tmp);
+            return Err(ShareError::Io(e));
+        }
+        done = done.saturating_add(read as u64);
+        // 每块都回调以便探测取消；调用方可自行节流进度 UI。
+        if let Some(cb) = on_bytes.as_mut() {
+            let should_report = done.saturating_sub(last_emit) >= 256 * 1024 || read < buf.len();
+            if should_report {
+                last_emit = done;
+            }
+            if let Err(err) = cb(done, total_hint) {
+                cleanup(&tmp);
+                return Err(err);
+            }
+        }
     }
-    file.flush()?;
+    if let Some(cb) = on_bytes.as_mut() {
+        if let Err(err) = cb(done, total_hint.or(Some(done))) {
+            cleanup(&tmp);
+            return Err(err);
+        }
+    }
+    if let Err(e) = file.flush() {
+        cleanup(&tmp);
+        return Err(ShareError::Io(e));
+    }
     let digest = hex::encode(hasher.finalize());
     if !expected_sha256.trim().is_empty() && digest != expected_sha256.trim() {
-        let _ = fs::remove_file(&tmp);
+        cleanup(&tmp);
         return Err(ShareError::Package(format!(
             "sha256 mismatch: expect {expected_sha256}, got {digest}"
         )));

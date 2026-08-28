@@ -3502,6 +3502,8 @@ fn run_share_import(
         dir: dir.map(PathBuf::from),
         attach: attach.map(PathBuf::from),
         name: None,
+        on_progress: None,
+        cancel: None,
     };
     if !json {
         eprintln!("正在下载并初始化分享项目…");

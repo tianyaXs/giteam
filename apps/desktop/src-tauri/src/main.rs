@@ -450,6 +450,7 @@ fn main() {
             commands::db::db_remove_repository,
             commands::share::share_create,
             commands::share::share_import,
+            commands::share::share_import_cancel,
             commands::share::share_take_pending_import,
             commands::automation::automation_list_tasks,
             commands::automation::automation_get_task,

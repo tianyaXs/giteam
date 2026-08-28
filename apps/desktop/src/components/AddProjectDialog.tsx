@@ -12,6 +12,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { formatShareBytes, type ShareImportProgress } from "@/lib/share";
 import { cn } from "@/lib/utils";
 
 export type AddProjectSource = "local" | "remote";
@@ -27,6 +29,8 @@ type AddProjectDialogProps = {
   targetPath: string;
   shareUrl: string;
   busy?: boolean;
+  /** 远程导入进度（仅 busy 时展示）。 */
+  importProgress?: ShareImportProgress | null;
   error?: string;
   onOpenChange: (open: boolean) => void;
   onSourceChange: (source: AddProjectSource) => void;
@@ -38,6 +42,8 @@ type AddProjectDialogProps = {
   onPickTargetPath: () => void | Promise<void>;
   onConfirmLocal: () => void | Promise<void>;
   onConfirmRemote: () => void | Promise<void>;
+  /** 远程导入中点击取消 / 关闭。 */
+  onCancelRemote?: () => void | Promise<void>;
 };
 
 function SourceCard({
@@ -116,6 +122,7 @@ export function AddProjectDialog({
   targetPath,
   shareUrl,
   busy = false,
+  importProgress = null,
   error = "",
   onOpenChange,
   onSourceChange,
@@ -127,6 +134,7 @@ export function AddProjectDialog({
   onPickTargetPath,
   onConfirmLocal,
   onConfirmRemote,
+  onCancelRemote,
 }: AddProjectDialogProps) {
   const titleId = useId();
   const showBack = step !== "type";
@@ -136,19 +144,16 @@ export function AddProjectDialog({
   const canConfirmLocal = Boolean(localPath.trim());
   const canConfirmRemote =
     Boolean(shareUrl.trim()) && Boolean(targetPath.trim()) && Boolean(projectName.trim());
-
-  const remotePreviewPath = (() => {
-    const parent = targetPath.trim().replace(/[/\\]+$/, "");
-    const name = projectName.trim();
-    if (!parent || !name) return "";
-    const sep = parent.includes("\\") ? "\\" : "/";
-    return `${parent}${sep}${name}`;
-  })();
+  const remoteImporting = busy && step === "remote";
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (!next && remoteImporting) {
+          void onCancelRemote?.();
+          return;
+        }
         if (busy) return;
         onOpenChange(next);
       }}
@@ -174,8 +179,13 @@ export function AddProjectDialog({
         <DialogHeader className="relative gap-2 px-6 pb-2 pt-6 pr-14">
           <DialogClose
             className="absolute right-4 top-4 rounded-full border-0 bg-transparent p-1.5 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-0 disabled:opacity-40"
-            disabled={busy}
+            disabled={busy && !remoteImporting}
             aria-label="关闭"
+            onClick={(event) => {
+              if (!remoteImporting) return;
+              event.preventDefault();
+              void onCancelRemote?.();
+            }}
           >
             <X className="size-4" />
           </DialogClose>
@@ -289,9 +299,6 @@ export function AddProjectDialog({
                   <span className="text-[13px] text-muted-foreground">点击选择保存目录</span>
                 )}
               </button>
-              {remotePreviewPath ? (
-                <p className="break-all text-[12px] text-muted-foreground">将导入到 {remotePreviewPath}</p>
-              ) : null}
             </div>
             <div className="flex flex-col gap-2.5">
               <div className="text-[12px] font-medium text-muted-foreground">分享地址</div>
@@ -312,7 +319,27 @@ export function AddProjectDialog({
               />
             </div>
             {error ? <p className="break-all text-[12px] text-destructive">{error}</p> : null}
-            {busy ? <p className="text-[12px] text-muted-foreground">正在导入，请稍候…</p> : null}
+            {busy ? (
+              <div className="flex flex-col gap-2 rounded-[18px] border border-border/50 bg-muted/35 px-3.5 py-3">
+                <div className="flex items-center justify-between gap-3 text-[12px]">
+                  <span className="min-w-0 truncate text-foreground">
+                    {importProgress?.message || "正在导入，请稍候…"}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    {Math.min(100, Math.max(0, Math.round(importProgress?.percent ?? 0)))}%
+                  </span>
+                </div>
+                <Progress
+                  value={Math.min(100, Math.max(0, importProgress?.percent ?? 4))}
+                  className="h-1.5 bg-muted"
+                />
+                {importProgress?.bytesDone != null && importProgress.bytesTotal != null && importProgress.bytesTotal > 0 ? (
+                  <p className="text-[11px] tabular-nums text-muted-foreground">
+                    {formatShareBytes(importProgress.bytesDone)} / {formatShareBytes(importProgress.bytesTotal)}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -358,8 +385,13 @@ export function AddProjectDialog({
                 size="default"
                 variant="ghost"
                 className="rounded-2xl text-muted-foreground"
-                disabled={busy}
-                onClick={() => onOpenChange(false)}
+                onClick={() => {
+                  if (remoteImporting) {
+                    void onCancelRemote?.();
+                    return;
+                  }
+                  onOpenChange(false);
+                }}
               >
                 取消
               </Button>

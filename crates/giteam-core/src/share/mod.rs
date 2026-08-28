@@ -19,11 +19,15 @@ mod pack;
 mod redact;
 
 pub use client::{
-    create_share_record, download_share, download_share_artifact, fetch_share_meta, finalize_share,
-    list_shares, parse_share_url, revoke_share, upload_share_parts, CreateShareRequest, ShareMeta,
+    create_share_record, download_share, download_share_artifact,
+    download_share_artifact_with_progress, fetch_share_meta, finalize_share, list_shares,
+    parse_share_url, revoke_share, upload_share_parts, CreateShareRequest, ShareMeta,
 };
 pub use export::{create_share, export_package, ExportOptions, ExportOutcome, ShareCreated};
-pub use import::{import_share, ImportOptions, ImportOutcome};
+pub use import::{
+    import_share, ImportCancelFlag, ImportOptions, ImportOutcome, ImportProgress,
+    ImportProgressHook,
+};
 pub use manifest::{ShareManifest, SharePackageInfo, ShareRepoInfo, MANIFEST_SCHEMA_VERSION};
 pub use redact::{redact_text, RedactionStats};
 
@@ -31,6 +35,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ShareError {
+    #[error("已取消")]
+    Cancelled,
     #[error("{0}")]
     InvalidInput(String),
     #[error("不是 Git 仓库，无法分享：{0}（请先在该目录 git init 并至少提交一次）")]
