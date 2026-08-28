@@ -460,6 +460,7 @@ fn main() {
             commands::automation::automation_delete_task,
             commands::automation::automation_list_runs,
             commands::automation::automation_run_now,
+            commands::automation::automation_test_dingtalk_notify,
             remote_repo::commands::remote_repo,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,

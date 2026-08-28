@@ -1,6 +1,7 @@
 mod admin;
 mod auth_routes;
 mod device;
+mod dingtalk;
 mod health;
 mod proxy_routes;
 pub mod share;
@@ -20,4 +21,5 @@ pub fn router() -> Router<AppState> {
         .merge(tunnel_ws::router())
         .merge(proxy_routes::router())
         .merge(share::router())
+        .merge(dingtalk::router())
 }

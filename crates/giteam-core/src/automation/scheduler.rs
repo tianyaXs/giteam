@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::notify::deliver_run_notification;
 use super::runner::{execute_task, RunOutcome};
 use super::store::with_store;
 use super::types::{now_ms, RunTrigger};
@@ -61,11 +62,8 @@ async fn tick_once(notify: Option<&NotifyHook>) -> AutomationResult<()> {
 }
 
 fn emit_notify(notify: Option<&NotifyHook>, outcome: &RunOutcome) {
-    if !outcome.should_notify {
-        return;
-    }
-    if let Some(hook) = notify {
-        hook(&outcome.notify_title, &outcome.notify_body);
+    if let Some(err) = deliver_run_notification(outcome, notify) {
+        eprintln!("[automation] notify delivery failed: {err}");
     }
 }
 
@@ -75,26 +73,5 @@ pub async fn run_now(task_id: &str) -> AutomationResult<RunOutcome> {
         s.get_task(task_id)?
             .ok_or_else(|| super::AutomationError::NotFound(task_id.to_string()))
     })?;
-    if with_store(|s| s.has_running_run(&task.id))? {
-        // 仍允许插入 skipped 记录
-        let run = with_store(|s| {
-            let run = s.insert_run(&task, RunTrigger::Manual, super::types::RunStatus::Skipped)?;
-            s.finish_run(
-                &run.id,
-                super::types::RunStatus::Skipped,
-                None,
-                Some("task already running"),
-                None,
-            )
-        })?;
-        return Ok(RunOutcome {
-            should_notify: false,
-            notify_title: format!("自动化：{}", task.title),
-            notify_body: "任务正在运行".into(),
-            run,
-            task,
-        });
-    }
-    let outcome = execute_task(task, RunTrigger::Manual).await?;
-    Ok(outcome)
+    execute_task(task, RunTrigger::Manual).await
 }

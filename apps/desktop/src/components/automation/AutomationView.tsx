@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
@@ -10,7 +10,6 @@ import {
   Play,
   Search,
   Trash2,
-  X,
 } from "lucide-react";
 
 import { Button } from "../ui/button";
@@ -44,6 +43,7 @@ import {
   listAutomationTasks,
   runAutomationNow,
   setAutomationEnabled,
+  testAutomationDingTalkNotify,
   updateAutomationTask,
   type AutomationRun,
   type AutomationTask,
@@ -62,13 +62,12 @@ type Props = {
   onOpenImportProject: () => void;
   modelOptions?: ModelOption[];
   modelInfoByRef?: Record<string, AgentModelInfo>;
-  /** 右侧创建/详情面板是否打开（用于 App 隐藏右侧栏切换按钮） */
-  onFormOpenChange?: (open: boolean) => void;
 };
 
 type SchedulePreset = "interval" | "daily" | "weekdays" | "weekly" | "custom";
 type CustomUnit = "day" | "week";
-type NotifyLevel = "all" | "important" | "none";
+type NotifyLevel = "all" | "important";
+type NotifyChannelOption = "none" | "desktop" | "dingtalk";
 
 type DraftForm = {
   title: string;
@@ -89,7 +88,10 @@ type DraftForm = {
   customEvery: string;
   /** 自定义：开启的星期（0=日 … 6=六） */
   customDays: number[];
+  notifyChannelOption: NotifyChannelOption;
   notifyLevel: NotifyLevel;
+  dingtalkWebhookUrl: string;
+  dingtalkSignSecret: string;
   enabled: boolean;
 };
 
@@ -117,7 +119,10 @@ const EMPTY_DRAFT: DraftForm = {
   customUnit: "week",
   customEvery: "1",
   customDays: [1, 2, 3, 4, 5, 6, 0],
-  notifyLevel: "important",
+  notifyChannelOption: "desktop",
+  notifyLevel: "all",
+  dingtalkWebhookUrl: "",
+  dingtalkSignSecret: "",
   enabled: true,
 };
 
@@ -152,6 +157,12 @@ function draftToInput(draft: DraftForm): CreateTaskInput {
   const { scheduleKind, scheduleExpr } = resolveSchedule(draft);
   const { provider, model } = parseModelRef(draft.modelRef);
   const piThinking = toStoredThinkingLevel(draft.thinkingLevel);
+  const notifyOnSuccess =
+    draft.notifyChannelOption !== "none" &&
+    (draft.notifyLevel === "all" || draft.notifyChannelOption === "dingtalk");
+  const notifyOnFailure =
+    draft.notifyChannelOption !== "none" &&
+    (draft.notifyLevel === "all" || draft.notifyLevel === "important");
   return {
     title: draft.title.trim(),
     goalPrompt: draft.goalPrompt.trim(),
@@ -164,8 +175,13 @@ function draftToInput(draft: DraftForm): CreateTaskInput {
     scheduleKind,
     scheduleExpr,
     timezone: "local",
-    notifyOnSuccess: draft.notifyLevel !== "none",
-    notifyOnFailure: draft.notifyLevel === "all" || draft.notifyLevel === "important",
+    notifyOnSuccess,
+    notifyOnFailure,
+    notifyChannel: draft.notifyChannelOption === "dingtalk" ? "dingtalk" : "desktop",
+    dingtalkWebhookUrl:
+      draft.notifyChannelOption === "dingtalk" ? draft.dingtalkWebhookUrl.trim() || null : null,
+    dingtalkSignSecret:
+      draft.notifyChannelOption === "dingtalk" ? draft.dingtalkSignSecret.trim() || null : null,
     enabled: draft.enabled,
   };
 }
@@ -234,9 +250,14 @@ function taskToDraft(task: AutomationTask): DraftForm {
     }
   }
 
+  let notifyChannelOption: NotifyChannelOption = "desktop";
+  if (!task.notifyOnSuccess && !task.notifyOnFailure) {
+    notifyChannelOption = "none";
+  } else if (task.notifyChannel === "dingtalk") {
+    notifyChannelOption = "dingtalk";
+  }
   let notifyLevel: NotifyLevel = "important";
-  if (!task.notifyOnSuccess && !task.notifyOnFailure) notifyLevel = "none";
-  else if (task.notifyOnSuccess && task.notifyOnFailure) notifyLevel = "all";
+  if (task.notifyOnSuccess && task.notifyOnFailure) notifyLevel = "all";
 
   const provider = (task.provider || "").trim();
   const model = (task.model || "").trim();
@@ -256,7 +277,10 @@ function taskToDraft(task: AutomationTask): DraftForm {
     customUnit,
     customEvery: "1",
     customDays,
+    notifyChannelOption,
     notifyLevel,
+    dingtalkWebhookUrl: task.dingtalkWebhookUrl || "",
+    dingtalkSignSecret: task.dingtalkSignSecret || "",
     enabled: task.enabled,
   };
 }
@@ -299,7 +323,19 @@ function canSubmit(draft: DraftForm, reposEmpty: boolean): boolean {
   if (draft.sessionMode === "existing" && !draft.sessionId.trim()) return false;
   if (draft.schedulePreset === "custom" && draft.customDays.length === 0) return false;
   if (scheduleNeedsTime(draft.schedulePreset) && !isValidTimeValue(draft.time)) return false;
+  if (draft.notifyChannelOption === "dingtalk" && !draft.dingtalkWebhookUrl.trim()) {
+    return false;
+  }
   return true;
+}
+
+function isTerminalAutomationStatus(status?: string | null): boolean {
+  return (
+    status === "success" ||
+    status === "failure" ||
+    status === "skipped" ||
+    status === "cancelled"
+  );
 }
 
 export function AutomationView(props: Props) {
@@ -310,7 +346,6 @@ export function AutomationView(props: Props) {
     onOpenImportProject,
     modelOptions = [],
     modelInfoByRef = {},
-    onFormOpenChange,
   } = props;
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [search, setSearch] = useState("");
@@ -322,7 +357,11 @@ export function AutomationView(props: Props) {
   const [draft, setDraft] = useState<DraftForm>(EMPTY_DRAFT);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [saving, setSaving] = useState(false);
+  const [dingtalkTestBusy, setDingtalkTestBusy] = useState(false);
+  const [dingtalkTestNotice, setDingtalkTestNotice] = useState("");
   const [runningIds, setRunningIds] = useState<Set<string>>(() => new Set());
+  /** 本地触发立即运行的时间戳；用于 DB 尚未写入 running 前保持列表状态 */
+  const pendingRunStartedAtRef = useRef<Map<string, number>>(new Map());
 
   const showForm = creating || Boolean(selectedId);
 
@@ -335,23 +374,30 @@ export function AutomationView(props: Props) {
     try {
       const list = await listAutomationTasks(filter);
       setTasks(list);
-      setRunningIds((prev) => {
+      setRunningIds(() => {
         const next = new Set<string>();
         for (const task of list) {
           if (task.lastStatus === "running") next.add(task.id);
         }
-        // 手动触发尚未落库为 running 时，保留本地标记
-        for (const id of prev) {
+        for (const [id, startedAt] of pendingRunStartedAtRef.current) {
           const task = list.find((t) => t.id === id);
-          if (!task) continue;
-          if (
-            task.lastStatus !== "success" &&
-            task.lastStatus !== "failure" &&
-            task.lastStatus !== "skipped" &&
-            task.lastStatus !== "cancelled"
-          ) {
-            next.add(id);
+          if (!task) {
+            pendingRunStartedAtRef.current.delete(id);
+            continue;
           }
+          if (task.lastStatus === "running") {
+            next.add(id);
+            continue;
+          }
+          if (
+            isTerminalAutomationStatus(task.lastStatus) &&
+            task.lastRunAtMs != null &&
+            task.lastRunAtMs >= startedAt
+          ) {
+            pendingRunStartedAtRef.current.delete(id);
+            continue;
+          }
+          next.add(id);
         }
         return next;
       });
@@ -373,11 +419,6 @@ export function AutomationView(props: Props) {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [refresh]);
-
-  useEffect(() => {
-    onFormOpenChange?.(showForm);
-    return () => onFormOpenChange?.(false);
-  }, [showForm, onFormOpenChange]);
 
   const visibleTasks = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -500,6 +541,9 @@ export function AutomationView(props: Props) {
       else if (scheduleNeedsTime(draft.schedulePreset) && !isValidTimeValue(draft.time)) {
         setError("请输入合法时间（00:00–23:59）");
       }
+      else if (draft.notifyChannelOption === "dingtalk" && !draft.dingtalkWebhookUrl.trim()) {
+        setError("钉钉通知需填写 Webhook URL");
+      }
       else setError("请完善表单");
       return;
     }
@@ -508,11 +552,9 @@ export function AutomationView(props: Props) {
     try {
       const input = draftToInput(draft);
       if (creating || !selectedId) {
-        const created = await createAutomationTask(input);
-        setCreating(false);
-        setSelectedId(created.id);
+        await createAutomationTask(input);
         await refresh();
-        await openTask(created.id);
+        closeForm();
       } else {
         await updateAutomationTask({ id: selectedId, ...input });
         await refresh();
@@ -522,6 +564,29 @@ export function AutomationView(props: Props) {
       setError(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleTestDingTalk() {
+    const webhook = draft.dingtalkWebhookUrl.trim();
+    if (!webhook) {
+      setDingtalkTestNotice("");
+      setError("请先填写 Webhook URL");
+      return;
+    }
+    setDingtalkTestBusy(true);
+    setDingtalkTestNotice("");
+    setError("");
+    try {
+      await testAutomationDingTalkNotify({
+        webhookUrl: webhook,
+        signSecret: draft.dingtalkSignSecret.trim() || undefined,
+      });
+      setDingtalkTestNotice("测试消息已发送");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDingtalkTestBusy(false);
     }
   }
 
@@ -549,25 +614,25 @@ export function AutomationView(props: Props) {
   async function handleRunNow() {
     if (!selectedId) return;
     const id = selectedId;
-    setRunningIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
+    const startedAt = Date.now();
+    pendingRunStartedAtRef.current.set(id, startedAt);
+    setRunningIds((prev) => new Set(prev).add(id));
     setError("");
     try {
-      await runAutomationNow(id);
-      await refresh();
+      if (!creating && canSubmit(draft, repos.length === 0)) {
+        await updateAutomationTask({ id, ...draftToInput(draft) });
+      }
+      const result = await runAutomationNow(id);
+      if (result.notifyError) {
+        setError(`任务已完成，但通知发送失败：${result.notifyError}`);
+      }
+      await refresh({ silent: true });
       await openTask(id);
     } catch (e) {
+      pendingRunStartedAtRef.current.delete(id);
       setError(String(e));
     } finally {
-      setRunningIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-      await refresh();
+      await refresh({ silent: true });
     }
   }
 
@@ -609,6 +674,12 @@ export function AutomationView(props: Props) {
 
   return (
     <div className="relative z-[1] flex h-full min-h-0 w-full overflow-hidden bg-background pointer-events-auto">
+      {/* 顶部透明拖拽带：不拆标题栏，避免影响页面大标题排版 */}
+      <div
+        className="pointer-events-auto absolute inset-x-0 top-0 z-10 h-8"
+        data-tauri-drag-region
+        aria-hidden="true"
+      />
       <motion.div
         className={cn(
           "flex min-h-0 flex-col overflow-hidden",
@@ -654,18 +725,10 @@ export function AutomationView(props: Props) {
             exit={{ x: "100%" }}
             transition={PANEL_SPRING}
           >
-            <div className="flex items-center justify-between gap-3 px-5 py-3">
+            <div className="flex items-center gap-3 px-5 py-3" data-tauri-drag-region>
               <div className="text-sm font-medium text-muted-foreground">
                 {creating ? "新建" : draft.enabled ? "已开启" : "已暂停"}
               </div>
-              <button
-                type="button"
-                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                aria-label="关闭"
-                onClick={closeForm}
-              >
-                <X className="size-4" />
-              </button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-4">
@@ -837,24 +900,96 @@ export function AutomationView(props: Props) {
 
                 <OptionRow
                   label="通知"
-                  last
-                  value={draft.notifyLevel}
+                  value={draft.notifyChannelOption}
                   display={
                     (
                       {
-                        all: "全部运行",
-                        important: "重要更新",
                         none: "不通知",
+                        desktop: "系统通知",
+                        dingtalk: "钉钉",
                       } as const
-                    )[draft.notifyLevel]
+                    )[draft.notifyChannelOption]
                   }
                   options={[
-                    { value: "all", label: "全部运行" },
-                    { value: "important", label: "重要更新" },
+                    { value: "desktop", label: "系统通知" },
+                    { value: "dingtalk", label: "钉钉" },
                     { value: "none", label: "不通知" },
                   ]}
-                  onChange={(v) => setDraft((d) => ({ ...d, notifyLevel: v as NotifyLevel }))}
+                  onChange={(v) =>
+                    setDraft((d) => {
+                      const next = v as NotifyChannelOption;
+                      return {
+                        ...d,
+                        notifyChannelOption: next,
+                        ...(next === "dingtalk" && d.notifyLevel === "important"
+                          ? { notifyLevel: "all" as NotifyLevel }
+                          : {}),
+                      };
+                    })
+                  }
                 />
+
+                {draft.notifyChannelOption !== "none" ? (
+                  <OptionRow
+                    label="通知范围"
+                    value={draft.notifyLevel}
+                    display={
+                      (
+                        {
+                          all: "全部运行",
+                          important: "重要更新",
+                        } as const
+                      )[draft.notifyLevel]
+                    }
+                    options={[
+                      { value: "all", label: "全部运行" },
+                      { value: "important", label: "重要更新" },
+                    ]}
+                    onChange={(v) => setDraft((d) => ({ ...d, notifyLevel: v as NotifyLevel }))}
+                  />
+                ) : null}
+
+                {draft.notifyChannelOption === "dingtalk" ? (
+                  <div className="space-y-3 border-t border-border/60 px-4 py-3">
+                    <div className="space-y-1.5">
+                      <p className="text-sm text-foreground">Webhook URL</p>
+                      <Input
+                        className="h-9 rounded-md bg-muted/30 font-mono text-[13px]"
+                        placeholder="https://oapi.dingtalk.com/robot/send?access_token=…"
+                        value={draft.dingtalkWebhookUrl}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, dingtalkWebhookUrl: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <p className="text-sm text-foreground">加签 Secret（可选）</p>
+                      <Input
+                        className="h-9 rounded-md bg-muted/30 font-mono text-[13px]"
+                        type="password"
+                        placeholder="SEC…"
+                        value={draft.dingtalkSignSecret}
+                        onChange={(e) =>
+                          setDraft((d) => ({ ...d, dingtalkSignSecret: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={dingtalkTestBusy || !draft.dingtalkWebhookUrl.trim()}
+                        onClick={() => void handleTestDingTalk()}
+                      >
+                        {dingtalkTestBusy ? "发送中…" : "测试发送"}
+                      </Button>
+                      {dingtalkTestNotice ? (
+                        <span className="text-xs text-muted-foreground">{dingtalkTestNotice}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               {!creating && selectedId ? (
@@ -897,7 +1032,7 @@ export function AutomationView(props: Props) {
                     {runs.map((run) => (
                       <li key={run.id} className="rounded-lg border border-border/60 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium">{statusLabel(run.status)}</span>
+                          <RunStatusBadge status={run.status} />
                           <span className="text-xs text-muted-foreground">
                             {formatRelativeMs(run.startedAtMs)}
                           </span>
@@ -987,7 +1122,10 @@ function TaskListPane(props: {
             transition={{ duration: 0.18, ease: "easeOut" }}
             className="overflow-hidden"
           >
-            <div className="flex items-start justify-between gap-3 px-8 pb-4 pt-8">
+            <div
+              className="flex items-start justify-between gap-3 px-8 pb-4 pt-8"
+              data-tauri-drag-region
+            >
               <div className="min-w-0">
                 <h1 className="text-2xl font-semibold tracking-tight">已安排的任务</h1>
                 <p className="mt-1.5 text-sm text-muted-foreground">
@@ -1037,8 +1175,8 @@ function TaskListPane(props: {
             className={cn(
               "rounded-full px-3 py-1 text-sm font-medium transition-colors",
               filter === key
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                ? "bg-[var(--selection-bg)] text-[var(--selection-foreground)]"
+                : "text-muted-foreground hover:bg-[var(--selection-bg-subtle)] hover:text-foreground"
             )}
             onClick={() => onFilterChange(key)}
           >
@@ -1070,8 +1208,10 @@ function TaskListPane(props: {
                   <button
                     type="button"
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors",
-                      active ? "bg-accent" : "hover:bg-accent/50"
+                      "flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left transition-[background-color,border-color,color]",
+                      active
+                        ? "border-[var(--selection-border)] bg-[var(--selection-bg)] text-[var(--selection-foreground)] hover:bg-[var(--selection-bg-hover)]"
+                        : "hover:bg-[var(--selection-bg-subtle)]"
                     )}
                     onClick={() => onOpenTask(task.id)}
                   >
@@ -1080,7 +1220,7 @@ function TaskListPane(props: {
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-sm font-medium">{task.title}</span>
                         {isRunning ? (
-                          <span className="shrink-0 text-[11px] font-normal text-sky-600 dark:text-sky-400">
+                          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
                             运行中
                           </span>
                         ) : null}
@@ -1094,7 +1234,10 @@ function TaskListPane(props: {
                     {isRunning ? (
                       <RunningDot />
                     ) : isUnread ? (
-                      <span className="size-2 shrink-0 rounded-full bg-sky-500" aria-label="未读运行结果" />
+                      <span
+                        className="size-2 shrink-0 rounded-full bg-foreground/55"
+                        aria-label="未读运行结果"
+                      />
                     ) : null}
                   </button>
                 </li>
@@ -1112,10 +1255,10 @@ function TaskListPane(props: {
                 <button
                   key={item.title}
                   type="button"
-                  className="flex items-start gap-3 rounded-xl px-2 py-2.5 text-left hover:bg-accent/50"
+                  className="flex items-start gap-3 rounded-xl px-2 py-2.5 text-left hover:bg-[var(--selection-bg-subtle)]"
                   onClick={() => onSuggestion(item)}
                 >
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent text-foreground">
+                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
                     <Icon className="size-4" />
                   </span>
                   <span className="min-w-0">
@@ -1140,9 +1283,9 @@ function TaskListPane(props: {
 function RunningDot() {
   return (
     <span className="relative flex size-2.5 shrink-0 items-center justify-center" aria-label="运行中">
-      <span className="absolute inset-0 animate-ping rounded-full bg-sky-400/70" />
-      <span className="absolute -inset-1 animate-pulse rounded-full bg-sky-400/25" />
-      <span className="relative size-2 animate-pulse rounded-full bg-sky-500" />
+      <span className="absolute inset-0 animate-ping rounded-full bg-foreground/25" />
+      <span className="absolute -inset-1 animate-pulse rounded-full bg-foreground/10" />
+      <span className="relative size-2 rounded-full bg-foreground/70" />
     </span>
   );
 }
@@ -1362,6 +1505,36 @@ function statusLabel(status: string): string {
     default:
       return status;
   }
+}
+
+function runStatusTone(status: string): string {
+  switch (status) {
+    case "running":
+      return "bg-muted text-foreground";
+    case "success":
+      return "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-400";
+    case "failure":
+      return "bg-destructive/10 text-destructive";
+    case "skipped":
+    case "cancelled":
+    case "queued":
+      return "bg-muted text-muted-foreground";
+    default:
+      return "bg-muted text-muted-foreground";
+  }
+}
+
+function RunStatusBadge(props: { status: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        runStatusTone(props.status)
+      )}
+    >
+      {statusLabel(props.status)}
+    </span>
+  );
 }
 
 function normalizePath(path: string): string {

@@ -1,17 +1,68 @@
 //! 自动化执行器：桥接 PiAgentService create_session / prompt。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::pi_agent::{
-    ensure_repo_pi_sessions_dir, AgentEventEnvelope, PiAgentService, PiSessionConfig,
+    ensure_repo_pi_sessions_dir, AgentEventEnvelope, AgentMessage, AgentPart, AgentRole,
+    PiAgentService, PiSessionConfig,
 };
 
 use super::store::with_store;
 use super::types::{
-    now_ms, AutomationRun, AutomationTask, RunStatus, RunTrigger, SessionMode,
+    now_ms, should_notify_run, AutomationRun, AutomationTask, RunStatus, RunTrigger, SessionMode,
 };
 use super::{AutomationError, AutomationResult};
+
+static ACTIVE_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn active_tasks() -> &'static Mutex<HashSet<String>> {
+    ACTIVE_TASKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct TaskExecutionGuard {
+    task_id: String,
+}
+
+impl Drop for TaskExecutionGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = active_tasks().lock() {
+            set.remove(&self.task_id);
+        }
+    }
+}
+
+fn try_acquire_task(task_id: &str) -> Option<TaskExecutionGuard> {
+    let mut set = active_tasks().lock().ok()?;
+    if set.contains(task_id) {
+        return None;
+    }
+    set.insert(task_id.to_string());
+    Some(TaskExecutionGuard {
+        task_id: task_id.to_string(),
+    })
+}
+
+fn skip_already_running(task: &AutomationTask, trigger: RunTrigger) -> AutomationResult<RunOutcome> {
+    let run = with_store(|s| {
+        let run = s.insert_run(task, trigger, RunStatus::Skipped)?;
+        let run = s.finish_run(
+            &run.id,
+            RunStatus::Skipped,
+            None,
+            Some("任务正在运行中"),
+            None,
+        )?;
+        let task = s.mark_task_finished(&task.id, RunStatus::Skipped, trigger == RunTrigger::Schedule)?;
+        Ok((run, task))
+    })?;
+    Ok(skipped_outcome(
+        run.0,
+        run.1,
+        "任务正在运行中，请稍后再试",
+    ))
+}
 
 /// 单次执行结果（含是否应发通知）。
 #[derive(Debug, Clone)]
@@ -28,22 +79,19 @@ pub async fn execute_task(
     task: AutomationTask,
     trigger: RunTrigger,
 ) -> AutomationResult<RunOutcome> {
-    // 防重入
-    let already_running = with_store(|s| s.has_running_run(&task.id))?;
-    if already_running && trigger != RunTrigger::Manual {
-        let run = with_store(|s| {
-            let mut run = s.insert_run(&task, trigger, RunStatus::Skipped)?;
-            run = s.finish_run(
-                &run.id,
-                RunStatus::Skipped,
-                None,
-                Some("task already running"),
-                None,
-            )?;
-            let task = s.mark_task_finished(&task.id, RunStatus::Skipped, trigger == RunTrigger::Schedule)?;
-            Ok((run, task))
-        })?;
-        return Ok(skipped_outcome(run.0, run.1, "任务正在运行，已跳过"));
+    let _guard = match try_acquire_task(&task.id) {
+        Some(guard) => guard,
+        None => return skip_already_running(&task, trigger),
+    };
+
+    // 清掉 DB 里上次异常退出遗留的 running 记录。
+    with_store(|s| s.cancel_orphaned_runs(&task.id))?;
+
+    if trigger != RunTrigger::Manual {
+        let still_running = with_store(|s| s.has_running_run(&task.id))?;
+        if still_running {
+            return skip_already_running(&task, trigger);
+        }
     }
 
     let run = with_store(|s| s.insert_run(&task, trigger, RunStatus::Running))?;
@@ -147,7 +195,7 @@ pub async fn execute_task(
 
     match prompt_result {
         Ok(message) => {
-            let summary = truncate(&message_text(&message), 240);
+            let summary = resolve_run_summary(service, &session_id, &message).await;
             let finished = with_store(|s| {
                 let run = s.finish_run(
                     &run.id,
@@ -163,10 +211,15 @@ pub async fn execute_task(
                 )?;
                 Ok((run, task))
             })?;
-            let should_notify = finished.1.notify_on_success;
+            let should_notify = should_notify_run(&finished.1, RunStatus::Success);
+            let body = if summary.trim().is_empty() {
+                "已完成".to_string()
+            } else {
+                summary
+            };
             Ok(RunOutcome {
-                notify_title: format!("自动化：{}", finished.1.title),
-                notify_body: "已完成".into(),
+                notify_title: finished.1.title.clone(),
+                notify_body: body,
                 should_notify,
                 run: finished.0,
                 task: finished.1,
@@ -277,9 +330,13 @@ async fn finalize_failure(
         Ok((run, task))
     })?;
     Ok(RunOutcome {
-        should_notify: finished.1.notify_on_failure,
-        notify_title: format!("自动化：{}", finished.1.title),
-        notify_body: body.to_string(),
+        should_notify: should_notify_run(&finished.1, RunStatus::Failure),
+        notify_title: finished.1.title.clone(),
+        notify_body: if body.trim().is_empty() {
+            truncate(&error, 480)
+        } else {
+            format!("{body}\n\n{}", truncate(&error, 240))
+        },
         run: finished.0,
         task: finished.1,
     })
@@ -288,7 +345,7 @@ async fn finalize_failure(
 fn skipped_outcome(run: AutomationRun, task: AutomationTask, body: &str) -> RunOutcome {
     RunOutcome {
         should_notify: false,
-        notify_title: format!("自动化：{}", task.title),
+        notify_title: task.title.clone(),
         notify_body: body.to_string(),
         run,
         task,
@@ -305,16 +362,42 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-fn message_text(message: &crate::pi_agent::AgentMessage) -> String {
+/// 仅提取 assistant 最终文本摘要（不含工具调用/结果）。
+fn assistant_text_only(message: &AgentMessage) -> String {
     message
         .parts
         .iter()
         .filter_map(|part| match part {
-            crate::pi_agent::AgentPart::Text { text } => Some(text.as_str()),
+            AgentPart::Text { text } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("")
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+async fn resolve_run_summary(
+    service: &PiAgentService,
+    session_id: &str,
+    prompt_message: &AgentMessage,
+) -> String {
+    let from_prompt = assistant_text_only(prompt_message);
+    if !from_prompt.is_empty() {
+        return truncate(&from_prompt, 480);
+    }
+    if let Ok(messages) = service.messages(session_id).await {
+        for message in messages.iter().rev() {
+            if message.role != AgentRole::Assistant {
+                continue;
+            }
+            let text = assistant_text_only(message);
+            if !text.is_empty() {
+                return truncate(&text, 480);
+            }
+        }
+    }
+    String::new()
 }
 
 /// 供测试/调试：仅校验不跑 agent。

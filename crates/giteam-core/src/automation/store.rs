@@ -7,8 +7,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::schedule::compute_next_run_at;
 use super::types::{
-    new_run_id, new_task_id, now_ms, AutomationRun, AutomationTask, CreateTaskInput, RunStatus,
-    RunTrigger, ScheduleKind, SessionMode, TaskFilter, UpdateTaskInput,
+    new_run_id, new_task_id, now_ms, should_notify_run, AutomationRun, AutomationTask,
+    CreateTaskInput, NotifyChannel, RunStatus, RunTrigger, ScheduleKind, SessionMode, TaskFilter,
+    UpdateTaskInput,
 };
 use super::{AutomationError, AutomationResult};
 
@@ -27,6 +28,7 @@ impl AutomationStore {
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
         let store = Self { conn };
         store.migrate()?;
+        store.reconcile_orphaned_runs_on_startup()?;
         Ok(store)
     }
 
@@ -82,6 +84,9 @@ impl AutomationStore {
         self.ensure_column("automation_tasks", "model", "TEXT")?;
         self.ensure_column("automation_tasks", "thinking_level", "TEXT")?;
         self.ensure_column("automation_tasks", "last_viewed_run_at_ms", "INTEGER")?;
+        self.ensure_column("automation_tasks", "notify_channel", "TEXT NOT NULL DEFAULT 'desktop'")?;
+        self.ensure_column("automation_tasks", "dingtalk_webhook_url", "TEXT")?;
+        self.ensure_column("automation_tasks", "dingtalk_sign_secret", "TEXT")?;
         Ok(())
     }
 
@@ -115,7 +120,8 @@ impl AutomationStore {
         let mut sql = String::from(
             "SELECT id, title, goal_prompt, repo_path, session_mode, session_id,
                     provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
-                    notify_on_success, notify_on_failure,
+                    notify_on_success, notify_on_failure, notify_channel,
+                    dingtalk_webhook_url, dingtalk_sign_secret,
                     enabled, next_run_at_ms, last_run_at_ms, last_viewed_run_at_ms, last_status, created_at_ms, updated_at_ms
              FROM automation_tasks WHERE 1=1",
         );
@@ -160,7 +166,8 @@ impl AutomationStore {
             .prepare(
                 "SELECT id, title, goal_prompt, repo_path, session_mode, session_id,
                         provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
-                        notify_on_success, notify_on_failure,
+                        notify_on_success, notify_on_failure, notify_channel,
+                        dingtalk_webhook_url, dingtalk_sign_secret,
                         enabled, next_run_at_ms, last_run_at_ms, last_viewed_run_at_ms, last_status, created_at_ms, updated_at_ms
                  FROM automation_tasks WHERE id = ?1",
             )
@@ -217,14 +224,24 @@ impl AutomationStore {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         let thinking_level = normalize_thinking_level(input.thinking_level.as_deref());
+        let notify_channel = input.notify_channel.unwrap_or_default();
+        let dingtalk_webhook = normalize_optional_text(input.dingtalk_webhook_url.as_deref());
+        let dingtalk_secret = normalize_optional_text(input.dingtalk_sign_secret.as_deref());
+        validate_notify_config(
+            notify_channel,
+            input.notify_on_success.unwrap_or(true),
+            input.notify_on_failure.unwrap_or(true),
+            dingtalk_webhook.as_deref(),
+        )?;
         self.conn
             .execute(
                 "INSERT INTO automation_tasks (
                     id, title, goal_prompt, repo_path, session_mode, session_id,
                     provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
-                    notify_on_success, notify_on_failure,
+                    notify_on_success, notify_on_failure, notify_channel,
+                    dingtalk_webhook_url, dingtalk_sign_secret,
                     enabled, next_run_at_ms, last_run_at_ms, last_status, created_at_ms, updated_at_ms
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,NULL,NULL,?17,?17)",
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL,NULL,?20,?20)",
                 params![
                     id,
                     input.title.trim(),
@@ -240,6 +257,9 @@ impl AutomationStore {
                     timezone,
                     bool_i(input.notify_on_success.unwrap_or(true)),
                     bool_i(input.notify_on_failure.unwrap_or(true)),
+                    notify_channel.as_str(),
+                    dingtalk_webhook,
+                    dingtalk_secret,
                     bool_i(enabled),
                     next,
                     now,
@@ -333,6 +353,21 @@ impl AutomationStore {
         if let Some(v) = input.notify_on_failure {
             task.notify_on_failure = v;
         }
+        if let Some(channel) = input.notify_channel {
+            task.notify_channel = channel;
+        }
+        if let Some(url) = input.dingtalk_webhook_url {
+            task.dingtalk_webhook_url = normalize_optional_text(Some(url.as_str()));
+        }
+        if let Some(secret) = input.dingtalk_sign_secret {
+            task.dingtalk_sign_secret = normalize_optional_text(Some(secret.as_str()));
+        }
+        validate_notify_config(
+            task.notify_channel,
+            task.notify_on_success,
+            task.notify_on_failure,
+            task.dingtalk_webhook_url.as_deref(),
+        )?;
         // 校验日程仍可解析
         let _ = compute_next_run_at(task.schedule_kind, &task.schedule_expr, now_ms())?;
         if task.enabled {
@@ -380,8 +415,9 @@ impl AutomationStore {
                 "UPDATE automation_tasks SET
                     title=?2, goal_prompt=?3, repo_path=?4, session_mode=?5, session_id=?6,
                     provider=?7, model=?8, thinking_level=?9, schedule_kind=?10, schedule_expr=?11, timezone=?12,
-                    notify_on_success=?13, notify_on_failure=?14, enabled=?15,
-                    next_run_at_ms=?16, last_run_at_ms=?17, last_viewed_run_at_ms=?18, last_status=?19, updated_at_ms=?20
+                    notify_on_success=?13, notify_on_failure=?14, notify_channel=?15,
+                    dingtalk_webhook_url=?16, dingtalk_sign_secret=?17, enabled=?18,
+                    next_run_at_ms=?19, last_run_at_ms=?20, last_viewed_run_at_ms=?21, last_status=?22, updated_at_ms=?23
                  WHERE id=?1",
                 params![
                     task.id,
@@ -398,6 +434,9 @@ impl AutomationStore {
                     task.timezone,
                     bool_i(task.notify_on_success),
                     bool_i(task.notify_on_failure),
+                    task.notify_channel.as_str(),
+                    task.dingtalk_webhook_url,
+                    task.dingtalk_sign_secret,
                     bool_i(task.enabled),
                     task.next_run_at_ms,
                     task.last_run_at_ms,
@@ -442,6 +481,38 @@ impl AutomationStore {
         Ok(found)
     }
 
+    /// 应用启动后：DB 中残留的 running 记录不可能仍在执行，统一标记为已取消。
+    pub fn reconcile_orphaned_runs_on_startup(&self) -> AutomationResult<()> {
+        let now = now_ms();
+        self.conn
+            .execute(
+                "UPDATE automation_runs SET
+                    status = 'cancelled',
+                    finished_at_ms = ?1,
+                    error_message = COALESCE(error_message, '应用重启，运行已中断')
+                 WHERE status = 'running'",
+                params![now],
+            )
+            .map_err(|e| AutomationError::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 取消某任务在 DB 中仍为 running 的记录（进程内无对应执行时，如上次异常退出）。
+    pub fn cancel_orphaned_runs(&self, task_id: &str) -> AutomationResult<()> {
+        let now = now_ms();
+        self.conn
+            .execute(
+                "UPDATE automation_runs SET
+                    status = 'cancelled',
+                    finished_at_ms = ?2,
+                    error_message = COALESCE(error_message, '上次运行未正常结束，已自动取消')
+                 WHERE task_id = ?1 AND status = 'running'",
+                params![task_id, now],
+            )
+            .map_err(|e| AutomationError::Persistence(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn insert_run(
         &self,
         task: &AutomationTask,
@@ -478,6 +549,9 @@ impl AutomationStore {
                 ],
             )
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
+        if status == RunStatus::Running {
+            self.mark_task_running(&task.id)?;
+        }
         Ok(run)
     }
 
@@ -539,6 +613,18 @@ impl AutomationStore {
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| AutomationError::Persistence(e.to_string()))
+    }
+
+    /// 任务开始执行：列表/轮询可据此展示「运行中」。
+    pub fn mark_task_running(&self, task_id: &str) -> AutomationResult<()> {
+        let now = now_ms();
+        self.conn
+            .execute(
+                "UPDATE automation_tasks SET last_status='running', last_run_at_ms=?2, updated_at_ms=?2 WHERE id=?1",
+                params![task_id, now],
+            )
+            .map_err(|e| AutomationError::Persistence(e.to_string()))?;
+        Ok(())
     }
 
     /// 更新任务 last_* 与下次 next_run（仅 schedule 触发后推进；manual 不改 next）。
@@ -635,6 +721,38 @@ fn validate_create(input: &CreateTaskInput) -> AutomationResult<()> {
         }
     }
     let _ = compute_next_run_at(input.schedule_kind, &input.schedule_expr, now_ms())?;
+    validate_notify_config(
+        input.notify_channel.unwrap_or_default(),
+        input.notify_on_success.unwrap_or(true),
+        input.notify_on_failure.unwrap_or(true),
+        input.dingtalk_webhook_url.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn validate_notify_config(
+    channel: NotifyChannel,
+    notify_on_success: bool,
+    notify_on_failure: bool,
+    dingtalk_webhook: Option<&str>,
+) -> AutomationResult<()> {
+    if channel != NotifyChannel::DingTalk {
+        return Ok(());
+    }
+    if !notify_on_success && !notify_on_failure {
+        return Ok(());
+    }
+    if dingtalk_webhook.map(str::trim).is_none_or(|s| s.is_empty()) {
+        return Err(AutomationError::InvalidInput(
+            "dingtalk_webhook_url is required when notify channel is dingtalk".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -666,13 +784,16 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationTask> {
         timezone: row.get(11)?,
         notify_on_success: row.get::<_, i64>(12)? != 0,
         notify_on_failure: row.get::<_, i64>(13)? != 0,
-        enabled: row.get::<_, i64>(14)? != 0,
-        next_run_at_ms: row.get(15)?,
-        last_run_at_ms: row.get(16)?,
-        last_viewed_run_at_ms: row.get(17)?,
-        last_status: row.get(18)?,
-        created_at_ms: row.get(19)?,
-        updated_at_ms: row.get(20)?,
+        notify_channel: NotifyChannel::parse(&row.get::<_, String>(14)?),
+        dingtalk_webhook_url: row.get(15)?,
+        dingtalk_sign_secret: row.get(16)?,
+        enabled: row.get::<_, i64>(17)? != 0,
+        next_run_at_ms: row.get(18)?,
+        last_run_at_ms: row.get(19)?,
+        last_viewed_run_at_ms: row.get(20)?,
+        last_status: row.get(21)?,
+        created_at_ms: row.get(22)?,
+        updated_at_ms: row.get(23)?,
     })
 }
 
@@ -740,8 +861,112 @@ mod tests {
             timezone: Some("local".into()),
             notify_on_success: Some(true),
             notify_on_failure: Some(true),
+            notify_channel: None,
+            dingtalk_webhook_url: None,
+            dingtalk_sign_secret: None,
             enabled: Some(true),
         }
+    }
+
+    #[test]
+    fn insert_run_marks_task_running() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = AutomationStore::open(&dir.path().join("automation.db")).unwrap();
+        let task = store.create_task(sample_input(&repo)).unwrap();
+        assert_ne!(task.last_status.as_deref(), Some("running"));
+        store
+            .insert_run(&task, RunTrigger::Manual, RunStatus::Running)
+            .unwrap();
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(fetched.last_status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn reconcile_orphaned_runs_on_startup() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let db = dir.path().join("automation.db");
+        {
+            let store = AutomationStore::open(&db).unwrap();
+            let task = store.create_task(sample_input(&repo)).unwrap();
+            let _run = store
+                .insert_run(&task, RunTrigger::Manual, RunStatus::Running)
+                .unwrap();
+            assert!(store.has_running_run(&task.id).unwrap());
+        }
+        {
+            let store = AutomationStore::open(&db).unwrap();
+            let task = store.list_tasks(TaskFilter::All, None).unwrap()[0].clone();
+            assert!(!store.has_running_run(&task.id).unwrap());
+            let runs = store.list_runs(&task.id, 5).unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].status, RunStatus::Cancelled);
+        }
+    }
+
+    #[test]
+    fn should_notify_run_for_dingtalk_success_when_only_failure_flag() {
+        let task = AutomationTask {
+            id: "t".into(),
+            title: "t".into(),
+            goal_prompt: "g".into(),
+            repo_path: "/tmp".into(),
+            session_mode: SessionMode::New,
+            session_id: None,
+            provider: None,
+            model: None,
+            thinking_level: None,
+            schedule_kind: ScheduleKind::Interval,
+            schedule_expr: "3600".into(),
+            timezone: "local".into(),
+            notify_on_success: false,
+            notify_on_failure: true,
+            notify_channel: NotifyChannel::DingTalk,
+            dingtalk_webhook_url: Some("https://example.com".into()),
+            dingtalk_sign_secret: None,
+            enabled: true,
+            next_run_at_ms: None,
+            last_run_at_ms: None,
+            last_viewed_run_at_ms: None,
+            last_status: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        assert!(should_notify_run(&task, RunStatus::Success));
+        let mut desktop = task.clone();
+        desktop.notify_channel = NotifyChannel::Desktop;
+        assert!(should_notify_run(&desktop, RunStatus::Success));
+        desktop.dingtalk_webhook_url = None;
+        assert!(!should_notify_run(&desktop, RunStatus::Success));
+        desktop.notify_on_success = true;
+        assert!(should_notify_run(&desktop, RunStatus::Success));
+    }
+
+    #[test]
+    fn dingtalk_notify_channel_roundtrip() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let store = AutomationStore::open(&dir.path().join("automation.db")).unwrap();
+
+        let mut input = sample_input(&repo);
+        input.notify_channel = Some(NotifyChannel::DingTalk);
+        input.dingtalk_webhook_url = Some("https://oapi.dingtalk.com/robot/send?access_token=test".into());
+
+        let created = store.create_task(input).unwrap();
+        assert_eq!(created.notify_channel, NotifyChannel::DingTalk);
+
+        let fetched = store.get_task(&created.id).unwrap().unwrap();
+        assert_eq!(fetched.notify_channel, NotifyChannel::DingTalk);
+
+        let json = serde_json::to_value(&fetched).unwrap();
+        assert_eq!(
+            json.get("notifyChannel").and_then(|v| v.as_str()),
+            Some("dingtalk")
+        );
     }
 
     #[test]

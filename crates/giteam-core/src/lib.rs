@@ -3,6 +3,7 @@ pub mod automation;
 pub mod cloud;
 pub mod command_runner;
 pub mod control;
+pub mod dingtalk;
 pub mod pi_agent;
 pub mod share;
 pub mod skills_market;

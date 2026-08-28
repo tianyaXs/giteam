@@ -1,13 +1,14 @@
 //! 自动化 Tauri 命令：CRUD / 启停 / 立即运行 / 历史。
 
 use giteam_core::automation::{
-    self, AutomationRun, AutomationTask, CreateTaskInput, RunOutcome, ScheduleKind, SessionMode,
-    TaskFilter, UpdateTaskInput,
+    self, deliver_run_notification, AutomationRun, AutomationTask, CreateTaskInput, NotifyChannel,
+    RunOutcome, ScheduleKind, SessionMode, TaskFilter, UpdateTaskInput,
 };
+use giteam_core::dingtalk::{send_message, SendMessageRequest, SendMessageResult};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-/// 应用启动时挂载调度器（经前端事件尊重 notificationsAgent）。
+/// 应用启动时挂载调度器（经前端事件 respect notificationsAgent）。
 pub fn start_automation_scheduler(app: AppHandle) {
     let notify: automation::NotifyHook = std::sync::Arc::new(move |title, body| {
         let _ = app.emit(
@@ -41,6 +42,9 @@ pub struct CreateTaskRequest {
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,
+    pub notify_channel: Option<String>,
+    pub dingtalk_webhook_url: Option<String>,
+    pub dingtalk_sign_secret: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -61,6 +65,17 @@ pub struct UpdateTaskRequest {
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,
+    pub notify_channel: Option<String>,
+    pub dingtalk_webhook_url: Option<String>,
+    pub dingtalk_sign_secret: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestDingTalkNotifyRequest {
+    pub webhook_url: String,
+    pub sign_secret: Option<String>,
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +91,8 @@ pub struct TaskWithRuns {
 pub struct RunNowResult {
     pub run: AutomationRun,
     pub task: AutomationTask,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_error: Option<String>,
 }
 
 fn map_err(err: automation::AutomationError) -> String {
@@ -88,6 +105,10 @@ fn parse_session_mode(raw: &str) -> Result<SessionMode, String> {
 
 fn parse_schedule_kind(raw: &str) -> Result<ScheduleKind, String> {
     ScheduleKind::parse(raw).ok_or_else(|| format!("invalid schedule_kind: {raw}"))
+}
+
+fn parse_notify_channel(raw: &str) -> NotifyChannel {
+    NotifyChannel::parse(raw)
 }
 
 #[tauri::command]
@@ -122,6 +143,9 @@ pub fn automation_create_task(request: CreateTaskRequest) -> Result<AutomationTa
         timezone: request.timezone,
         notify_on_success: request.notify_on_success,
         notify_on_failure: request.notify_on_failure,
+        notify_channel: Some(parse_notify_channel(request.notify_channel.as_deref().unwrap_or("desktop"))),
+        dingtalk_webhook_url: request.dingtalk_webhook_url,
+        dingtalk_sign_secret: request.dingtalk_sign_secret,
         enabled: request.enabled,
     };
     automation::with_store(|s| s.create_task(input)).map_err(map_err)
@@ -151,6 +175,12 @@ pub fn automation_update_task(request: UpdateTaskRequest) -> Result<AutomationTa
         timezone: request.timezone,
         notify_on_success: request.notify_on_success,
         notify_on_failure: request.notify_on_failure,
+        notify_channel: request
+            .notify_channel
+            .as_deref()
+            .map(parse_notify_channel),
+        dingtalk_webhook_url: request.dingtalk_webhook_url,
+        dingtalk_sign_secret: request.dingtalk_sign_secret,
     };
     automation::with_store(|s| s.update_task(&request.id, input)).map_err(map_err)
 }
@@ -174,17 +204,61 @@ pub fn automation_list_runs(task_id: String, limit: Option<usize>) -> Result<Vec
 #[tauri::command]
 pub async fn automation_run_now(app: AppHandle, id: String) -> Result<RunNowResult, String> {
     let outcome: RunOutcome = automation::run_now(&id).await.map_err(map_err)?;
-    if outcome.should_notify {
-        let _ = app.emit(
-            "giteam://automation-notify",
-            serde_json::json!({
-                "title": outcome.notify_title,
-                "body": outcome.notify_body,
-            }),
-        );
-    }
+    let notify: automation::NotifyHook = std::sync::Arc::new({
+        let app = app.clone();
+        move |title, body| {
+            let _ = app.emit(
+                "giteam://automation-notify",
+                serde_json::json!({ "title": title, "body": body }),
+            );
+        }
+    });
+    // 钉钉 HTTP 为 blocking；放到 blocking 线程池，避免在 async runtime 内阻塞导致发送失败。
+    let outcome_for_notify = outcome.clone();
+    let notify_hook = notify.clone();
+    let notify_error = tokio::task::spawn_blocking(move || {
+        deliver_run_notification(&outcome_for_notify, Some(&notify_hook))
+    })
+    .await
+    .map_err(|err| format!("notify delivery task failed: {err}"))?;
     Ok(RunNowResult {
         run: outcome.run,
         task: outcome.task,
+        notify_error,
     })
+}
+
+#[tauri::command]
+pub fn automation_test_dingtalk_notify(
+    request: TestDingTalkNotifyRequest,
+) -> Result<SendMessageResult, String> {
+    let webhook = request.webhook_url.trim();
+    if webhook.is_empty() {
+        return Err("webhook url is required".into());
+    }
+    let content = request
+        .content
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Giteam 任务通知测试");
+    let req = SendMessageRequest {
+        msgtype: "text".into(),
+        content: content.to_string(),
+        title: None,
+        at_all: false,
+        at_mobiles: Vec::new(),
+        webhook_url: Some(webhook.to_string()),
+        sign_secret: request
+            .sign_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    };
+    let result = send_message(&req)?;
+    if !result.ok {
+        return Err(format!("errcode={} {}", result.errcode, result.errmsg));
+    }
+    Ok(result)
 }

@@ -1064,7 +1064,6 @@ export function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
   const [mainMode, setMainMode] = useState<"agent" | "automation">("agent");
-  const [automationFormOpen, setAutomationFormOpen] = useState(false);
   const [browserPaneUrl, setBrowserPaneUrl] = useState("");
   const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
   const rightOpenTabs = useMemo(
@@ -2463,7 +2462,6 @@ export function App() {
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
     setMainMode("agent");
-    setAutomationFormOpen(false);
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
     agentSessionsRepoIdRef.current = repo.id;
@@ -2572,11 +2570,23 @@ export function App() {
       providerMap: agentGlobalConfigProviderMap
     });
   }
-  function beginSplitDrag(kind: "sidebar" | "right", clientX: number) {
+  function beginSplitDrag(kind: "sidebar" | "right" | "changes", clientX: number) {
+    // 同步禁用选中：不能等 useEffect，否则 mousedown→mousemove 之间会拖蓝选中左右栏文本。
+    const root = document.documentElement;
+    root.classList.add("wb-split-resizing");
+    root.style.setProperty("cursor", "col-resize");
+    root.style.setProperty("user-select", "none");
+    (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    window.getSelection()?.removeAllRanges();
+    const startWidth =
+      kind === "sidebar" ? sidebarWidth : kind === "right" ? rightPaneWidth : changesSidebarWidth;
     setDraggingSplit({
       kind,
       startX: clientX,
-      startWidth: kind === "sidebar" ? sidebarWidth : rightPaneWidth
+      startWidth
     });
   }
 
@@ -4469,7 +4479,9 @@ export function App() {
 
   useEffect(() => {
     if (!draggingSplit) return;
+    const root = document.documentElement;
     const onMove = (e: MouseEvent) => {
+      e.preventDefault();
       const delta = e.clientX - draggingSplit.startX;
       if (draggingSplit.kind === "sidebar") {
         setSidebarWidth(clamp(draggingSplit.startWidth + delta, 292, 340));
@@ -4479,16 +4491,35 @@ export function App() {
         setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 232, 360));
       }
     };
-    const onUp = () => setDraggingSplit(null);
+    const clearSplitResizeLock = () => {
+      root.classList.remove("wb-split-resizing");
+      root.style.removeProperty("cursor");
+      root.style.removeProperty("user-select");
+      (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "";
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "";
+    };
+    const onUp = () => {
+      clearSplitResizeLock();
+      setDraggingSplit(null);
+    };
+    root.classList.add("wb-split-resizing");
+    root.style.setProperty("cursor", "col-resize");
+    root.style.setProperty("user-select", "none");
+    (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
-    window.addEventListener("mousemove", onMove);
+    (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    window.getSelection()?.removeAllRanges();
+    window.addEventListener("mousemove", onMove, { passive: false });
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
     return () => {
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
+      clearSplitResizeLock();
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
     };
   }, [draggingSplit]);
   function ensureRepoSelected(): boolean {
@@ -9144,7 +9175,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       "giteam://automation-notify",
       (event) => {
         if (!generalSettings.notificationsAgent) return;
-        const title = String(event.payload?.title || "自动化").trim() || "自动化";
+        const title = String(event.payload?.title || "任务").trim() || "任务";
         const body = String(event.payload?.body || "").trim();
         void showSettingsNotification(title, body);
       }
@@ -10332,7 +10363,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       automationActive={mainMode === "automation"}
       onOpenAutomation={() => {
         setMainMode("automation");
-        setAutomationFormOpen(false);
         // 内嵌浏览器子 webview 可能盖在主区域上，进自动化前先全部隐藏。
         if (IS_TAURI) {
           void invoke("hide_all_browser").catch(() => {});
@@ -10866,7 +10896,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onDiscardFile={(path, isUntracked) => void handleDiscardChanges(path, isUntracked)}
           onDiscardEntries={(entries, label) => void handleDiscardEntries(entries, label)}
           onCopyText={(text) => void copyText(text)}
-          onBeginResize={(clientX) => setDraggingSplit({ kind: "changes", startX: clientX, startWidth: changesSidebarWidth })}
+          onBeginResize={(clientX) => beginSplitDrag("changes", clientX)}
         />
       ) : null}
 
@@ -11010,7 +11040,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
         }}
         onOpenImportProject={() => openAddProjectDialog()}
-        onFormOpenChange={setAutomationFormOpen}
         modelOptions={agentConfiguredModelCandidates.map((ref) => {
           const slash = ref.indexOf("/");
           const provider = slash >= 0 ? ref.slice(0, slash) : "";
@@ -11306,15 +11335,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         title={leftDrawerOpen ? appText.collapseSidebar : appText.expandSidebar}
         onClick={() => setLeftDrawerOpen((open) => !open)}
       />
-      {/* 自动化创建/详情面板打开时，右侧关闭按钮会与侧栏切换重叠，暂时隐藏后者。 */}
-      {!(mainMode === "automation" && automationFormOpen) ? (
-        <ShellPanelToggle
-          side="right"
-          className="pointer-events-auto fixed top-2.5 right-3 z-[1001]"
-          title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
-          onClick={toggleRightDrawer}
-        />
-      ) : null}
+      <ShellPanelToggle
+        side="right"
+        className="pointer-events-auto fixed top-2.5 right-3 z-[1001]"
+        title={rightDrawerOpen ? appText.collapseRightSidebar : appText.expandRightSidebar}
+        onClick={toggleRightDrawer}
+      />
     </div>
   );
 
@@ -11337,8 +11363,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             sidebarCollapsed={!leftDrawerOpen}
             sidebarResizing={draggingSplit?.kind === "sidebar"}
             rightPanelResizing={draggingSplit?.kind === "right"}
-            onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
-            onRightPanelResizeStart={(e) => beginSplitDrag("right", e.clientX)}
+            onSidebarResizeStart={(e) => {
+              e.preventDefault();
+              beginSplitDrag("sidebar", e.clientX);
+            }}
+            onRightPanelResizeStart={(e) => {
+              e.preventDefault();
+              beginSplitDrag("right", e.clientX);
+            }}
             panelPlacement={panelPlacement}
           />
         </SidebarProvider>

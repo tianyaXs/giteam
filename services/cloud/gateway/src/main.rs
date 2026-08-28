@@ -47,6 +47,9 @@ async fn main() -> anyhow::Result<()> {
     sqlx::raw_sql(include_str!("../migrations/004_shares_split.sql"))
         .execute(&pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/005_dingtalk.sql"))
+        .execute(&pool)
+        .await?;
 
     let state = AppState::new(config.clone(), pool);
     tokio::fs::create_dir_all(&config.share_storage_dir).await?;

@@ -2228,6 +2228,7 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
+ "hmac 0.12.1",
  "html2text",
  "libc",
  "pi_agent_rust",

@@ -6,6 +6,8 @@ export type TaskFilter = "all" | "enabled" | "paused";
 export type RunStatus = "queued" | "running" | "success" | "failure" | "skipped" | "cancelled";
 export type RunTrigger = "schedule" | "manual" | "event";
 
+export type NotifyChannel = "desktop" | "dingtalk";
+
 export type AutomationTask = {
   id: string;
   title: string;
@@ -21,6 +23,9 @@ export type AutomationTask = {
   timezone: string;
   notifyOnSuccess: boolean;
   notifyOnFailure: boolean;
+  notifyChannel: NotifyChannel;
+  dingtalkWebhookUrl?: string | null;
+  dingtalkSignSecret?: string | null;
   enabled: boolean;
   nextRunAtMs?: number | null;
   lastRunAtMs?: number | null;
@@ -61,6 +66,9 @@ export type CreateTaskInput = {
   timezone?: string;
   notifyOnSuccess?: boolean;
   notifyOnFailure?: boolean;
+  notifyChannel?: NotifyChannel;
+  dingtalkWebhookUrl?: string | null;
+  dingtalkSignSecret?: string | null;
   enabled?: boolean;
 };
 
@@ -79,6 +87,9 @@ export type UpdateTaskInput = {
   timezone?: string;
   notifyOnSuccess?: boolean;
   notifyOnFailure?: boolean;
+  notifyChannel?: NotifyChannel;
+  dingtalkWebhookUrl?: string | null;
+  dingtalkSignSecret?: string | null;
 };
 
 export const AUTOMATION_SUGGESTIONS: Array<{
@@ -141,8 +152,20 @@ export async function listAutomationRuns(taskId: string, limit = 20): Promise<Au
   return invoke<AutomationRun[]>("automation_list_runs", { taskId, limit });
 }
 
-export async function runAutomationNow(id: string): Promise<{ run: AutomationRun; task: AutomationTask }> {
+export async function runAutomationNow(id: string): Promise<{
+  run: AutomationRun;
+  task: AutomationTask;
+  notifyError?: string | null;
+}> {
   return invoke("automation_run_now", { id });
+}
+
+export async function testAutomationDingTalkNotify(input: {
+  webhookUrl: string;
+  signSecret?: string;
+  content?: string;
+}): Promise<{ ok: boolean; errcode: number; errmsg: string }> {
+  return invoke("automation_test_dingtalk_notify", { request: input });
 }
 
 export function formatScheduleLabel(task: Pick<AutomationTask, "scheduleKind" | "scheduleExpr">): string {

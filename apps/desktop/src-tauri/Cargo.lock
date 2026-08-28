@@ -2629,6 +2629,7 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
+ "hmac 0.12.1",
  "html2text",
  "libc",
  "pi_agent_rust",
@@ -2656,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-desktop"
-version = "0.2.46"
+version = "0.2.47"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

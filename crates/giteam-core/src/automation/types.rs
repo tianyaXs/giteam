@@ -89,6 +89,31 @@ impl RunStatus {
     }
 }
 
+/// 任务完成后的通知投递渠道（每任务仅一种）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyChannel {
+    #[default]
+    Desktop,
+    DingTalk,
+}
+
+impl NotifyChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::DingTalk => "dingtalk",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "dingtalk" => Self::DingTalk,
+            _ => Self::Desktop,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunTrigger {
@@ -136,6 +161,12 @@ pub struct AutomationTask {
     pub timezone: String,
     pub notify_on_success: bool,
     pub notify_on_failure: bool,
+    #[serde(default)]
+    pub notify_channel: NotifyChannel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dingtalk_webhook_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dingtalk_sign_secret: Option<String>,
     pub enabled: bool,
     pub next_run_at_ms: Option<i64>,
     pub last_run_at_ms: Option<i64>,
@@ -161,6 +192,42 @@ pub struct AutomationRun {
     pub summary: Option<String>,
 }
 
+#[must_use]
+pub fn has_dingtalk_webhook(task: &AutomationTask) -> bool {
+    task.dingtalk_webhook_url
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// 有 Webhook 时走钉钉，避免 channel 字段与表单不一致导致不发。
+#[must_use]
+pub fn effective_notify_channel(task: &AutomationTask) -> NotifyChannel {
+    if task.notify_channel == NotifyChannel::DingTalk || has_dingtalk_webhook(task) {
+        NotifyChannel::DingTalk
+    } else {
+        NotifyChannel::Desktop
+    }
+}
+
+/// 按任务配置与运行结果判断是否应投递通知。
+pub fn should_notify_run(task: &AutomationTask, status: RunStatus) -> bool {
+    if !task.notify_on_success && !task.notify_on_failure {
+        return false;
+    }
+    match status {
+        RunStatus::Success => {
+            if task.notify_on_success {
+                return true;
+            }
+            // 配置了钉钉 Webhook：成功时也推送最终摘要。
+            effective_notify_channel(task) == NotifyChannel::DingTalk && has_dingtalk_webhook(task)
+        }
+        RunStatus::Failure => task.notify_on_failure,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTaskInput {
@@ -177,6 +244,9 @@ pub struct CreateTaskInput {
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,
+    pub notify_channel: Option<NotifyChannel>,
+    pub dingtalk_webhook_url: Option<String>,
+    pub dingtalk_sign_secret: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -196,6 +266,9 @@ pub struct UpdateTaskInput {
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,
+    pub notify_channel: Option<NotifyChannel>,
+    pub dingtalk_webhook_url: Option<String>,
+    pub dingtalk_sign_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
