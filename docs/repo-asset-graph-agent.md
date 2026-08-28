@@ -153,13 +153,16 @@ File ──child_of──▶ Dir（可选，用于按目录聚合）
 
 关系：`decided/rationale/affects/implements/located_in/involves/pattern_of/exposes/blocked_by/similar_to`（映射 AFFECTS/CAUSES/LOCATED_IN/SIMILAR_TO…），边类型带 `sem/` 前缀与过程层隔离。
 
-**抽取管道**（`asset_graph/extraction.rs` + `SubagentHost::run_extraction_completion`）：
-1. `TurnCompleted` flush 后，累积器收集的本轮摘要（用户意图 + 助手结论 + 文件/命令/错误首行，不喂原始工具输出）组装 prompt；并注入图中近期 `sem:*` 实体以复用 slug
-2. 经 `run_extraction_completion` 起 **ephemeral 无工具** session + 单次 prompt（同父模型、`EXTRACT_ROLE_RULES`、严格 JSON）；不进 catalog、不投影 `subagent.*`
-3. `parse_extraction` 容错解析 → `write_batch` 入图，turn 打 `semExtracted`；UI 走 `memory.extraction.*`
-4. 防自递归：ephemeral session id 注册表（`is_extract_session`）；同父串行锁；失败隔离主流程（§7）
+**抽取管道**（`asset_graph/extraction.rs` + `stage1.rs`，对齐 Codex memories Phase 1）：
+1. `TurnCompleted` flush 后收集本轮摘要；**热路径不调 LLM**：非真空 turn → `enqueue` 为 `pending`（**不**用寒暄正则判定价值）
+2. Stage-1 worker 在 **仓库挂载 / 新会话 startup** 或 **Run 结束后 idle**（默认 90s，`GITEAM_MEMORY_MIN_IDLE_SECS`）claim pending；排除仍有 live 累积器的会话
+3. Claim 后由 **抽取 agent**（ephemeral 无工具、同父模型、`EXTRACT_ROLE_RULES` + minimum-signal no-op）自行判定是否值得沉淀；默认 **Silent**（不往聊天流发 `memory.extraction.*`）
+4. 空产出 = Codex `succeeded_no_output`（job=`done`，不落语义节点）；有产出才 `write_batch`；失败 job=`failed` 可重试
+5. 防自递归：`is_extract_session`；同父串行锁；失败隔离主流程（§7）
 
 语义节点 `node_type` 直接用实体类别（前端按类型分霓虹色）；`asset_search` 的类型白名单同步扩展 8 类。
+
+**实体身份（Semantica-style normalize / resolve / merge）**：写入路径在 `asset_graph/entity.rs`——`normalize_name` 折叠空白/小写/首尾标点；同 type 下精确归一化命中优先，否则 Levenshtein ratio ≥ 0.88 归并到已有 canonical（`sem:{type}:{normalized}`）；props 固定带 `normalizedName` / `aliases`，confidence 取 max，字符串 keep_most_complete。不做 blocking / embedding ER / 独立冲突引擎。旧节点无 `normalizedName` 时 catalog 用 label 回填，下次 upsert 写齐。
 
 ## 4. 查询接口：三处暴露
 
@@ -217,6 +220,9 @@ GET /api/v1/graph/subgraph?center=&hops=&limit=
 桌面端新组件 `components/agent/AssetGraphPanel.tsx`（Obsidian 式图谱视图）：
 
 - **主体 `sigma.js`（WebGL 渲染）+ graphology + ForceAtlas2 布局**（选型已定，见 [ADR-0003](adr/0003-sigma-js-for-asset-graph-visualization.md)）：节点按类型着色（Session/Run/File/Error/Commit），支持点击下钻（File→文件历史、Error→修复先例、Session→会话回放复用现有事件回放链路）
+- **实体优先总览（Semantica-style entity hub + session satellites）**：compact 外层以语义实体为一等公民（file/error/commit 不进外层，点会话下钻才见改动细节）；`turn -extracted→ entity` 上卷为 `session -mentions→ entity`，会话节点 props 标 `role: "satellite"`（前端实体更大、卫星更小）。仅保留「至少连到一个语义实体」或「有 touches/fixed 资产边」的会话；`quality=low` 且无实体连接的会话不进总览。实体↔实体边只保留抽取 LLM 产出的 `sem/*`（启发式补边默认关闭）。
+- **抽取质量分级（LLM，非寒暄词表）**：抽取结果顶层 `quality`（high/medium/low）与可选 `priority`；`quality=low` 不写语义节点；仅 `quality=high` 或 `priority=high` 发 `memory.extraction` 完成卡。寒暄轮通常自然落成 low + 空实体；若 LLM 认为可沉淀（如「问候」意图实体）则允许产出。
+- **同语义会话聚合（super-node，对齐 Kumu/Neptune）**：compact 总览按「与实体层共享的 `normalize_name`」（大小写/空白/首尾标点不敏感；归一化后**硬相等**才聚合，不做 0.88 模糊）把 ≥2 个同标题 session 折叠成一个 `session_group:*` 超节点，成员的 touches/fixed/语义边全部并到超节点上，拓扑不丢；单击即在图内展开成成员会话 + 各自触达的资产。无论成员是否有工具动作都聚合——「hi」问了 5 次、其中一次跑了工具，也仍然是一组。另外：抽取子代理会话（管道内部，标题以 `Extract semantic entities…` 开头）不进总览与搜索；无资产动作的新会话可标 `props.chitchat`，启动注入摘要同时跳过 chitchat 与 `quality=low`（优先列高质量实体，不让「你好」类噪声进 agent 上下文）。
 - **布局缓存**：首次打开 ForceAtlas2 跑布局（sigma 生态自带 `graphology-layout-forceatlas2`，支持 WebWorker 后台计算不阻塞 UI），坐标存 `nodes.layout_x/layout_y` 落库，增量节点局部微调，避免每次重跑物理仿真
 - **Obsidian 式交互**：局部子图按需展开（`subgraph(center, hops, limit)`，永远只渲染当前邻域数百节点）、悬浮高亮邻居/淡化无关、侧栏按类型过滤、时间轴滑块（边带 `timestamp_ms`）、搜索命中后相机飞到节点
 - **性能边界**：WebGL 渲染单视图数千节点无压力（靠子图查询保证规模上限），无需 LOD 降级方案

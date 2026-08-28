@@ -1,0 +1,12 @@
+{
+  "name": "chitchat-probe",
+  "note": "寒暄应 quality=low、空实体（与仓库域无关）",
+  "input": {
+    "user_text": "你好呀",
+    "assistant_text": "你好！有什么我可以帮忙的吗？"
+  },
+  "expect": {
+    "min_entities": 0,
+    "max_entities": 0
+  }
+}

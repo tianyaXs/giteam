@@ -1,0 +1,89 @@
+{
+  "session_intent": "缓存层选用进程内 moka，弃用 Redis",
+  "quality": "high",
+  "priority": "normal",
+  "entities": [
+    {
+      "id": "缓存层选用-moka-弃用-redis",
+      "type": "decision",
+      "title": "缓存层选用 moka，弃用 Redis",
+      "category": "architecture",
+      "scenario": "桌面端应用需要缓存层",
+      "chose": "进程内 moka",
+      "rejected": "Redis",
+      "because": "不想给桌面端多引入一个外部服务依赖，部署复杂度优先于缓存容量",
+      "reasoning": "桌面端不应引入外部服务依赖，部署复杂度优先于缓存容量",
+      "outcome": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存，容量 512 条，TTL 10 分钟",
+      "confidence": 0.95,
+      "evidence": "缓存层我们考虑过 Redis，最后决定用进程内的 moka"
+    },
+    {
+      "id": "选用-moka-弃用-redis",
+      "type": "tradeoff",
+      "title": "选用 moka，弃用 Redis",
+      "chose": "进程内 moka 缓存",
+      "rejected": "Redis",
+      "because": "部署复杂度优先于缓存容量，避免桌面端引入外部服务依赖",
+      "confidence": 0.95,
+      "evidence": "因为不想给桌面端多引入一个外部服务依赖，部署复杂度优先于缓存容量"
+    },
+    {
+      "id": "moka",
+      "type": "tech_concept",
+      "title": "moka 进程内缓存",
+      "confidence": 0.95,
+      "evidence": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存"
+    },
+    {
+      "id": "redis",
+      "type": "tech_concept",
+      "title": "Redis",
+      "confidence": 0.9,
+      "evidence": "Redis 方案归档，后续有需要再评估"
+    },
+    {
+      "id": "缓存模块",
+      "type": "module",
+      "title": "LRU 缓存模块",
+      "confidence": 0.9,
+      "evidence": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存，容量 512 条，TTL 10 分钟"
+    }
+  ],
+  "relations": [
+    {
+      "type": "decided",
+      "subject": "缓存层选用-moka-弃用-redis",
+      "object": "moka",
+      "confidence": 0.95,
+      "evidence": "最后决定用进程内的 moka"
+    },
+    {
+      "type": "rationale",
+      "subject": "选用-moka-弃用-redis",
+      "object": "缓存层选用-moka-弃用-redis",
+      "confidence": 0.9,
+      "evidence": "部署复杂度优先于缓存容量"
+    },
+    {
+      "type": "located_in",
+      "subject": "缓存模块",
+      "object": "src/cache/mod.rs",
+      "confidence": 0.95,
+      "evidence": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存"
+    },
+    {
+      "type": "implements",
+      "subject": "缓存模块",
+      "object": "moka",
+      "confidence": 0.9,
+      "evidence": "用 moka 实现 LRU 缓存，容量 512 条，TTL 10 分钟"
+    },
+    {
+      "type": "affects",
+      "subject": "缓存层选用-moka-弃用-redis",
+      "object": "src/cache/mod.rs",
+      "confidence": 0.9,
+      "evidence": "已在 src/cache/mod.rs 用 moka 实现 LRU 缓存"
+    }
+  ]
+}

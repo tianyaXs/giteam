@@ -1,0 +1,15 @@
+```json
+{
+  "quality": "high",
+  "entities": [
+    {
+      "id": "sqlite-graph-store",
+      "type": "decision",
+      "title": "图谱存储采用 SQLite",
+      "confidence": 0.95,
+      "evidence": "底层存储就定 SQLite 了"
+    }
+  ],
+  "relations": []
+}
+```

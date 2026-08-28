@@ -4,7 +4,6 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
-  GitBranch,
   LoaderCircle,
   MessageCircle,
   MoreHorizontal,
@@ -23,6 +22,8 @@ import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutR
 import { createPortal } from "react-dom";
 
 import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
+import { BranchPickerNavItem, type BranchPickerNavItemProps } from "../git/BranchPickerNavItem";
+import { AutomationIcon } from "../icons";
 
 import type { AppText } from "../../lib/generalSettings";
 import type { AgentChatSession } from "../../lib/agentSessions";
@@ -106,26 +107,28 @@ type DesktopSidebarProps = {
   rightPaneTab: RightPaneTab;
   rightOptionalTabs: OptionalRightPaneTab[];
   rightModules: Record<RightPaneTab, boolean>;
+  branchPicker?: Omit<BranchPickerNavItemProps, "text"> | null;
   onOpenRightPane: (tab: RightPaneTab) => void;
   onOpenSettings: () => void;
   onOpenMobilePairQr: () => void;
   mobileClientConnected?: boolean;
   remoteRepoActive: boolean;
   onOpenRemoteRepos: () => void;
+  automationActive?: boolean;
+  onOpenAutomation?: () => void;
 };
 
 const SECTION_LABEL_CLASS = "h-6 min-w-0 flex-1 px-1.5 text-sm font-medium text-muted-foreground";
 
-type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser">;
+type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser" | "worktree">;
 
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;
   icon: React.ComponentType<{ className?: string }>;
-  labelKey?: keyof Pick<AppText, "worktree" | "terminal" | "skills">;
+  labelKey?: keyof Pick<AppText, "terminal" | "skills">;
   /** labelKey 覆盖不到的 pane 用固定文案（对齐 tabLabels 的「远程仓库」做法）。 */
   label?: string;
 }> = [
-  { tab: "worktree", icon: GitBranch, labelKey: "worktree" },
   { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
   { tab: "skills", icon: Sparkles, labelKey: "skills" },
   { tab: "assetGraph", icon: Waypoints, label: "记忆" }
@@ -241,12 +244,15 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     rightPaneTab,
     rightOptionalTabs,
     rightModules,
+    branchPicker,
     onOpenRightPane,
     onOpenSettings,
     onOpenMobilePairQr,
     mobileClientConnected = false,
     remoteRepoActive,
     onOpenRemoteRepos,
+    automationActive = false,
+    onOpenAutomation,
   } = props;
 
   const { pinnedRepos, otherRepos } = useMemo(() => {
@@ -281,6 +287,14 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             label={text.search}
             onClick={onOpenSearch}
           />
+          {onOpenAutomation ? (
+            <NavItem
+              icon={AutomationIcon}
+              label={text.automation}
+              isActive={automationActive}
+              onClick={onOpenAutomation}
+            />
+          ) : null}
           {REMOTE_REPO_MODULE_ENABLED ? (
             <NavItem
               icon={Cloud}
@@ -289,12 +303,15 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
               onClick={onOpenRemoteRepos}
             />
           ) : null}
+          {rightModules.worktree && branchPicker ? (
+            <BranchPickerNavItem text={text} {...branchPicker} />
+          ) : null}
           {LEFT_NAV_PANES.map(({ tab, icon, labelKey, label: fixedLabel }) =>
             rightModules[tab] ? (
               <NavItem
                 key={tab}
                 icon={icon}
-                label={fixedLabel ?? text[labelKey ?? "worktree"]}
+                label={fixedLabel ?? text[labelKey ?? "terminal"]}
                 isActive={rightDrawerOpen && rightOptionalTabs.includes(tab) && rightPaneTab === tab}
                 onClick={() => onOpenRightPane(tab)}
               />

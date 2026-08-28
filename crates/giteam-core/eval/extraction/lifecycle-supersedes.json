@@ -1,0 +1,27 @@
+{
+  "name": "lifecycle-supersedes",
+  "note": "通用机制：后一轮决策明确取代前一轮（SQLite→纯 Rust KV）。任意仓库可套用。",
+  "input": {
+    "user_text": "之前定的 SQLite 方案推翻了。改用纯 Rust 的嵌入式 KV，弃用旧的 SQLite 决策。理由是要去掉 C 依赖、简化交叉编译。",
+    "assistant_text": "已切换：src/store.rs 改为纯 Rust KV。旧决策「主存储用 SQLite」作废；新决策「主存储用纯 Rust KV」生效。",
+    "file_paths": ["src/store.rs"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type": "decision",
+        "slug_contains": "kv",
+        "props_required": ["evidence"]
+      }
+    ],
+    "relations": [
+      {
+        "type": "supersedes",
+        "subject_contains": "kv",
+        "object_contains": "sqlite"
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

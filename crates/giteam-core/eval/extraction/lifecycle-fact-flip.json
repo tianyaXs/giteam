@@ -1,0 +1,27 @@
+{
+  "name": "lifecycle-fact-flip",
+  "note": "通用机制：默认行为翻转（开→关），应 supersedes 旧结论，不绑定任何产品",
+  "input": {
+    "user_text": "启动时的自动同步关掉。以前是应用一打开就后台同步；现在改成默认暂停，用户点「同步」才跑。旧的「启动即自动同步」作废。",
+    "assistant_text": "已改 src/sync/bootstrap.ts：autoSyncOnLaunch=false。新决策「默认暂停等待用户触发」取代旧决策「启动即自动同步」。",
+    "file_paths": ["src/sync/bootstrap.ts"]
+  },
+  "expect": {
+    "entities": [
+      {
+        "type_any": ["decision", "feature"],
+        "slug_contains": "sync",
+        "props_required": ["evidence"]
+      }
+    ],
+    "relations": [
+      {
+        "type": "supersedes",
+        "subject_contains": "",
+        "object_contains": ""
+      }
+    ],
+    "min_entities": 1,
+    "max_entities": 8
+  }
+}

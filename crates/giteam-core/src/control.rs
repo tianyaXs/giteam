@@ -1926,12 +1926,26 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
-        if run_id.is_empty() {
-            return (400, serde_json::json!({ "error": "runId is required" }));
+        if !run_id.is_empty() {
+            return (
+                200,
+                serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            );
+        }
+        let session_id = raw
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if session_id.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "runId or sessionId is required" }),
+            );
         }
         return (
             200,
-            serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            serde_json::json!({ "ok": PiAgentService::global().abort_session(session_id) }),
         );
     }
 
@@ -2318,6 +2332,38 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             Ok(rows) => (200, Value::Array(rows)),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
+    }
+
+    // 钉钉 Outgoing：Gateway 经 tunnel 转发到此；立即 202，后台跑 Agent 并回群。
+    if req.method == "POST" && req.path == "/api/v1/dingtalk/outgoing" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let payload = crate::dingtalk::parse_outgoing_body(&raw);
+        let preview = crate::dingtalk::handle_outgoing_async(payload.clone());
+        if !preview.accepted {
+            return (
+                403,
+                serde_json::json!({
+                    "accepted": false,
+                    "error": preview.message,
+                }),
+            );
+        }
+        thread::spawn(move || {
+            let result = pi_block_on(crate::dingtalk::execute_outgoing(payload));
+            if !result.accepted {
+                eprintln!("[control] dingtalk outgoing failed: {}", result.message);
+            }
+        });
+        return (
+            202,
+            serde_json::json!({
+                "accepted": true,
+                "message": "accepted",
+            }),
+        );
     }
 
     (404, serde_json::json!({ "error": "not found" }))

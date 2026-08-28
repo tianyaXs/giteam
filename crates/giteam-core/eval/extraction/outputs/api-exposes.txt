@@ -1,0 +1,43 @@
+{
+  "entities": [
+    {
+      "id": "asset-graph-subgraph-command",
+      "type": "api",
+      "title": "asset_graph_subgraph Tauri 命令",
+      "confidence": 0.95,
+      "evidence": "已新增 Tauri 命令 asset_graph_subgraph，定义在 apps/desktop/src-tauri/src/commands/asset_graph.rs"
+    },
+    {
+      "id": "graph-node-drilldown-subgraph",
+      "type": "feature",
+      "title": "双击节点下钻的子图查询",
+      "confidence": 0.9,
+      "evidence": "前端面板需要一个能查子图的接口，双击节点下钻要用。"
+    }
+  ],
+  "relations": [
+    {
+      "type": "exposes",
+      "subject": "asset-graph-subgraph-command",
+      "object": "apps/desktop/src-tauri/src/commands/asset_graph.rs",
+      "confidence": 0.95,
+      "evidence": "定义在 apps/desktop/src-tauri/src/commands/asset_graph.rs"
+    },
+    {
+      "type": "implements",
+      "subject": "graph-node-drilldown-subgraph",
+      "object": "asset-graph-subgraph-command",
+      "confidence": 0.9,
+      "evidence": "入参 center/hops/limit，返回以某节点为中心的两跳子图"
+    },
+    {
+      "type": "located_in",
+      "subject": "graph-node-drilldown-subgraph",
+      "object": "apps/desktop/src-tauri/src/commands/asset_graph.rs",
+      "confidence": 0.85,
+      "evidence": "已新增 Tauri 命令 asset_graph_subgraph，定义在 apps/desktop/src-tauri/src/commands/asset_graph.rs"
+    }
+  ],
+  "session_intent": "为前端图谱双击下钻新增子图查询接口",
+  "quality": "medium"
+}

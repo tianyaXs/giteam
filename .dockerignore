@@ -1,0 +1,21 @@
+# Docker build context 裁剪：镜像只需 apps/cloud 与 services/cloud/gateway 源码。
+.git
+**/node_modules
+**/target
+**/.DS_Store
+**/*.log
+.giteam
+.pi
+.claude
+.serena
+.obsidian
+.playwright-mcp
+.spec-workflow
+remote-repo-skill-brainstorm_2
+docs
+scripts
+crates
+apps/cli
+apps/desktop
+apps/mobile
+services/*/deploy

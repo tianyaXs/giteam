@@ -11,6 +11,14 @@ pub struct Config {
     pub jwt_ttl_secs: i64,
     pub link_ticket_ttl_secs: i64,
     pub max_body_bytes: usize,
+    /// 项目分享产物存储目录（replicas=1 期间落本地盘）。
+    pub share_storage_dir: String,
+    /// 分享默认有效期（秒）。
+    pub share_ttl_secs: i64,
+    /// 单 workspace 分享总配额（字节）。
+    pub share_quota_bytes: i64,
+    /// 单分享体积上限（字节）。
+    pub share_max_bytes: usize,
 }
 
 impl Config {
@@ -38,6 +46,21 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let share_storage_dir = std::env::var("SHARE_STORAGE_DIR")
+            .unwrap_or_else(|_| "./data/shares".to_string());
+        let share_ttl_secs = std::env::var("SHARE_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(30 * 24 * 60 * 60);
+        let share_quota_bytes = std::env::var("SHARE_QUOTA_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(5 * 1024 * 1024 * 1024);
+        let share_max_bytes = std::env::var("SHARE_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2 * 1024 * 1024 * 1024);
+
         Ok(Self {
             database_url,
             jwt_secret,
@@ -48,6 +71,10 @@ impl Config {
             jwt_ttl_secs: 24 * 60 * 60,
             link_ticket_ttl_secs: 10 * 60,
             max_body_bytes: 8 * 1024 * 1024,
+            share_storage_dir,
+            share_ttl_secs,
+            share_quota_bytes,
+            share_max_bytes,
         })
     }
 }

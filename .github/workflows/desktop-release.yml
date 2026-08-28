@@ -120,17 +120,16 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 记忆（仓库资产图谱）
+            ## 本版重点（0.2.49）
 
-            - 右侧「记忆」面板：跨会话抽取实体/关系，sigma.js 可视化（搜索、下钻、打开时飞到当前会话）
-            - 布局：FA2 冷启动后冻结 home；拖拽只动当前节点，松手弹簧回位（交互期不再跑 Force）
-            - 图谱查询支持时间范围过滤；去掉右下角类型说明卡片
-            - Agent 回忆工具（asset_context / asset_search / asset_precedents），时间线批组为「回忆」
-            - 切项目时图谱让路给会话消息；空闲再建 WebGL；流式回复淡入
+            - 修复消息流滚动条多余轨道边框（macOS/WKWebView）
+            - 修复拖拽原生滚动条时被贴底跟随反复钉回底部
 
             ## 说明
 
-            打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
+            - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
+            - Windows 建议安装 Git for Windows
+            - 详细说明见 `docs/releases/desktop-v0.2.49.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

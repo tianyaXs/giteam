@@ -100,6 +100,16 @@
   position: relative;
   cursor: col-resize;
   background: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 拖拽分栏时禁止整页文本选中（含 WebKit），避免左右栏被拖蓝 */
+html.wb-split-resizing,
+html.wb-split-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 .wb-splitter::before {

@@ -42,6 +42,8 @@ pub fn router() -> Router<AppState> {
         .route("/cloud/v1/admin/devices/{id}", delete(delete_device))
         .route("/cloud/v1/admin/jwt/revoke", post(revoke_jwt))
         .route("/cloud/v1/admin/audit", get(list_audit))
+        .route("/cloud/v1/admin/shares", get(list_shares))
+        .route("/cloud/v1/admin/shares/{id}/revoke", post(admin_revoke_share))
 }
 
 fn clamp_page(page: Option<i64>) -> i64 {
@@ -812,4 +814,137 @@ async fn list_audit(
         page,
         page_size,
     }))
+}
+
+// ---------- 分享记录（Project Share 管理） ----------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareListQuery {
+    q: Option<String>,
+    status: Option<String>,
+    workspace_id: Option<String>,
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
+#[derive(Debug, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminShareRow {
+    id: String,
+    workspace_id: String,
+    name: String,
+    repo_name: String,
+    default_branch: String,
+    head_commit: String,
+    size_bytes: i64,
+    encrypted: bool,
+    status: String,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    download_count: i64,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+const SHARE_COLS: &str = "id, workspace_id, name, repo_name, default_branch, head_commit,
+    size_bytes, encrypted, status, expires_at, download_count, created_at";
+
+async fn list_shares(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ShareListQuery>,
+) -> ApiResult<Json<PageResponse<AdminShareRow>>> {
+    require_admin(&state, &headers).await?;
+    let page = clamp_page(query.page);
+    let page_size = clamp_page_size(query.page_size);
+    let offset = (page - 1) * page_size;
+    let q = query.q.as_deref().unwrap_or("").trim().to_string();
+    let status = query
+        .status
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let workspace_id = query
+        .workspace_id
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let like = if q.is_empty() {
+        None
+    } else {
+        Some(format!("%{}%", q.replace('%', "\\%").replace('_', "\\_")))
+    };
+
+    let total: (i64,) = sqlx::query_as(&format!(
+        r#"
+        SELECT COUNT(*) FROM shares
+        WHERE ($1::text IS NULL OR id ILIKE $1 OR repo_name ILIKE $1 OR name ILIKE $1)
+          AND ($2::text = '' OR status = $2)
+          AND ($3::text = '' OR workspace_id = $3)
+        "#,
+    ))
+    .bind(&like)
+    .bind(&status)
+    .bind(&workspace_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    let rows: Vec<AdminShareRow> = sqlx::query_as(&format!(
+        r#"
+        SELECT {SHARE_COLS} FROM shares
+        WHERE ($1::text IS NULL OR id ILIKE $1 OR repo_name ILIKE $1 OR name ILIKE $1)
+          AND ($2::text = '' OR status = $2)
+          AND ($3::text = '' OR workspace_id = $3)
+        ORDER BY created_at DESC
+        LIMIT $4 OFFSET $5
+        "#,
+    ))
+    .bind(&like)
+    .bind(&status)
+    .bind(&workspace_id)
+    .bind(page_size)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))?;
+
+    Ok(Json(PageResponse {
+        items: rows,
+        total: total.0,
+        page,
+        page_size,
+    }))
+}
+
+async fn admin_revoke_share(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<OkResponse>> {
+    require_admin(&state, &headers).await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT workspace_id FROM shares WHERE id = $1")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| ApiError::Internal(e.into()))?;
+    let (workspace_id,) = row.ok_or_else(|| ApiError::NotFound("share not found".into()))?;
+    sqlx::query("UPDATE shares SET status = 'revoked' WHERE id = $1")
+        .bind(&id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    // 删除产物目录。
+    let dir = std::path::Path::new(&state.config.share_storage_dir).join(&id);
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    write_audit(
+        &state,
+        Some(&workspace_id),
+        "share.revoked_admin",
+        serde_json::json!({ "shareId": id }),
+    )
+    .await;
+    Ok(Json(OkResponse { ok: true }))
 }

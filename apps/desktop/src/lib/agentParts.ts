@@ -359,6 +359,53 @@ export function pickPreferredAgentContent(...candidates: Array<string | undefine
  * 去掉重复正文 text part（同文或互为前缀超集只留一份），保留工具/思考顺序。
  * soft-append 与未冲刷 delta 竞态时易出现 text:0 + text:soft:0 双份。
  */
+/** finalized 后只补 live 正文：不整段重建 timeline，避免列表 remount / 闪动。 */
+export function livePartsHaveTextPart(parts: AgentDetailedPart[] | undefined | null): boolean {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((part) => {
+    const type = String((part as { type?: string }).type || "");
+    const id = String((part as { id?: string }).id || "");
+    if (type !== "text" && !id.startsWith("text:")) return false;
+    return Boolean(pickPreferredAgentContent(String((part as { text?: string }).text || "")));
+  });
+}
+
+export function appendMissingTextPartsToLive(
+  parts: AgentDetailedPart[] | undefined | null,
+  textBlocks: string[]
+): { parts: AgentDetailedPart[]; changed: boolean } {
+  const current = Array.isArray(parts) ? [...parts] : [];
+  if (textBlocks.length === 0) {
+    return { parts: current, changed: false };
+  }
+  let changed = false;
+  let ordinal = 0;
+  for (const raw of textBlocks) {
+    const blockText = pickPreferredAgentContent(raw);
+    if (!blockText) continue;
+    ordinal += 1;
+    const already = current.some((part) => {
+      const type = String((part as { type?: string }).type || "");
+      const id = String((part as { id?: string }).id || "");
+      if (type !== "text" && !id.startsWith("text:")) return false;
+      const prev = pickPreferredAgentContent(String((part as { text?: string }).text || ""));
+      if (!prev) return false;
+      return prev === blockText || prev.startsWith(blockText) || blockText.startsWith(prev);
+    });
+    if (already) continue;
+    changed = true;
+    current.push({
+      id: `text:soft:${ordinal - 1}`,
+      type: "text",
+      text: blockText
+    } as AgentDetailedPart);
+  }
+  if (!changed) {
+    return { parts: Array.isArray(parts) ? parts : [], changed: false };
+  }
+  return { parts: dedupeAgentDuplicateTextParts(current), changed: true };
+}
+
 export function dedupeAgentDuplicateTextParts(
   parts: AgentDetailedPart[] | undefined | null
 ): AgentDetailedPart[] {
@@ -493,4 +540,33 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
     i += 1;
   }
   return out;
+}
+
+/**
+ * 同一轮多次 runtime.retry 只留最后一条；failure 最多一条。
+ * 成功的重试不保留——否则会一直挂在最新正文下面。
+ */
+export function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
+  let latestRetry: AgentDetailedPart | null = null;
+  let failure: AgentDetailedPart | null = null;
+  const rest: AgentDetailedPart[] = [];
+  for (const part of parts) {
+    const type = String((part as { type?: string }).type || "");
+    if (type === "runtime.retry") {
+      const phase = String((part as { phase?: string }).phase || "").trim();
+      const success = (part as { success?: boolean | null }).success;
+      // 成功重试对用户已无信息量，丢弃以免黏在正文下方。
+      if (phase === "completed" && success === true) continue;
+      latestRetry = part;
+      continue;
+    }
+    if (type === "runtime.failure") {
+      failure = part;
+      continue;
+    }
+    rest.push(part);
+  }
+  if (latestRetry) rest.push(latestRetry);
+  if (failure) rest.push(failure);
+  return rest;
 }

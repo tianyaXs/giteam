@@ -1313,7 +1313,7 @@ export const chatStyles = {
   },
   bubbleAssistantWrap: { width: "100%", alignItems: "flex-start" },
   bubbleUser: {
-    maxWidth: "80%",
+    maxWidth: "96%",
     alignSelf: "flex-end",
     flexShrink: 1,
     borderRadius: 18,

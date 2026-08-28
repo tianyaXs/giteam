@@ -10,7 +10,8 @@ import {
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
   summarizeAgentContextToolCounts,
-  type AgentAssistantRenderGroup
+  type AgentAssistantRenderGroup,
+  coalesceRuntimeParts
 } from "../../lib/agentParts";
 import type {
   AgentChatMessage,
@@ -589,14 +590,30 @@ function ToolBatchGroup({
   onOpenToolFile: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
 }) {
-  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
-  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
-  const running = !forceInactive;
   const shell = group.batchKind === "shell";
   const web = group.batchKind === "web";
   const browser = group.batchKind === "browser";
   const task = group.batchKind === "task";
   const memory = group.batchKind === "memory";
+  // 记忆批组三分态：进行中（part phase=started）给瞬时反馈；有真实写入
+  // （实体/关系/意图）留卡；失败留卡可排查；完成的空抽取（寒暄轮等）整组不渲染。
+  const memoryPhaseOf = (part: (typeof group.parts)[number]) =>
+    String((part as { phase?: string }).phase || "").trim();
+  const memoryHasRunning = memory && group.parts.some((part) => memoryPhaseOf(part) === "started");
+  const memoryFailed = memory && group.parts.some((part) => memoryPhaseOf(part) === "failed");
+  const memoryWrote =
+    memory &&
+    group.parts.some(
+      (part) =>
+        (Number((part as { entityCount?: number }).entityCount) || 0) > 0 ||
+        (Number((part as { relationCount?: number }).relationCount) || 0) > 0 ||
+        Boolean(String((part as { intent?: string }).intent || "").trim())
+    );
+  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
+  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
+  // 例外：记忆抽取在 turn 结束后异步到达，forceInactive 已为 true，但 part 仍在
+  // started——此时组标签必须以 part 相位为准显示「记录中」，否则「已记录」抢先出现。
+  const running = !forceInactive || memoryHasRunning;
   const recall = group.batchKind === "recall";
   // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
   const activeLabel = memory
@@ -613,7 +630,9 @@ function ToolBatchGroup({
               ? "浏览中"
               : "编辑中";
   const doneLabel = memory
-    ? "已记录"
+    ? memoryFailed && !memoryWrote
+      ? "记忆写入失败"
+      : "已记录"
     : recall
       ? "已回忆"
       : task
@@ -645,6 +664,8 @@ function ToolBatchGroup({
     ? dedupeVisibleSubagentTaskParts(group.parts)
     : group.parts;
   if (task && visibleTaskParts.length === 0) return null;
+  // 空抽取（寒暄轮等）不出卡：没有写入也没有失败，这条事件对用户无信息量。
+  if (memory && !memoryHasRunning && !memoryWrote && !memoryFailed) return null;
 
   // 与「已探索 2次搜索」同形：回忆/查询类数字与量词紧贴，避免「1 次」多出空格
   const countCompact = recall || web || browser;
@@ -708,7 +729,9 @@ function ToolBatchGroup({
       label={
         <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
           <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
-          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
+          {!memory || memoryWrote ? (
+            <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
+          ) : null}
           {taskDetail ? (
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
           ) : null}
@@ -1116,6 +1139,30 @@ function CollapsibleUserText({
   );
 }
 
+function MessageGraphContextRefs({
+  refs,
+  className
+}: {
+  refs: NonNullable<AgentChatMessage["graphRefs"]>;
+  className?: string;
+}) {
+  if (refs.length <= 0) return null;
+  return (
+    <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", className)}>
+      {refs.map((ref) => (
+        <div
+          key={ref.id}
+          className="flex max-w-[220px] items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px] text-foreground"
+          title={ref.snippet ? `${ref.typeLabel}: ${ref.label}\n${ref.snippet}` : `${ref.typeLabel}: ${ref.label}`}
+        >
+          <span className="shrink-0 text-muted-foreground">{ref.typeLabel}</span>
+          <span className="min-w-0 truncate font-medium">{ref.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UserMessage({
   msg,
   messageOpenState,
@@ -1134,12 +1181,17 @@ function UserMessage({
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
 }) {
   const attachments = msg.attachments || [];
+  const graphRefs = msg.graphRefs || [];
   const hasAttachments = attachments.length > 0;
+  const hasGraphRefs = graphRefs.length > 0;
   const hasContent = Boolean(msg.content.trim());
-  if (!hasContent && attachments.length === 0) return null;
+  if (!hasContent && attachments.length === 0 && !hasGraphRefs) return null;
 
   return (
-    <div className={cn("grid min-w-0 gap-2", hasAttachments && "justify-items-end")}>
+    <div className={cn("grid min-w-0 gap-2", (hasAttachments || hasGraphRefs) && "justify-items-end")}>
+      {hasGraphRefs ? (
+        <MessageGraphContextRefs refs={graphRefs} className="justify-self-end" />
+      ) : null}
       <MessageAttachments
         attachments={attachments}
         className={hasAttachments ? "justify-self-end" : undefined}
@@ -1148,7 +1200,7 @@ function UserMessage({
         onOpenAttachment={onOpenAttachment}
       />
       {hasContent ? (
-        hasAttachments ? (
+        hasAttachments || hasGraphRefs ? (
           <div className="w-fit max-w-full select-text rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground">
             {shouldCollapseMessage(msg.content) ? (
               <CollapsibleUserText
@@ -1365,27 +1417,8 @@ function collapseDuplicateFailureRows(
   return out;
 }
 
-/** 同一轮里多次 runtime.retry 只保留最后一条；failure 最多一条，挂到末尾。 */
-function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
-  let latestRetry: AgentDetailedPart | null = null;
-  let failure: AgentDetailedPart | null = null;
-  const rest: AgentDetailedPart[] = [];
-  for (const part of parts) {
-    const type = String((part as { type?: string }).type || "");
-    if (type === "runtime.retry") {
-      latestRetry = part;
-      continue;
-    }
-    if (type === "runtime.failure") {
-      failure = part;
-      continue;
-    }
-    rest.push(part);
-  }
-  if (latestRetry) rest.push(latestRetry);
-  if (failure) rest.push(failure);
-  return rest;
-}
+/* coalesceRuntimeParts: 见 ../../lib/agentParts */
+
 
 /** live 非空时仍并入 history 里缺失的 toolCall，避免仅有 text:* live 整表盖掉工具 → 数量闪动。 */
 function mergeLiveWithFetchedParts(
@@ -1509,17 +1542,26 @@ function MemoryExtractionPart({
   const entities = Array.isArray((part as { entities?: unknown }).entities)
     ? ((part as { entities: Array<{ type?: string; title?: string }> }).entities)
     : [];
+  const quality = String((part as { quality?: string }).quality || "").trim().toLowerCase();
+  const priority = String((part as { priority?: string }).priority || "").trim().toLowerCase();
   const running = phase === "started";
   const failed = phase === "failed";
-  const empty = !running && !failed && entityCount === 0 && relationCount === 0;
-  const doneLabel = failed ? "记忆写入失败" : empty ? "记忆未更新" : "已写入记忆";
+  // intent 写回 session 节点也算一次真实写入；全空（寒暄轮）的完成行不渲染。
+  // 与后端 quality/priority 门控对齐：仅 high 或 priority-high 出完成卡。
+  const lowSignal =
+    !running &&
+    !failed &&
+    ((quality === "low" || quality === "medium") && priority !== "high");
+  const empty = !running && !failed && entityCount === 0 && relationCount === 0 && !intent;
+  if (empty || lowSignal) return null;
+  const doneLabel = failed ? "记忆写入失败" : "已写入记忆";
   const countPreview =
     entityCount > 0 || relationCount > 0
       ? `${entityCount} 个实体 · ${relationCount} 条关系`
       : "";
   const preview = failed
     ? (error.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || error || "抽取失败")
-    : countPreview || intent || (running ? "沉淀本轮决策与实体" : empty ? "本轮无新实体" : "");
+    : countPreview || intent || (running ? "沉淀本轮决策与实体" : "");
   const canExpand = entities.length > 0 || Boolean(error);
 
   const header = (
@@ -1814,10 +1856,13 @@ export function AgentMessageStream({
   const scrollerElRef = useRef<HTMLElement | null>(null);
   /**
    * 用户「贴底跟随」意图：默认 true。wheel/touch 主动上滚置 false（区分「用户上滚」与
-   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）。
+   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）；
+   * 原生滚动条拖拽/键盘上滚不触发 wheel/touch，由下方 rAF 钉底逐帧比对 scrollTop 发现后置 false。
    * atBottom 回到 true（贴底/跳最新）或 stickResetSignal（发送）恢复 true。驱动持续 rAF 钉底。
    */
   const stickToBottomRef = useRef(true);
+  // 上一帧滚动位置基线：rAF 钉底逐帧比对用（识别原生滚动条拖拽把 scrollTop 拉低）。
+  const lastPinTopRef = useRef(-1);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
@@ -2196,17 +2241,31 @@ export function AgentMessageStream({
   useEffect(() => {
     let raf = 0;
     const tick = () => {
-      // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
-      if (
-        stickToBottomRef.current &&
-        !pendingLocateIdRef.current &&
-        !locatedThisSessionRef.current
-      ) {
-        const sc = scrollerElRef.current;
-        if (sc) {
-          const max = sc.scrollHeight - sc.clientHeight;
-          if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+      const sc = scrollerElRef.current;
+      if (sc) {
+        const max = sc.scrollHeight - sc.clientHeight;
+        const top = sc.scrollTop;
+        // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
+        if (
+          stickToBottomRef.current &&
+          !pendingLocateIdRef.current &&
+          !locatedThisSessionRef.current &&
+          max >= 0
+        ) {
+          // 贴底期间 scrollTop 被外部拉低且确实离开底部 = 用户在向上拖拽原生滚动条/键盘上滚
+          //（原生滚动条拖拽不触发 wheel/touch，scroll 事件又会被同帧钉底回写合并掩盖，
+          // 只能在 rAF 里逐帧比对发现）→ 取消贴底跟随，否则每帧被钉回底部，
+          // 向上拖拽时反复闪回最新位置。
+          // 内容变矮的浏览器钳位 / Virtuoso 锚点补偿也会拉低 scrollTop，但补偿后 top==max
+          //（仍在底部），用 top < max - 2 排除，不误取消跟随。
+          if (lastPinTopRef.current >= 0 && top < lastPinTopRef.current - 2 && top < max - 2) {
+            stickToBottomRef.current = false;
+          } else if (top < max) {
+            sc.scrollTop = max;
+          }
         }
+        // 每帧跟踪（含 stick=false 期间），保证 stick 恢复时比对基线是新鲜值，不误判。
+        lastPinTopRef.current = sc.scrollTop;
       }
       raf = requestAnimationFrame(tick);
     };

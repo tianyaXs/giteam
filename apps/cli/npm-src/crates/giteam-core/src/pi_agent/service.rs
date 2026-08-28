@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, Weak};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::lock::Mutex as AsyncMutex;
@@ -23,7 +23,7 @@ use super::subagents::{
 use super::tools::GiteamToolFactory;
 use super::{
     ensure_pi_agent_dir_env, AgentEvent, AgentEventEnvelope, AgentInteraction,
-    AgentInteractionReply, AgentMessage, AgentModelInfo, AgentPart, AgentProviderInfo,
+    AgentInteractionReply, AgentMessage, AgentModelInfo, AgentPart, AgentProviderInfo, AgentRole,
     AgentSessionStatus, CustomProviderInput, PiEventTranslator, PiRuntimeInfo, ProviderCatalog,
     SecretStore,
 };
@@ -110,25 +110,57 @@ impl PiSessionConfig {
     fn into_sdk_options(self) -> SessionOptions {
         // 未显式指定系统提示词时注入 Giteam 品牌的默认提示词；
         // 否则 pi 会用它自己的默认提示词（自我定位为 pi 并附带 pi 文档指引）。
-        let system_prompt = self
+        let base_prompt = self
             .system_prompt
             .or_else(|| Some(super::default_system_prompt(self.enabled_tools.as_deref())));
-        // 项目记忆（GITEAM.md / AGENTS.md）前置到 append_system_prompt，
-        // 不覆盖品牌默认 system_prompt；三通道共用此装配，热恢复也生效。
-        let memory_appended =
-            prepend_project_memory(self.append_system_prompt, &self.repo_path);
-        // 子 agent（Hermes skip_context_files）：保留项目记忆，不注入全局 skills 目录，
-        // 避免 ephemeral 任务提示被 skill 清单淹没、拖慢首轮。
-        let append_system_prompt = if self.session_kind == "subagent" {
-            memory_appended
-        } else {
-            match (memory_appended, super::skills::build_skills_prompt(&self.repo_path)) {
-                (Some(base), Some(skills)) => Some(format!("{base}\n{skills}")),
-                (Some(base), None) => Some(base),
-                (None, Some(skills)) => Some(skills),
-                (None, None) => None,
-            }
+        // 模型纪律门控拼在品牌提示词尾部（append 段之前）：字节稳定、缓存友好。
+        let system_prompt = match super::prompt::model_discipline_prompt(
+            self.provider.as_deref(),
+            self.model.as_deref(),
+        ) {
+            Some(discipline) => base_prompt.map(|base| format!("{base}\n\n{discipline}")),
+            None => base_prompt,
         };
+        // append 段按「稳定 → 易变」排序：项目记忆（GITEAM.md）→ 工作区快照
+        // （git/平台/验证命令）→ skills 清单 → 调用方显式追加段。
+        // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集
+        // （含祖先目录），此处再注入会导致双重注入。
+        // 子 agent（Hermes skip_context_files）：保留记忆与工作区快照，不注入
+        // 全局 skills 目录，避免 ephemeral 任务提示被 skill 清单淹没、拖慢首轮。
+        // 快照的执行类信息（放行清单）只注入有 bash/edit/write 能力的会话：
+        // 只读子代理收到 `Pre-approved: bash:...` 只是指向不存在工具的诱导。
+        let can_execute = match self.enabled_tools.as_deref() {
+            // None = 全量工具（含 bash/edit/write）。
+            None => true,
+            Some(tools) => tools
+                .iter()
+                .any(|tool| tool == "bash" || tool == "edit" || tool == "write"),
+        };
+        let mut append_parts: Vec<String> = Vec::new();
+        if let Some(memory) = wrap_project_memory(&self.repo_path) {
+            append_parts.push(memory);
+        }
+        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
+        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
+        if self.session_kind != "subagent" {
+            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
+                append_parts.push(digest);
+            }
+        }
+        append_parts.push(super::environment::build_workspace_context(
+            &self.repo_path,
+            can_execute,
+        ));
+        if self.session_kind != "subagent" {
+            if let Some(skills) = super::skills::build_skills_prompt(&self.repo_path) {
+                append_parts.push(skills);
+            }
+        }
+        if let Some(extra) = self.append_system_prompt.as_deref() {
+            append_parts.push(extra.to_string());
+        }
+        let append_system_prompt = (!append_parts.is_empty())
+            .then(|| append_parts.join("\n\n"));
         SessionOptions {
             provider: self.provider,
             model: self.model,
@@ -154,20 +186,21 @@ impl PiSessionConfig {
     }
 }
 
-/// 把项目记忆（GITEAM.md 优先 / AGENTS.md 回退）前置到既有 append_system_prompt。
-/// 命中记忆时用「项目记忆」小节包裹，再拼接调用方传入的追加段；未命中则原样返回。
-fn prepend_project_memory(
-    existing: Option<String>,
-    repo_path: &std::path::Path,
-) -> Option<String> {
-    let memory = super::project_memory::read_project_memory(repo_path);
-    match (memory, existing) {
-        (Some(memory), Some(rest)) => {
-            Some(format!("# 项目记忆 (GITEAM.md)\n{memory}\n\n{rest}"))
-        }
-        (Some(memory), None) => Some(format!("# 项目记忆 (GITEAM.md)\n{memory}")),
-        (None, rest) => rest,
-    }
+/// 资产图谱近期变更摘要（跨会话感知的被动注入层）。
+/// 图谱未挂载或图为空时返回 None（零成本跳过）。
+fn wrap_asset_graph_digest(repo_path: &std::path::Path) -> Option<String> {
+    let graph = crate::asset_graph::attached(repo_path)?;
+    let graph = graph.lock().ok()?;
+    let digest = graph.query().recent_changes_digest(8);
+    (!digest.is_empty()).then_some(digest)
+}
+
+/// 读取项目记忆（仅 GITEAM.md）并用「项目记忆」小节包裹，供 append 段拼接。
+/// AGENTS.md/CLAUDE.md 由 pi 的 # Project Context 通道注入（含祖先目录收集），
+/// 此处不再回退读取，避免同一文件被双重注入。
+fn wrap_project_memory(repo_path: &std::path::Path) -> Option<String> {
+    super::project_memory::read_project_memory(repo_path)
+        .map(|memory| format!("# 项目记忆 (GITEAM.md)\n{memory}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -270,11 +303,34 @@ struct ManagedSession {
     /// 已安装的 tool call id 清洗包装（见 provider_sanitizer）。pi 切换模型会
     /// 重建 provider 丢弃包装，prompt 前按指针比对重装。
     sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
+    /// prompt 会长时间占用 `handle` 锁；桌面/手机并发 `messages()` 时用此快照避免转圈卡住。
+    message_snapshot: Arc<Mutex<Vec<AgentMessage>>>,
+    /// steer 排队（run 进行中的用户补充指令）。注册为 pi 的 steering
+    /// fetcher 后由 agent loop 在工具批/回合边界自动 drain——同一次 run
+    /// 内中轮注入（收到即跳过剩余工具批，等价 Codex 插话）；run 结束后
+    /// 遗留的消息在下次 prompt 的 run_loop 开头 drain（pi 自带边界）。
+    /// Arc 供 fetcher 闭包无锁共享；上限与 pi MAX_STEERING_QUEUE_SIZE 对齐。
+    pending_steers: Arc<Mutex<Vec<String>>>,
+    /// 内存侧会话类型；list 过滤优先读这里，避免 catalog 写入竞态把子会话漏进主列表。
+    session_kind: String,
+    parent_session_id: Option<String>,
+    parent_tool_call_id: Option<String>,
 }
 
 struct ActiveRun {
     session_id: String,
     abort_handle: AbortHandle,
+}
+
+/// steer 结果：排队成功 / 会话空闲（调用方应转普通 prompt）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SteerOutcome {
+    /// 已入队；`run_id` 是承载投递的活跃 run。消息由 pi agent loop 在
+    /// 下一个工具批/回合边界注入同一 run（中轮插话），前端以
+    /// message.completed(user) 事件作为正式投递信号。
+    Queued { run_id: String },
+    /// 无活跃 run——steer 无处投递，调用方应走 `prompt` 正常发送。
+    Idle,
 }
 
 type EventSubscriberKey = (String, String);
@@ -285,6 +341,8 @@ pub struct PiAgentService {
     catalog_path: Option<PathBuf>,
     active_runs: Mutex<HashMap<String, ActiveRun>>,
     subscribers: Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>,
+    /// 每 run 事件环，供 SSE 重连按 sequence 补洞。
+    event_buffers: super::events::EventBufferBus,
     /// 审批/提问 pending 注册表（PR6），跨 session 共享，按 id 裁决。
     interactions: Arc<InteractionStore>,
     /// 统一 secret vault。`None` 仅用于隔离测试（不触碰真实 vault 与环境变量）。
@@ -296,6 +354,8 @@ pub struct PiAgentService {
     browser_controller: Mutex<super::browser_controller::SharedBrowserController>,
     /// `global()` / `bind_arc` 写入，供 TaskTool 的 SubagentHost 升级回 Arc。
     self_weak: Mutex<Option<Weak<PiAgentService>>>,
+    /// 旁路抽取串行锁：parent_session_id → 锁。同父多轮抽取排队，避免并发打爆 provider。
+    extract_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Default for PiAgentService {
@@ -311,6 +371,11 @@ impl PiAgentService {
         SERVICE.get_or_init(|| {
             let arc = Arc::new(Self::new_with_catalog(true));
             arc.bind_arc();
+            // 登记资产图谱全局抽取宿主：图谱挂载可能早于首个会话创建（面板
+            // rebuild 路径），host 可用性不能依赖挂载时机。
+            if let Some(host) = arc.asset_graph_subagent_host() {
+                crate::asset_graph::set_extraction_host(host);
+            }
             arc
         })
     }
@@ -344,6 +409,8 @@ impl PiAgentService {
         // 然后 vault 与该目录下的 auth.json 对齐。必须在任何 Pi session 创建前完成。
         let secrets = if load_catalog {
             ensure_pi_agent_dir_env();
+            // 须在首次 grep/find 前注入；pi 对 rg/fd 探测结果 OnceLock 缓存。
+            let _ = crate::pi_agent::ensure_agent_bins();
             // Pi 云端默认 HTTP 整请求超时 60s；子 agent 调研/长流式很容易踩中。
             // 桌面端强制抬到 30 分钟（除非用户显式设置了 PI_HTTP_REQUEST_TIMEOUT_SECS）。
             // 0 = 不限时。见 pi::http::client::DEFAULT_REMOTE_REQUEST_TIMEOUT_SECS。
@@ -358,10 +425,12 @@ impl PiAgentService {
             catalog_path: if load_catalog { catalog_path } else { None },
             active_runs: Mutex::new(HashMap::new()),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
+            event_buffers: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(InteractionStore::new()),
             secrets,
             browser_controller: Mutex::new(None),
             self_weak: Mutex::new(None),
+            extract_locks: Mutex::new(HashMap::new()),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -410,6 +479,15 @@ impl PiAgentService {
         self.active_runs.lock().map_or(0, |runs| runs.len())
     }
 
+    /// 指定会话是否有进行中的 run（自动化 runner 用于 busy → skipped）。
+    #[must_use]
+    pub fn has_active_run_for_session(&self, session_id: &str) -> bool {
+        self.active_runs
+            .lock()
+            .map(|runs| runs.values().any(|run| run.session_id == session_id))
+            .unwrap_or(false)
+    }
+
     /// Stop accepting work owned by this service and release all in-process
     /// session handles. Pi's abort handle is synchronous, so shutdown can be
     /// called from Tauri/CLI exit callbacks without blocking the runtime.
@@ -425,6 +503,9 @@ impl PiAgentService {
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers.clear();
         }
+        if let Ok(mut buffers) = self.event_buffers.lock() {
+            buffers.clear();
+        }
         let _ = self.persist_catalog();
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.clear();
@@ -434,8 +515,21 @@ impl PiAgentService {
         }
     }
 
+    /// 订阅 live 事件（after_seq=0，无重放）。
     #[must_use]
     pub fn subscribe_events(&self, session_id: &str, run_id: &str) -> AgentEventReceiver {
+        self.subscribe_events_after(session_id, run_id, 0).1
+    }
+
+    /// 返回 `(replay, live_receiver)`：先挂 live，再快照 ring，避免中间丢帧；
+    /// 与 replay 重叠的 live 事件由客户端按 sequence 去重。
+    #[must_use]
+    pub fn subscribe_events_after(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        after_seq: u64,
+    ) -> (Vec<AgentEventEnvelope>, AgentEventReceiver) {
         let (sender, receiver) = mpsc::channel();
         if let Ok(mut subscribers) = self.subscribers.lock() {
             subscribers
@@ -443,7 +537,50 @@ impl PiAgentService {
                 .or_default()
                 .push(sender);
         }
-        receiver
+        let replay = super::events::replay_events_after(
+            &self.event_buffers,
+            session_id,
+            run_id,
+            after_seq,
+        );
+        (replay, receiver)
+    }
+
+    /// run 是否仍在 `active_runs`；用于 SSE 对账，避免把 interaction-idle 误判成已结束。
+    #[must_use]
+    pub fn run_active_session(&self, run_id: &str) -> Option<String> {
+        self.active_runs
+            .lock()
+            .ok()?
+            .get(run_id)
+            .map(|run| run.session_id.clone())
+    }
+
+    /// 向 (session_id, run_id) 的 SSE 订阅者广播 run.failed 终态。
+    /// control server 的 prompt 已后台化（HTTP 立即返回），早期失败（session 不存在、
+    /// 图片读盘失败等）发生在任何 pi 事件之前，若不补发终态，手机端 SSE 会悬等心跳。
+    pub fn publish_run_failed(&self, session_id: &str, run_id: &str, error: &str) {
+        let sequence = next_event_sequence(&self.event_buffers, session_id, run_id);
+        let event = AgentEventEnvelope {
+            schema_version: super::events::AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("failed-{run_id}-{}", uuid::Uuid::new_v4()),
+            sequence,
+            repo_path: String::new(),
+            session_id: session_id.to_string(),
+            run_id: Some(run_id.to_string()),
+            timestamp_ms: u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or_default(),
+            )
+            .unwrap_or_default(),
+            event: super::AgentEvent::RunFailed {
+                error: error.to_string(),
+            },
+        };
+        publish_event(&self.subscribers, &self.event_buffers, &event);
+        self.schedule_clear_event_buffer(session_id, run_id);
     }
 
     pub async fn create_session(
@@ -499,7 +636,30 @@ impl PiAgentService {
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(repo_path.clone());
-        let handle = create_agent_session(sdk_options_with_factory(
+        // 仓库资产图谱：会话创建即挂载（打开 + 增量回放存量会话），并注入
+        // 子代理宿主启用 turn 级语义抽取（继承会话 provider/model；host 不可用
+        // 时退化为仅过程层）。等待挂载完成再建会话，保证首个 turn 的事件不丢；
+        // 失败只记日志——图谱是旁路能力，绝不阻塞会话创建。
+        if crate::asset_graph::attached(&repo_path).is_none() {
+            let host = self.subagent_host_for(&session_kind);
+            let graph_repo = repo_path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let result = match host {
+                    Some(host) => {
+                        crate::asset_graph::attach_repo_with_extraction(&graph_repo, host)
+                    }
+                    None => crate::asset_graph::attach_repo(&graph_repo),
+                };
+                match result {
+                    Ok((indexed, skipped)) => {
+                        eprintln!("[asset-graph] attached {}: replayed {indexed}, unchanged {skipped}", graph_repo.display());
+                    }
+                    Err(error) => eprintln!("[asset-graph] attach {} failed: {error}", graph_repo.display()),
+                }
+            })
+            .await;
+        }
+        let mut handle = create_agent_session(sdk_options_with_factory(
             config,
             &hub,
             self.subagent_host_for(&session_kind),
@@ -525,23 +685,22 @@ impl PiAgentService {
             parent_session_id: parent_session_id.clone(),
             parent_tool_call_id: parent_tool_call_id.clone(),
         };
+        let pending_steers = Arc::new(Mutex::new(Vec::new()));
+        register_steer_fetcher(&mut handle, &pending_steers);
         let managed = Arc::new(ManagedSession {
             repo_path,
             handle: AsyncMutex::new(handle),
             hub,
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
+            message_snapshot: Arc::new(Mutex::new(Vec::new())),
+            pending_steers,
+            session_kind: session_kind.clone(),
+            parent_session_id: parent_session_id.clone(),
+            parent_tool_call_id: parent_tool_call_id.clone(),
         });
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|error| PiAgentError::State(error.to_string()))?;
-        if sessions.contains_key(&session_id) {
-            return Err(PiAgentError::SessionAlreadyExists(session_id));
-        }
-        sessions.insert(session_id, managed);
-        drop(sessions);
-
+        // 先写 catalog，再进 sessions map：list_sessions 轮询若夹在中间，
+        // 会因无 record 默认 primary，把刚创建的子会话短暂漏进侧栏。
         if let Some(session_path) = session_path {
             let record = PersistedSessionRecord {
                 schema_version: 1,
@@ -568,6 +727,14 @@ impl PiAgentService {
                 .insert(summary.session_id.clone(), record);
             self.persist_catalog()?;
         }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?;
+        if sessions.contains_key(&session_id) {
+            return Err(PiAgentError::SessionAlreadyExists(session_id));
+        }
+        sessions.insert(session_id, managed);
         Ok(summary)
     }
 
@@ -605,60 +772,123 @@ impl PiAgentService {
             .keys()
             .cloned()
             .collect();
+        // 恢复失败分类：文件已丢失（Session not found）→ 记录是陈旧残留，
+        // 自动清出 catalog（否则每次列表都刷一条错误）；provider/model 失效
+        // → 保留记录，降级为 catalog 元数据行，会话不因 provider 暂时不可用
+        // 而从列表消失。
+        let mut catalog_dirty = false;
+        let mut degraded_session_ids: Vec<String> = Vec::new();
         for session_id in record_ids {
-            let _ = self.get_session(&session_id).await;
+            match self.get_session(&session_id).await {
+                Ok(_) => {}
+                Err(error) => {
+                    let message = error.to_string();
+                    if message.contains("Session not found") {
+                        if let Ok(mut records) = self.records.lock() {
+                            if records.remove(&session_id).is_some() {
+                                catalog_dirty = true;
+                                eprintln!(
+                                    "[pi-agent] pruned stale catalog record (session file missing): {session_id}"
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
+                        );
+                        degraded_session_ids.push(session_id);
+                    }
+                }
+            }
         }
-        let sessions: Vec<_> = self
+        if catalog_dirty {
+            let _ = self.persist_catalog();
+        }
+        // 保留 map 键：busy 时拿不到 handle.state()，只能靠 session_id + catalog/snapshot。
+        let sessions: Vec<(String, Arc<ManagedSession>)> = self
             .sessions
             .lock()
             .map_err(|error| PiAgentError::State(error.to_string()))?
-            .values()
-            .cloned()
+            .iter()
+            .map(|(id, session)| (id.clone(), Arc::clone(session)))
             .collect();
         let mut summaries = Vec::with_capacity(sessions.len());
         let mut titles_to_cache: Vec<(String, String)> = Vec::new();
-        for session in sessions {
-            let handle = session.handle.lock().await;
+        for (session_id, session) in sessions {
+            // 子 agent：优先读内存元数据（创建即有），catalog 仅作冷启动/恢复兜底。
+            // 旧逻辑只靠 record 且缺省 primary，会在 catalog 写入前把子会话漏进侧栏。
+            if session_hidden_from_primary_list(
+                &session.session_kind,
+                session.parent_session_id.as_deref(),
+                &session_id,
+                self.record_session_kind(&session_id).as_str(),
+                self.record_parent_session_id(&session_id).as_deref(),
+            ) {
+                continue;
+            }
+
+            // 成熟产品形态：列表读 catalog / 非阻塞快照，绝不因某会话 prompt 持锁而挂起整表。
+            let locked = session.handle.try_lock();
+            let Some(handle) = locked.as_ref() else {
+                summaries.push(self.summary_from_catalog_or_snapshot(&session_id, &session));
+                continue;
+            };
+
             let state = handle
                 .state()
                 .await
                 .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
-            let session_id = state
+            let live_id = state
                 .session_id
-                .ok_or_else(|| PiAgentError::Sdk("Pi session did not return an id".to_string()))?;
-            // 子 agent：靠 kind 或 parent 标记排除，不进主列表（UI 靠 subagent.* 事件）。
-            let kind = self.record_session_kind(&session_id);
-            if kind == "subagent" || self.record_parent_session_id(&session_id).is_some() {
-                continue;
-            }
+                .unwrap_or_else(|| session_id.clone());
             // 标题派生：pi SessionHeader 无标题字段，取首条用户消息摘要。
             // 派生结果缓存进 record（标题不会变），避免每次列表都全量解析消息。
-            let cached_title = self.record_title(&session_id);
-            let title = match cached_title {
-                Some(title) => Some(title),
+            let cached_title = self.record_title(&live_id);
+            let (title, live_messages) = match cached_title {
+                Some(title) => (Some(title), None),
                 None => {
-                    let derived = handle
-                        .messages()
-                        .await
-                        .ok()
-                        .and_then(|messages| derive_session_title(&messages));
+                    let messages = handle.messages().await.ok();
+                    let derived = messages
+                        .as_ref()
+                        .and_then(|messages| derive_session_title(messages));
                     if let Some(title) = &derived {
-                        titles_to_cache.push((session_id.clone(), title.clone()));
+                        titles_to_cache.push((live_id.clone(), title.clone()));
                     }
-                    derived
+                    (derived, messages)
                 }
             };
+            // 无标题时刚读过 messages：顺带刷新快照，供下次 busy 列表兜底。
+            if let Some(messages) = live_messages {
+                let agent_messages: Vec<AgentMessage> =
+                    messages.into_iter().map(AgentMessage::from_pi).collect();
+                if let Ok(mut snap) = session.message_snapshot.lock() {
+                    *snap = agent_messages;
+                }
+            }
+            let session_kind = if !session.session_kind.trim().is_empty() {
+                session.session_kind.clone()
+            } else {
+                self.record_session_kind(&session_id)
+            };
+            let parent_session_id = session
+                .parent_session_id
+                .clone()
+                .or_else(|| self.record_parent_session_id(&session_id));
+            let parent_tool_call_id = session
+                .parent_tool_call_id
+                .clone()
+                .or_else(|| self.record_parent_tool_call_id(&session_id));
             summaries.push(PiSessionSummary {
-                session_id: session_id.clone(),
+                session_id: live_id,
                 repo_path: session.repo_path.clone(),
                 provider: state.provider,
                 model: state.model_id,
                 message_count: state.message_count,
                 updated_at_ms: self.record_updated_at_ms(&session_id),
                 title,
-                session_kind: self.record_session_kind(&session_id),
-                parent_session_id: self.record_parent_session_id(&session_id),
-                parent_tool_call_id: self.record_parent_tool_call_id(&session_id),
+                session_kind,
+                parent_session_id,
+                parent_tool_call_id,
             });
         }
         if !titles_to_cache.is_empty() {
@@ -671,18 +901,187 @@ impl PiAgentService {
             }
             let _ = self.persist_catalog();
         }
-        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        // 最近活跃优先（updatedAtMs 降序，同刻按 id 保持确定性）。消费方
+        // （桌面/移动/Web）都是「取前 N 条」分页：按 id 字典序返回会让
+        // 字母序靠后的最新会话永远进不了第一页（表现为「重启后看不到
+        // 刚聊过的会话」）。
+        // provider/model 失效的会话：以 catalog 元数据降级入列（kind/parent
+        // 过滤照常），记录保留——provider 修复后 get_session 恢复完整能力。
+        for session_id in &degraded_session_ids {
+            let Some(record) = self.records.lock().ok().and_then(|records| records.get(session_id).cloned()) else {
+                continue;
+            };
+            if record.session_kind == "subagent" || record.parent_session_id.is_some() {
+                continue;
+            }
+            summaries.push(PiSessionSummary {
+                session_id: record.session_id.clone(),
+                repo_path: record.repo_path.clone(),
+                provider: record.provider.clone(),
+                model: record.model.clone(),
+                message_count: 0,
+                updated_at_ms: record.updated_at_ms,
+                title: record.title.clone().filter(|t| !t.trim().is_empty()),
+                session_kind: record.session_kind.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+                parent_tool_call_id: record.parent_tool_call_id.clone(),
+            });
+        }
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
         Ok(summaries)
+    }
+
+    /// prompt 持锁时的列表兜底：catalog 元数据 + message_snapshot，不 await handle。
+    fn summary_from_catalog_or_snapshot(
+        &self,
+        session_id: &str,
+        session: &ManagedSession,
+    ) -> PiSessionSummary {
+        let snap = session
+            .message_snapshot
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let snap_title = derive_agent_session_title(&snap);
+        let cached_title = self.record_title(session_id);
+        let title = cached_title.or(snap_title);
+        if let (Some(title), Ok(mut records)) = (title.clone(), self.records.lock()) {
+            if let Some(record) = records.get_mut(session_id) {
+                if record.title.as_ref().map(|t| t.trim().is_empty()).unwrap_or(true) {
+                    record.title = Some(title.clone());
+                }
+            }
+        }
+        let (provider, model, repo_path) = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records.get(session_id).map(|record| {
+                    (
+                        record.provider.clone(),
+                        record.model.clone(),
+                        record.repo_path.clone(),
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                (
+                    String::new(),
+                    String::new(),
+                    session.repo_path.clone(),
+                )
+            });
+        PiSessionSummary {
+            session_id: session_id.to_string(),
+            repo_path,
+            provider,
+            model,
+            message_count: snap.len(),
+            updated_at_ms: self.record_updated_at_ms(session_id),
+            title,
+            session_kind: self.record_session_kind(session_id),
+            parent_session_id: self.record_parent_session_id(session_id),
+            parent_tool_call_id: self.record_parent_tool_call_id(session_id),
+        }
     }
 
     pub async fn messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, PiAgentError> {
         let session = self.get_session(session_id).await?;
-        let handle = session.handle.lock().await;
-        let messages = handle
-            .messages()
-            .await
-            .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
-        Ok(messages.into_iter().map(AgentMessage::from_pi).collect())
+        // prompt 持锁期间不能阻塞读；否则桌面展开会话列表会一直转圈到整轮回复结束。
+        let locked = {
+            let handle_guard = session.handle.try_lock();
+            if let Some(handle) = handle_guard.as_ref() {
+                Some(
+                    handle
+                        .messages()
+                        .await
+                        .map_err(|error| PiAgentError::Sdk(error.to_string()))?
+                        .into_iter()
+                        .map(AgentMessage::from_pi)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            }
+        };
+        if let Some(messages) = locked {
+            if let Ok(mut snap) = session.message_snapshot.lock() {
+                *snap = messages.clone();
+            }
+            Ok(messages)
+        } else {
+            let snap = session
+                .message_snapshot
+                .lock()
+                .map_err(|error| PiAgentError::State(error.to_string()))?;
+            Ok(snap.clone())
+        }
+    }
+
+    /// run 进行中排队用户补充指令（steer / 中轮插话）。
+    ///
+    /// 只写 `pending_steers` 队列，不持 handle 锁——本方法在 prompt 进行
+    /// 中调用正是主场景。实际投递走 pi 的 **follow_up** fetcher（对齐 Codex
+    /// `pending_input`）：等当前回合（含工具）跑完后再注入下一条，同一 run
+    /// 内一次只开一条 follow-up；**不会**像 pi `steering` 那样用「Skipped due to queued user
+    /// message」跳过未执行工具——否则连发「还有上海/南京」时前面的查询会被
+    /// 全部跳过，模型容易只答最后一句。
+    pub fn steer(&self, session_id: &str, message: &str) -> Result<SteerOutcome, PiAgentError> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(PiAgentError::Sdk("steer message is empty".to_string()));
+        }
+        let session = self
+            .sessions
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| PiAgentError::SessionNotFound(session_id.to_string()))?;
+
+        let active_run_id = self
+            .active_runs
+            .lock()
+            .ok()
+            .and_then(|runs| {
+                runs.iter()
+                    .find(|(_, run)| run.session_id == session_id)
+                    .map(|(run_id, _)| run_id.clone())
+            });
+        let Some(run_id) = active_run_id else {
+            return Ok(SteerOutcome::Idle);
+        };
+
+        let position = {
+            let Ok(mut queue) = session.pending_steers.lock() else {
+                return Err(PiAgentError::State("steer queue poisoned".to_string()));
+            };
+            push_pending_steer(&mut queue, message)
+        };
+
+        let sequence = next_event_sequence(&self.event_buffers, session_id, &run_id);
+        let envelope = AgentEventEnvelope {
+            schema_version: super::events::AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("steer-{run_id}-{}", uuid::Uuid::new_v4()),
+            sequence,
+            repo_path: String::new(),
+            session_id: session_id.to_string(),
+            run_id: Some(run_id.clone()),
+            timestamp_ms: now_ms(),
+            event: super::AgentEvent::SteerQueued {
+                message: message.to_string(),
+                position,
+            },
+        };
+        publish_event(&self.subscribers, &self.event_buffers, &envelope);
+        Ok(SteerOutcome::Queued { run_id })
     }
 
     pub async fn prompt(
@@ -711,10 +1110,13 @@ impl PiAgentService {
             translator: Arc::clone(&translator),
             sink: Arc::clone(&sink),
             subscribers: Arc::clone(&self.subscribers),
+            event_buffers: Arc::clone(&self.event_buffers),
         });
         let event_translator = Arc::clone(&translator);
         let event_sink = Arc::clone(&sink);
         let subscribers = Arc::clone(&self.subscribers);
+        let event_buffers = Arc::clone(&self.event_buffers);
+        let message_snapshot = Arc::clone(&session.message_snapshot);
         // 重试期间抑制 AgentEnd 映射出的 run.completed/failed，避免前端提前 finalize；
         // 循环结束后再发最终终态事件。
         let accept_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -733,7 +1135,17 @@ impl PiAgentService {
                         _ => {}
                     }
                 }
-                publish_event(&subscribers, &event);
+                // 同步快照：并发 messages() 在 handle 被占用时可读到用户消息与进行中的 assistant。
+                if let AgentEvent::MessageCompleted { message } = &event.event {
+                    if let Ok(mut snap) = message_snapshot.lock() {
+                        if let Some(pos) = snap.iter().position(|item| item.id == message.id) {
+                            snap[pos] = message.clone();
+                        } else {
+                            snap.push(message.clone());
+                        }
+                    }
+                }
+                publish_event(&subscribers, &event_buffers, &event);
                 event_sink(event);
             }
         });
@@ -819,6 +1231,12 @@ impl PiAgentService {
 
         let result: Result<pi::sdk::AssistantMessage, pi::error::Error> = {
             let mut handle = session.handle.lock().await;
+            // 持锁前先把当前历史写入快照，避免并发 messages() 读到空列表。
+            if let Ok(current) = handle.messages().await {
+                if let Ok(mut snap) = session.message_snapshot.lock() {
+                    *snap = current.into_iter().map(AgentMessage::from_pi).collect();
+                }
+            }
             // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），
             // 避开 asupersync TLS 的 WSAENOTCONN 10057。必须在 sanitizer 之前安装，
             // 以便清洗包装套在 loopback provider 上。
@@ -852,7 +1270,10 @@ impl PiAgentService {
             // 会留下 TextContent{text:""} 并落地进历史，下一轮原样发给 provider。
             // kimi-coding 等严格端点据此返回 HTTP 400 “text content is empty”。
             // pi 仓库只读无法改其 convert，这里用 pi 公开的 messages/replace_messages 在发送前剔除。
-            loop {
+            // steer 投递由 pi agent loop 的 follow_up fetcher 负责（当前步骤/
+            // 工具批完成后注入同一 run；见 register_steer_fetcher），
+            // 这里不再手动续跑，避免双投。
+            let attempt_outcome = loop {
                 // 每次尝试前都清洗：同一次 prompt 的 tool loop 里，兼容网关可能在每个
                 // stream chunk 重复下发完整 tool_calls[].id，pi openai 适配器用 push_str
                 // 累加后 id 可达数百/上千字符；下一轮回放会 HTTP 400（call_id ≤ 64）。
@@ -864,45 +1285,63 @@ impl PiAgentService {
                     let cb = Arc::clone(&on_event);
                     move |event| cb(event)
                 };
-                let attempt_result = if image_degraded_retry {
-                    // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
+                // 与 abort 竞速整次 prompt（含 provider.stream().await 建连）：
+                // pi 只在 stream.next 循环里 select abort，connect/send 阶段听不到停止。
+                // 这里 drop 掉 prompt future，打断卡死的 HTTP 建连。
+                let do_image_degraded = image_degraded_retry;
+                if do_image_degraded {
                     image_degraded_retry = false;
-                    handle
-                        .prompt_with_abort(
-                            degraded_image_prompt.clone(),
-                            abort_signal_for_prompt.clone(),
-                            on_event_cb,
-                        )
-                        .await
-                } else if retry_count == 0 {
-                    match &content_blocks {
-                        None => {
+                }
+                let attempt_result = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => {
+                        Err(pi::error::Error::session("aborted".to_string()))
+                    }
+                    result = async {
+                        if do_image_degraded {
+                            // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
                             handle
                                 .prompt_with_abort(
-                                    effective_prompt.clone(),
+                                    degraded_image_prompt.clone(),
+                                    abort_signal_for_prompt.clone(),
+                                    on_event_cb,
+                                )
+                                .await
+                        } else if retry_count == 0 {
+                            match &content_blocks {
+                                None => {
+                                    handle
+                                        .prompt_with_abort(
+                                            effective_prompt.clone(),
+                                            abort_signal_for_prompt.clone(),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                                Some(blocks) => {
+                                    handle
+                                        .session_mut()
+                                        .run_with_content_with_abort(
+                                            blocks.clone(),
+                                            Some(abort_signal_for_prompt.clone()),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                            }
+                        } else {
+                            handle
+                                .continue_turn_with_abort(
                                     abort_signal_for_prompt.clone(),
                                     on_event_cb,
                                 )
                                 .await
                         }
-                        Some(blocks) => {
-                            handle
-                                .session_mut()
-                                .run_with_content_with_abort(
-                                    blocks.clone(),
-                                    Some(abort_signal_for_prompt.clone()),
-                                    on_event_cb,
-                                )
-                                .await
-                        }
-                    }
-                } else {
-                    handle
-                        .continue_turn_with_abort(abort_signal_for_prompt.clone(), on_event_cb)
-                        .await
+                    } => result,
                 };
 
                 if abort_signal.is_aborted() {
+                    let _ = handle.session_mut().revert_incomplete_response().await;
                     final_error = Some(
                         attempt_result
                             .as_ref()
@@ -932,8 +1371,10 @@ impl PiAgentService {
                             image_degraded_retry = true;
                         }
                         final_error = Some(err_msg.clone());
+                        // 限额/计费类不重试（充值前不会自愈），provider 文案透出。
                         retry_enabled
                             && retry_count < max_retries
+                            && !is_quota_error(&err_msg)
                             && (pi::error::is_retryable_error(
                                 &err_msg,
                                 Some(message.usage.input),
@@ -962,8 +1403,10 @@ impl PiAgentService {
                             image_degraded_retry = true;
                         }
                         final_error = Some(err_str.clone());
+                        // 限额/计费类不重试（充值前不会自愈），provider 文案透出。
                         retry_enabled
                             && retry_count < max_retries
+                            && !is_quota_error(&err_str)
                             && (err.is_transient()
                                 || pi::error::is_retryable_error(&err_str, None, None)
                                 || is_tool_call_id_overflow_error(&err_str)
@@ -1001,17 +1444,12 @@ impl PiAgentService {
                     error_message,
                 });
 
-                // block_on 路径下用短睡切片检查 abort，避免一次长 sleep 无法响应停止。
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(u64::from(delay_ms));
-                let mut cancelled = false;
-                while std::time::Instant::now() < deadline {
-                    if abort_signal.is_aborted() {
-                        cancelled = true;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                // 重试等待与 abort 竞速，避免长 sleep / 阻塞线程导致停止迟钝。
+                let cancelled = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => true,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))) => false,
+                };
                 if cancelled {
                     emit_pi(pi::sdk::AgentEvent::AutoRetryEnd {
                         success: false,
@@ -1022,7 +1460,11 @@ impl PiAgentService {
                 }
 
                 let _ = handle.session_mut().revert_incomplete_response().await;
-            }
+            };
+
+            // steer 续跑已由 pi follow_up fetcher 接管（步骤完成后注入同一 run），
+            // 此处不再手动 drain。
+            attempt_outcome
         };
 
         if retry_count > 0 {
@@ -1062,7 +1504,7 @@ impl PiAgentService {
             _ => None,
         };
         if let Some(event) = terminal {
-            publish_event(&self.subscribers, &event);
+            publish_event(&self.subscribers, &self.event_buffers, &event);
             (sink)(event);
         }
         self.remove_run(run_id);
@@ -1073,8 +1515,35 @@ impl PiAgentService {
             session_id: session_id.into(),
         }) {
             event.event = AgentEvent::SessionStatusChanged { status, error };
-            publish_event(&self.subscribers, &event);
+            publish_event(&self.subscribers, &self.event_buffers, &event);
             (sink)(event);
+        }
+
+        // 终态已入环，短暂保留供 SSE 重连补洞；延迟清理避免无限堆积。
+        self.schedule_clear_event_buffer(session_id, run_id);
+
+        // run 收尾刷新会话活跃时间：列表「最近活跃优先」排序的数据源，
+        // 否则 updated_at 停在创建时刻，重聊旧会话不会浮到列表顶部。
+        let touched = now_ms();
+        let activity_dirty = self
+            .records
+            .lock()
+            .map(|mut records| {
+                records
+                    .get_mut(session_id)
+                    .map(|record| {
+                        if record.updated_at_ms < touched {
+                            record.updated_at_ms = touched;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if activity_dirty {
+            let _ = self.persist_catalog();
         }
 
         result
@@ -1124,6 +1593,32 @@ impl PiAgentService {
                 .reject_run(&child_session_id, &child_run_id, "aborted");
         }
         true
+    }
+
+    /// 按 session 中止当前活跃 run（无 runId 时的前端兜底）。
+    #[must_use]
+    pub fn abort_session(&self, session_id: &str) -> bool {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return false;
+        }
+        let Ok(runs) = self.active_runs.lock() else {
+            return false;
+        };
+        let targets: Vec<String> = runs
+            .iter()
+            .filter(|(_, run)| run.session_id == session_id)
+            .map(|(run_id, _)| run_id.clone())
+            .collect();
+        drop(runs);
+        if targets.is_empty() {
+            return false;
+        }
+        let mut any = false;
+        for run_id in targets {
+            any |= self.abort(&run_id);
+        }
+        any
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<bool, PiAgentError> {
@@ -1391,6 +1886,41 @@ impl PiAgentService {
         append_system_prompt: Option<String>,
     ) -> Result<PiSessionSummary, PiAgentError> {
         self.ensure_not_running(session_id)?;
+        // 选项未变时直接返回：避免「空 patch / 重复调用」仍丢弃 handle 并重载整段 jsonl。
+        // 手机端经云端中继时，这种无意义重建会被放大成数秒～十余秒的发送阻塞。
+        let unchanged = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records.get(session_id).map(|record| {
+                    record.enabled_tools == enabled_tools
+                        && record.append_system_prompt == append_system_prompt
+                })
+            })
+            .unwrap_or(false);
+        if unchanged {
+            let session = self.get_session(session_id).await?;
+            let state = {
+                let handle = session.handle.lock().await;
+                handle
+                    .state()
+                    .await
+                    .map_err(|error| PiAgentError::Sdk(error.to_string()))?
+            };
+            return Ok(PiSessionSummary {
+                session_id: state.session_id.unwrap_or_else(|| session_id.to_string()),
+                repo_path: session.repo_path.clone(),
+                provider: state.provider,
+                model: state.model_id,
+                message_count: state.message_count,
+                updated_at_ms: self.record_updated_at_ms(session_id),
+                title: self.record_title(session_id),
+                session_kind: self.record_session_kind(session_id),
+                parent_session_id: self.record_parent_session_id(session_id),
+                parent_tool_call_id: self.record_parent_tool_call_id(session_id),
+            });
+        }
         // 1. 更新持久化 record（锁内短改即释）。
         if let Ok(mut records) = self.records.lock() {
             if let Some(record) = records.get_mut(session_id) {
@@ -1551,8 +2081,20 @@ impl PiAgentService {
                 parent_tool_call_id: record.parent_tool_call_id.clone(),
             })
             .collect();
-        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        // 与 list_sessions 一致：最近活跃优先，分页消费方才能取到最新会话。
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at_ms
+                .cmp(&left.updated_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
         summaries
+    }
+
+    /// 资产图谱语义抽取用的子代理宿主（主会话级 host；服务不可用时 None）。
+    #[must_use]
+    pub fn asset_graph_subagent_host(&self) -> Option<Arc<dyn SubagentHost>> {
+        self.subagent_host_for("primary")
     }
 
     /// 主会话注入 SubagentHost；子 agent（session_kind=subagent）不注入，禁止再委派。
@@ -1647,12 +2189,19 @@ impl PiAgentService {
         });
 
         let tool_count = Arc::new(AtomicU32::new(0));
+        let last_progress = Arc::new(Mutex::new(Instant::now()));
         let project_sink: AgentEventSink = {
             let parent_run = parent_run.clone();
             let parent_tool_call_id = request.parent_tool_call_id.clone();
             let child_session_id = child_session_id.clone();
             let tool_count = Arc::clone(&tool_count);
+            let last_progress = Arc::clone(&last_progress);
             Arc::new(move |envelope: AgentEventEnvelope| {
+                if marks_subagent_progress(&envelope.event) {
+                    if let Ok(mut guard) = last_progress.lock() {
+                        *guard = Instant::now();
+                    }
+                }
                 if let AgentEvent::ToolStarted { tool_name, .. } = &envelope.event {
                     let count = tool_count.fetch_add(1, Ordering::Relaxed) + 1;
                     parent_run.publish(AgentEvent::SubagentProgress {
@@ -1662,7 +2211,6 @@ impl PiAgentService {
                         elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
                     });
                 }
-                // 避免把子终态 run.*/session.status 原样当成父终态；仍以 childEvent 投影。
                 parent_run.publish(AgentEvent::SubagentChildEvent {
                     parent_tool_call_id: parent_tool_call_id.clone(),
                     child_session_id: child_session_id.clone(),
@@ -1671,7 +2219,6 @@ impl PiAgentService {
             })
         };
 
-        // Hermes child_timeout_seconds：墙钟硬超时，防止子 HTTP/工具挂死拖垮父 turn。
         let prompt_future = self.prompt(
             &child_session_id,
             &child_run_id,
@@ -1679,34 +2226,56 @@ impl PiAgentService {
             Vec::new(),
             project_sink,
         );
-        let result = match super::subagents::child_timeout_secs() {
-            Some(limit) => match tokio::time::timeout(limit, prompt_future).await {
-                Ok(inner) => inner,
-                Err(_) => {
-                    let _ = self.abort(&child_run_id);
-                    let secs = limit.as_secs();
-                    let count = tool_count.load(Ordering::Relaxed);
-                    let message = if count == 0 {
-                        format!(
-                            "Subagent timed out after {secs}s without making progress \
-                             (no tool calls). Check provider connectivity or raise \
-                             GITEAM_SUBAGENT_TIMEOUT_SECS."
-                        )
-                    } else {
-                        format!(
-                            "Subagent timed out after {secs}s after {count} tool call(s). \
-                             Raise GITEAM_SUBAGENT_TIMEOUT_SECS or narrow the task."
-                        )
-                    };
-                    parent_run.publish(AgentEvent::SubagentFailed {
-                        parent_tool_call_id: request.parent_tool_call_id.clone(),
-                        child_session_id: child_session_id.clone(),
-                        error: message.clone(),
-                    });
-                    return Err(PiAgentError::Sdk(message));
+        let wall = super::subagents::child_timeout_secs();
+        let stall = super::subagents::child_stall_secs();
+        let result = {
+            tokio::pin!(prompt_future);
+            loop {
+                tokio::select! {
+                    inner = &mut prompt_future => break inner,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                        let idle = last_progress
+                            .lock()
+                            .map(|guard| guard.elapsed())
+                            .unwrap_or_default();
+                        let stalled = stall.is_some_and(|limit| idle >= limit);
+                        let wall_hit = wall.is_some_and(|limit| started.elapsed() >= limit);
+                        if !stalled && !wall_hit {
+                            continue;
+                        }
+                        let _ = self.abort(&child_run_id);
+                        let count = tool_count.load(Ordering::Relaxed);
+                        let message = if stalled {
+                            let secs = stall.map(|d| d.as_secs()).unwrap_or(0);
+                            format!(
+                                "Subagent stalled for {secs}s with no tool/stream progress \
+                                 after {count} tool call(s). Context may be too large; \
+                                 narrow the task or raise GITEAM_SUBAGENT_STALL_SECS."
+                            )
+                        } else {
+                            let secs = wall.map(|d| d.as_secs()).unwrap_or(0);
+                            if count == 0 {
+                                format!(
+                                    "Subagent timed out after {secs}s without making progress \
+                                     (no tool calls). Check provider connectivity or raise \
+                                     GITEAM_SUBAGENT_TIMEOUT_SECS."
+                                )
+                            } else {
+                                format!(
+                                    "Subagent timed out after {secs}s after {count} tool call(s). \
+                                     Raise GITEAM_SUBAGENT_TIMEOUT_SECS or narrow the task."
+                                )
+                            }
+                        };
+                        parent_run.publish(AgentEvent::SubagentFailed {
+                            parent_tool_call_id: request.parent_tool_call_id.clone(),
+                            child_session_id: child_session_id.clone(),
+                            error: message.clone(),
+                        });
+                        return Err(PiAgentError::Sdk(message));
+                    }
                 }
-            },
-            None => prompt_future.await,
+            }
         };
 
         let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -1749,6 +2318,208 @@ impl PiAgentService {
             }
         }
     }
+
+    /// 旁路语义抽取：ephemeral 无工具 session + 单次 prompt。
+    /// 不进 catalog、不投影 subagent.*；slug 稳定靠 prompt 注入已有实体。
+    fn resolve_extraction_parent_meta(
+        &self,
+        parent_session_id: &str,
+        fallback: Option<&super::subagents::ExtractionCompletionFallback>,
+    ) -> Result<
+        (
+            PathBuf,
+            PathBuf,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+        PiAgentError,
+    > {
+        let fb = fallback.filter(|f| !f.repo_path.trim().is_empty());
+        let fb_has_provider = fb.is_some_and(|f| {
+            f.provider.as_ref().is_some_and(|s| !s.trim().is_empty())
+                && f.model.as_ref().is_some_and(|s| !s.trim().is_empty())
+        });
+        if fb_has_provider {
+            let fb = fb.expect("checked");
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            return Ok((
+                repo_path,
+                session_dir,
+                fb.provider.clone(),
+                fb.model.clone(),
+                fb.thinking.clone(),
+            ));
+        }
+        if let Ok(records) = self.records.lock() {
+            if let Some(record) = records.get(parent_session_id) {
+                return Ok((
+                    record.repo_path.clone(),
+                    record.session_dir.clone(),
+                    (!record.provider.is_empty()).then_some(record.provider.clone()),
+                    (!record.model.is_empty()).then_some(record.model.clone()),
+                    record.thinking.clone(),
+                ));
+            }
+        }
+        if let Some(fb) = fb {
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            let provider = fb.provider.clone().filter(|s| !s.trim().is_empty());
+            let model = fb.model.clone().filter(|s| !s.trim().is_empty());
+            return Ok((
+                repo_path,
+                session_dir,
+                provider,
+                model,
+                fb.thinking.clone(),
+            ));
+        }
+        Err(PiAgentError::SessionNotFound(parent_session_id.to_string()))
+    }
+
+    /// Stage-1 入队时快照父会话 provider/model/repo（父 session 销毁后仍可抽）。
+    #[must_use]
+    pub fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let record = self.records.lock().ok()?.get(parent_session_id).cloned()?;
+        Some(super::subagents::ExtractionCompletionFallback {
+            repo_path: record.repo_path.to_string_lossy().into_owned(),
+            provider: (!record.provider.is_empty()).then_some(record.provider),
+            model: (!record.model.is_empty()).then_some(record.model),
+            thinking: record.thinking,
+        })
+    }
+
+    pub async fn run_extraction_completion(
+        &self,
+        request: super::subagents::ExtractionCompletionRequest,
+    ) -> Result<super::subagents::ExtractionCompletionResult, PiAgentError> {
+        let started = Instant::now();
+        ensure_agent_http_timeout();
+
+        let extract_lock = self
+            .extract_locks
+            .lock()
+            .ok()
+            .map(|mut map| {
+                Arc::clone(
+                    map.entry(request.parent_session_id.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+                )
+            })
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        let _queue_guard = extract_lock.lock().await;
+
+        let parent_meta = self.resolve_extraction_parent_meta(
+            &request.parent_session_id,
+            request.fallback.as_ref(),
+        )?;
+        let (repo_path, session_dir, provider, model, thinking) = parent_meta;
+
+        let mut config = PiSessionConfig::persistent(repo_path.clone(), session_dir);
+        config.no_session = true;
+        config.session_path = None;
+        config.provider = provider;
+        config.model = model;
+        config.thinking = thinking;
+        config.enabled_tools = Some(Vec::new());
+        config.max_tool_iterations = Some(1);
+        config.system_prompt = Some(super::subagents::build_extract_system_prompt(Some(
+            repo_path.to_string_lossy().as_ref(),
+        )));
+        config.append_system_prompt = None;
+        config.parent_session_id = Some(request.parent_session_id.clone());
+        config.parent_tool_call_id = Some(request.extraction_id.clone());
+        config.session_kind = "subagent".to_string();
+
+        let child = self.create_session(config).await?;
+        let child_session_id = child.session_id.clone();
+        crate::asset_graph::extraction::register_extract_session(&child_session_id);
+        eprintln!(
+            "[pi-agent] extract completion: parent {} → ephemeral {child_session_id}",
+            request.parent_session_id
+        );
+
+        let child_run_id = format!(
+            "extract-{}-{}",
+            sanitize_run_id_fragment(&request.extraction_id),
+            now_ms()
+        );
+        let last_progress = Arc::new(Mutex::new(Instant::now()));
+        let sink: AgentEventSink = {
+            let last_progress = Arc::clone(&last_progress);
+            Arc::new(move |envelope: AgentEventEnvelope| {
+                if marks_subagent_progress(&envelope.event) {
+                    if let Ok(mut guard) = last_progress.lock() {
+                        *guard = Instant::now();
+                    }
+                }
+            })
+        };
+
+        let prompt_future = self.prompt(
+            &child_session_id,
+            &child_run_id,
+            request.prompt.clone(),
+            Vec::new(),
+            sink,
+        );
+        let wall = super::subagents::extract_timeout_secs();
+        let result = {
+            tokio::pin!(prompt_future);
+            loop {
+                tokio::select! {
+                    inner = &mut prompt_future => break inner,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                        let idle = last_progress
+                            .lock()
+                            .map(|guard| guard.elapsed())
+                            .unwrap_or_default();
+                        let stalled = idle >= Duration::from_secs(30);
+                        let wall_hit = wall.is_some_and(|limit| started.elapsed() >= limit);
+                        if !stalled && !wall_hit {
+                            continue;
+                        }
+                        let _ = self.abort(&child_run_id);
+                        let message = if stalled {
+                            "Extraction completion stalled for 30s with no stream progress."
+                                .to_string()
+                        } else {
+                            let secs = wall.map(|d| d.as_secs()).unwrap_or(0);
+                            format!(
+                                "Extraction completion timed out after {secs}s. \
+                                 Raise GITEAM_EXTRACT_TIMEOUT_SECS if needed."
+                            )
+                        };
+                        let _ = self.delete_session(&child_session_id);
+                        return Err(PiAgentError::Sdk(message));
+                    }
+                }
+            }
+        };
+
+        let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let outcome = match result {
+            Ok(message) => Ok(super::subagents::ExtractionCompletionResult {
+                summary: assistant_text_summary(&message),
+                elapsed_ms,
+            }),
+            Err(error) => Err(error),
+        };
+        let _ = self.delete_session(&child_session_id);
+        outcome
+    }
+
 
     async fn get_session(&self, session_id: &str) -> Result<Arc<ManagedSession>, PiAgentError> {
         if let Some(session) = self
@@ -1803,7 +2574,7 @@ impl PiAgentService {
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(record.repo_path.clone());
-        let handle = create_agent_session(sdk_options_with_factory(
+        let mut handle = create_agent_session(sdk_options_with_factory(
             config,
             &hub,
             self.subagent_host_for(&record.session_kind),
@@ -1822,12 +2593,19 @@ impl PiAgentService {
                 "persisted session id mismatch: expected {session_id}, got {actual_id}"
             )));
         }
+        let pending_steers = Arc::new(Mutex::new(Vec::new()));
+        register_steer_fetcher(&mut handle, &pending_steers);
         let managed = Arc::new(ManagedSession {
             repo_path: record.repo_path,
             handle: AsyncMutex::new(handle),
             hub,
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
+            message_snapshot: Arc::new(Mutex::new(Vec::new())),
+            pending_steers,
+            session_kind: record.session_kind.clone(),
+            parent_session_id: record.parent_session_id.clone(),
+            parent_tool_call_id: record.parent_tool_call_id.clone(),
         });
         let mut sessions = self
             .sessions
@@ -1931,13 +2709,110 @@ impl PiAgentService {
             runs.remove(run_id);
         }
     }
+
+    /// 给 SSE 重连留窗口后再清环形缓冲（runId 为 UUID，不会与新 run 冲突）。
+    fn schedule_clear_event_buffer(&self, session_id: &str, run_id: &str) {
+        let buffers = Arc::clone(&self.event_buffers);
+        let session_id = session_id.to_string();
+        let run_id = run_id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(EVENT_BUFFER_RETAIN_SECS));
+            super::events::clear_event_buffer(&buffers, &session_id, &run_id);
+        });
+    }
+}
+
+/// SSE 终态后保留 ring 的秒数，覆盖 soft-reconnect / 弱网补洞窗口。
+const EVENT_BUFFER_RETAIN_SECS: u64 = 120;
+
+fn next_event_sequence(
+    buffers: &super::events::EventBufferBus,
+    session_id: &str,
+    run_id: &str,
+) -> u64 {
+    let key = (session_id.to_string(), run_id.to_string());
+    buffers
+        .lock()
+        .ok()
+        .and_then(|buffers| buffers.get(&key).and_then(|buf| buf.last_sequence()))
+        .map(|seq| seq.saturating_add(1))
+        .unwrap_or(1)
 }
 
 fn publish_event(
     subscribers: &Arc<Mutex<HashMap<EventSubscriberKey, Vec<Sender<AgentEventEnvelope>>>>>,
+    buffers: &super::events::EventBufferBus,
     event: &AgentEventEnvelope,
 ) {
-    super::events::publish_event(subscribers, event);
+    super::events::publish_event(subscribers, buffers, event);
+}
+
+/// 入队一条 steer（FIFO）。上限对齐 pi `MAX_STEERING_QUEUE_SIZE`（16）：
+/// 打满丢最旧，保序不无界。返回该消息的排队位次（从 1 计）。
+fn push_pending_steer(queue: &mut Vec<String>, message: &str) -> u32 {
+    const MAX_PENDING_STEERS: usize = 16;
+    if queue.len() >= MAX_PENDING_STEERS {
+        queue.remove(0);
+    }
+    queue.push(message.to_string());
+    u32::try_from(queue.len()).unwrap_or(u32::MAX)
+}
+
+/// 一次性取出队首一条 steer 并转为 pi 消息。
+/// 对齐 Codex `maybe_send_next_queued_input`：当前回合结束后只开下一条，
+/// 而不是把队列一次倒空。锁中毒时返回空——本轮不注入，留给下一个边界。
+fn drain_pending_steers(queue: &Arc<Mutex<Vec<String>>>) -> Vec<pi::sdk::Message> {
+    let text = queue
+        .lock()
+        .ok()
+        .and_then(|mut queue| {
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        });
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    let timestamp = i64::try_from(now_ms()).unwrap_or(0);
+    vec![
+        pi::sdk::Message::User(pi::sdk::UserMessage {
+            content: pi::sdk::UserContent::Text(text),
+            timestamp,
+        }),
+        pi::sdk::Message::Custom(pi::sdk::CustomMessage {
+            content: STEER_CONTINUE_HINT.to_string(),
+            custom_type: "giteam.steer_continue".to_string(),
+            display: false,
+            details: None,
+            timestamp,
+        }),
+    ]
+}
+
+/// 插话续跑提示：不进 UI（Custom display=false），只进模型上下文。
+const STEER_CONTINUE_HINT: &str = "\
+The user sent a follow-up after the previous reply finished. Answer this follow-up now. \
+If an earlier user question in this run still lacks a complete answer, finish that first.";
+
+/// 把 steer 队列注册为 pi 的 **follow_up** fetcher。
+///
+/// 注意：官方 TS SDK（pi-mono）的 `session.steer()` 会等当前回合工具全部跑完再注入；
+/// 当前依赖的 pi_agent_rust 仍会在 steering 路径跳过未执行工具。桌面插话因此改为
+/// 「本地队列 + 本轮 prompt 结束后再开下一次 prompt」，不再依赖本 fetcher。
+/// 手机等仍调用 `steer()` 的端可继续用 follow_up 注入同一 run。
+fn register_steer_fetcher(handle: &mut AgentSessionHandle, queue: &Arc<Mutex<Vec<String>>>) {
+    let queue = Arc::clone(queue);
+    let fetcher: pi::agent::MessageFetcher = Arc::new(move || {
+        let queue = Arc::clone(&queue);
+        Box::pin(async move { drain_pending_steers(&queue) })
+    });
+    handle
+        .session_mut()
+        .agent
+        // steering=None, follow_up=Some —— 见上方注释。
+        .register_message_fetchers(None, Some(fetcher));
 }
 
 fn retry_delay_ms(config: &pi::config::Config, attempt: u32) -> u32 {
@@ -2015,12 +2890,19 @@ fn sdk_options_with_factory(
 ) -> pi::sdk::SessionOptions {
     let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
     let browser_controller = config.browser_controller.clone();
+    let spill_dir = (!config.no_session).then(|| config.session_dir.join("tool-outputs"));
+    let tool_budget = if config.session_kind == "subagent" {
+        super::tools::ToolBudgetConfig::for_subagent(spill_dir)
+    } else {
+        super::tools::ToolBudgetConfig::for_primary(spill_dir)
+    };
     let factory = GiteamToolFactory::new(
         Arc::clone(hub),
         config.enabled_tools.as_deref(),
         background_log_dir,
         browser_controller,
         subagent_host,
+        tool_budget,
     );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));
@@ -2046,6 +2928,45 @@ impl SubagentHost for ServiceSubagentHost {
             .await
             .map_err(|error| error.to_string())
     }
+
+    async fn run_extraction_completion(
+        &self,
+        request: super::subagents::ExtractionCompletionRequest,
+    ) -> Result<super::subagents::ExtractionCompletionResult, String> {
+        let service = self
+            .weak
+            .upgrade()
+            .ok_or_else(|| "agent service dropped".to_string())?;
+        service
+            .run_extraction_completion(request)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    fn memory_extraction_publisher(
+        &self,
+        parent_session_id: &str,
+        extraction_id: &str,
+    ) -> Option<super::subagents::MemoryExtractionPublisher> {
+        let service = self.weak.upgrade()?;
+        let session = {
+            let sessions = service.sessions.lock().ok()?;
+            sessions.get(parent_session_id).cloned()
+        }?;
+        let context = session.hub.run_context()?;
+        Some(super::subagents::MemoryExtractionPublisher::new(
+            context,
+            extraction_id,
+        ))
+    }
+
+    fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let service = self.weak.upgrade()?;
+        service.extraction_parent_snapshot(parent_session_id)
+    }
 }
 
 fn assistant_text_summary(message: &AgentMessage) -> String {
@@ -2065,6 +2986,28 @@ fn assistant_text_summary(message: &AgentMessage) -> String {
     } else {
         text
     }
+}
+
+/// 子 agent stall 监视：工具执行或流式输出都算有进展；纯静默（常见于大上下文 LLM 挂起）不算。
+fn marks_subagent_progress(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::ToolStarted { .. }
+            | AgentEvent::ToolCompleted { .. }
+            | AgentEvent::ToolProgress { .. }
+            | AgentEvent::ToolCallStarted { .. }
+            | AgentEvent::ToolCallDelta { .. }
+            | AgentEvent::MessageStarted { .. }
+            | AgentEvent::MessageDelta { .. }
+            | AgentEvent::MessageCompleted { .. }
+            | AgentEvent::ReasoningDelta { .. }
+            | AgentEvent::TurnStarted { .. }
+            | AgentEvent::TurnCompleted { .. }
+            | AgentEvent::Compaction { .. }
+            | AgentEvent::Retry { .. }
+            | AgentEvent::InteractionRequested { .. }
+            | AgentEvent::InteractionResolved { .. }
+    )
 }
 
 /// Pi 云端默认整请求超时 60s，对子 agent 调研不够。未显式配置环境变量时抬到 30 分钟。
@@ -2193,6 +3136,49 @@ fn strip_empty_text_blocks(agent: &mut pi::sdk::Agent) {
     let mut messages: Vec<pi::sdk::Message> = agent.messages().to_vec();
     strip_empty_text_blocks_in_place(&mut messages);
     agent.replace_messages(messages);
+}
+
+/// 限额/计费类错误判定（对照 Codex `usage_limit_reached` 不重试的取向）。
+///
+/// pi 的 `is_retryable_error` 把 `429`/`rate limit` 一律判可重试；但限额类
+/// （余额不足、配额用尽、免费额度耗尽）重试 10 次毫无意义——充值前不会
+/// 自愈。此处在 giteam 重试判定前短路：命中付费语义即终止并把 provider
+/// 原文案透出给用户。模式只收明确付费语义（balance/欠费/usage limit/
+/// exceeded your quota/额度不足等），纯 "rate limit"（瞬时限流）不在此列
+/// ——那类应当继续退避重试。
+fn is_quota_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    // "quota exceeded" 文案有歧义：无 retry 提示的是硬限额（OpenRouter 等）；
+    // 带 retry/later 字样的是瞬时限流（阿里云 RPM 类），应继续走重试。
+    if lower.contains("quota exceeded") || lower.contains("quota_exceeded") {
+        return !lower.contains("retry") && !lower.contains("later");
+    }
+    // 付费语义锚点（中英文常见措辞，含连写形态如阿里云 AccountNoEnoughBalance）。
+    const QUOTA_PATTERNS: &[&str] = &[
+        "insufficient balance",
+        "balance is not enough",
+        "no enough balance",
+        "accountnoenoughbalance",
+        "余额不足",
+        "账户余额",
+        "欠费",
+        "usage limit",
+        "usage_limit",
+        "exceeded your current quota",
+        "exceeded your quota",
+        "quota has been exhausted",
+        "免费额度",
+        "额度不足",
+        "额度已用",
+        "额度耗尽",
+        "arrearage",
+        "payment required",
+        "402 payment",
+        "please upgrade your plan",
+        "billing hard limit",
+        "spend limit reached",
+    ];
+    QUOTA_PATTERNS.iter().any(|pattern| lower.contains(pattern))
 }
 
 /// indemind 等兼容网关在每个 stream chunk 重复下发完整 `tool_calls[].id`，
@@ -2354,9 +3340,39 @@ fn derive_session_title(messages: &[pi::sdk::Message]) -> Option<String> {
     None
 }
 
+/// 从 AgentMessage 快照派生标题（busy 列表兜底，不碰 handle）。
+fn derive_agent_session_title(messages: &[AgentMessage]) -> Option<String> {
+    const TITLE_MAX_CHARS: usize = 60;
+    for message in messages {
+        if message.role != AgentRole::User {
+            continue;
+        }
+        let text = message
+            .parts
+            .iter()
+            .find_map(|part| match part {
+                AgentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.is_empty() {
+            continue;
+        }
+        let truncated: String = collapsed.chars().take(TITLE_MAX_CHARS).collect();
+        return Some(if collapsed.chars().count() > TITLE_MAX_CHARS {
+            format!("{truncated}…")
+        } else {
+            truncated
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod title_tests {
-    use super::derive_session_title;
+    use super::{derive_agent_session_title, derive_session_title};
+    use crate::pi_agent::{AgentMessage, AgentPart, AgentRole};
 
     #[test]
     fn title_comes_from_first_user_text() {
@@ -2366,6 +3382,22 @@ mod title_tests {
         })];
         assert_eq!(
             derive_session_title(&messages).as_deref(),
+            Some("帮我 审查一下 最近的改动")
+        );
+    }
+
+    #[test]
+    fn agent_snapshot_title_matches_pi_title() {
+        let messages = vec![AgentMessage {
+            id: "u1".to_string(),
+            role: AgentRole::User,
+            created_at_ms: 1,
+            parts: vec![AgentPart::Text {
+                text: "  帮我\n审查一下   最近的改动 ".to_string(),
+            }],
+        }];
+        assert_eq!(
+            derive_agent_session_title(&messages).as_deref(),
             Some("帮我 审查一下 最近的改动")
         );
     }
@@ -2446,6 +3478,31 @@ fn migrate_repo_session_paths(records: &mut HashMap<String, PersistedSessionReco
     dirty
 }
 
+/// 主会话侧栏是否应隐藏该 session。内存元数据优先，catalog 作兜底。
+fn session_hidden_from_primary_list(
+    memory_kind: &str,
+    memory_parent: Option<&str>,
+    session_id: &str,
+    catalog_kind: &str,
+    catalog_parent: Option<&str>,
+) -> bool {
+    let kind = if !memory_kind.trim().is_empty() {
+        memory_kind
+    } else {
+        catalog_kind
+    };
+    if kind.eq_ignore_ascii_case("subagent") {
+        return true;
+    }
+    if memory_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    if catalog_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    crate::asset_graph::extraction::is_extract_session(session_id)
+}
+
 fn remove_session_files(path: &PathBuf) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(path.with_extension("jsonl.bak"));
@@ -2459,6 +3516,128 @@ mod tests {
 
     use super::*;
     use crate::pi_agent::{AgentEvent, AGENT_EVENT_SCHEMA_VERSION};
+
+    #[test]
+    fn steer_idle_when_session_exists_but_no_active_run() {
+        // 无活跃 run：调用方应改走普通 prompt，不能假排队。
+        let root = std::env::temp_dir().join(format!(
+            "giteam-pi-steer-idle-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let repo = root.join("repo");
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&repo).expect("create repo dir");
+
+        let service = PiAgentService::new();
+        let mut config = PiSessionConfig::persistent(&repo, &session_dir);
+        config.provider = Some("openai".to_string());
+        config.model = Some("gpt-4o".to_string());
+        config.api_key = Some("dummy-key".to_string());
+        let summary =
+            futures::executor::block_on(service.create_session(config)).expect("create session");
+
+        assert!(
+            matches!(
+                service.steer(&summary.session_id, "mid-turn note"),
+                Ok(SteerOutcome::Idle)
+            ),
+            "no active run must return Idle"
+        );
+        assert!(
+            matches!(
+                service.steer(&summary.session_id, "   "),
+                Err(PiAgentError::Sdk(_))
+            ),
+            "empty steer must fail closed"
+        );
+        assert!(
+            matches!(
+                service.steer("missing-session", "x"),
+                Err(PiAgentError::SessionNotFound(_))
+            ),
+            "unknown session must 404-equivalent"
+        );
+
+        service.shutdown();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn steer_queue_is_fifo_with_cap_dropping_oldest() {
+        // FIFO 投递顺序 + 上限淘汰最旧（giteam 侧 cap=16；pi 内部队列另有上限）。
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(
+            push_pending_steer(queue.lock().unwrap().as_mut(), "first"),
+            1
+        );
+        assert_eq!(
+            push_pending_steer(queue.lock().unwrap().as_mut(), "second"),
+            2
+        );
+        let steer_texts = |messages: &[pi::sdk::Message]| -> Vec<String> {
+            messages
+                .iter()
+                .filter_map(|message| match message {
+                    pi::sdk::Message::User(user) => match &user.content {
+                        pi::sdk::UserContent::Text(text) => Some(text.clone()),
+                        pi::sdk::UserContent::Blocks(_) => Some(String::new()),
+                    },
+                    _ => None,
+                })
+                .collect()
+        };
+        let drained = drain_pending_steers(&queue);
+        assert_eq!(steer_texts(&drained), vec!["first"]);
+        assert!(
+            drained.iter().any(|message| matches!(
+                message,
+                pi::sdk::Message::Custom(custom)
+                    if custom.custom_type == "giteam.steer_continue" && !custom.display
+            )),
+            "drain must attach a non-display steer-continue hint for the model"
+        );
+        let drained_second = drain_pending_steers(&queue);
+        assert_eq!(steer_texts(&drained_second), vec!["second"]);
+        assert!(drain_pending_steers(&queue).is_empty());
+
+        for index in 0..20 {
+            push_pending_steer(queue.lock().unwrap().as_mut(), &format!("m{index}"));
+        }
+        assert_eq!(queue.lock().unwrap().len(), 16, "cap should drop oldest");
+        let drained = drain_pending_steers(&queue);
+        let texts = steer_texts(&drained);
+        assert_eq!(texts, vec!["m4"]);
+        assert!(
+            drained.iter().any(|message| matches!(message, pi::sdk::Message::Custom(_))),
+            "cap drain still attaches continue hint"
+        );
+    }
+
+    #[test]
+    fn quota_errors_are_recognized_across_providers() {
+        // 限额/计费语义（中英文、连写形态）都不该进入重试循环。
+        for message in [
+            "402 Insufficient Balance",
+            "429: exceeded your current quota, please upgrade",
+            "Error: 账户余额不足，请充值",
+            "AccountNoEnoughBalance",
+            "usage limit reached (resets at 2026-08-18)",
+            "您的人工智能免费额度已用完",
+            "Rate limit 429 quota exceeded for requests",
+        ] {
+            assert!(is_quota_error(message), "should classify as quota: {message}");
+        }
+        // 瞬时限流与常规错误不属于限额——应继续走重试判定。
+        for message in [
+            "429 too many requests, retry after 30s",
+            "503 service overloaded",
+            "connection reset by peer",
+            "context window exceeded",
+        ] {
+            assert!(!is_quota_error(message), "not quota: {message}");
+        }
+    }
 
     #[test]
     fn event_bus_delivers_only_matching_session_and_run() {
@@ -2477,13 +3656,39 @@ mod tests {
             },
         };
 
-        publish_event(&service.subscribers, &event);
+        publish_event(&service.subscribers, &service.event_buffers, &event);
 
         assert_eq!(
             receiver
                 .recv_timeout(Duration::from_millis(50))
                 .expect("matching subscriber should receive event"),
             event
+        );
+    }
+
+    #[test]
+    fn event_buffer_replays_events_after_seq() {
+        let service = PiAgentService::new();
+        let make = |sequence: u64| AgentEventEnvelope {
+            schema_version: AGENT_EVENT_SCHEMA_VERSION,
+            event_id: format!("event-{sequence}"),
+            sequence,
+            repo_path: "/tmp/repo".to_string(),
+            session_id: "session-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            timestamp_ms: sequence,
+            event: AgentEvent::RuntimeWarning {
+                message: format!("w{sequence}"),
+            },
+        };
+        publish_event(&service.subscribers, &service.event_buffers, &make(1));
+        publish_event(&service.subscribers, &service.event_buffers, &make(2));
+        publish_event(&service.subscribers, &service.event_buffers, &make(3));
+
+        let (replay, _live) = service.subscribe_events_after("session-1", "run-1", 1);
+        assert_eq!(
+            replay.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            vec![2, 3]
         );
     }
 
@@ -2753,5 +3958,38 @@ mod tests {
             r#"Invalid 'input[2].call_id': string too long. Expected a string with maximum length 64, but got a string with length 1044 instead.","code":"string_above_max_length""#
         ));
         assert!(!is_tool_call_id_overflow_error("HTTP 400 invalid api key"));
+    }
+
+    #[test]
+    fn session_hidden_from_primary_list_prefers_memory_subagent_kind() {
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            None,
+            "child-1",
+            "primary",
+            None,
+        ));
+        assert!(session_hidden_from_primary_list(
+            "primary",
+            Some("parent-1"),
+            "child-2",
+            "primary",
+            None,
+        ));
+        assert!(!session_hidden_from_primary_list(
+            "primary",
+            None,
+            "main-1",
+            "primary",
+            None,
+        ));
+        // catalog 尚未写入时，仅靠内存 kind 也能挡住
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            Some("parent"),
+            "child-3",
+            "primary",
+            None,
+        ));
     }
 }

@@ -1,6 +1,9 @@
 // Windows 发行版用 WINDOWS 子系统，避免双击打开时多出一个会拖垮应用的 cmd 窗口；
 // debug 仍保留控制台，方便看日志。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// generate_handler 命令元组加深后，部分 async command 的布局计算超出默认
+// 查询深度（见 automation_run_now 报错），按编译器建议放宽。
+#![recursion_limit = "256"]
 
 mod commands;
 mod remote_repo;
@@ -249,7 +252,8 @@ fn main() {
     {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init());
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_deep_link::init());
     }
 
     let app = builder
@@ -257,6 +261,8 @@ fn main() {
             // 统一权威数据根（~/.giteam），并迁入旧 Application Support / Tauri bundle 残留。
             giteam_core::pi_agent::migrate_legacy_tauri_data_into_canonical();
             let pi_dir = giteam_core::pi_agent::ensure_pi_agent_dir_env();
+            // 私有 rg/fd（缺则下载到 ~/.giteam/bin）并注入 PATH；须早于 agent grep/find。
+            let _ = giteam_core::pi_agent::ensure_agent_bins();
             // #35 诊断：asupersync connect 全生命周期日志，排查 Windows WSAENOTCONN 10057。
             // 落 PI_CODING_AGENT_DIR/asupersync-connect.log；asupersync 仅在设此环境变量时写文件。
             if let Some(dir) = pi_dir {
@@ -284,6 +290,9 @@ fn main() {
             // 系统托盘：关闭最小化到托盘时，点托盘图标或菜单恢复窗口、或真正退出。
             let _ = build_tray(app.handle());
 
+            // 本地自动化调度（进程内 tick + 桌面通知）。
+            commands::automation::start_automation_scheduler(app.handle().clone());
+
             #[cfg(target_os = "macos")]
             macos_context_menu::install(app);
 
@@ -293,6 +302,23 @@ fn main() {
                 giteam_core::pi_agent::set_ui_event_hook(std::sync::Arc::new(move |event| {
                     let _ = handle.emit("giteam://agent-event", event);
                 }));
+            }
+
+            // giteam://import?url=… 深链（落地页「在 Giteam 中打开」）→ 前端确认导入。
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let text = url.to_string();
+                        if text.starts_with("giteam://import") {
+                            show_main_window(&handle);
+                            commands::share::stash_pending_import_url(text.clone());
+                            let _ = handle.emit("giteam://share-import", text);
+                        }
+                    }
+                });
             }
 
             // 手机端模型开关 → 落盘 → 桌面低频轮询同步 UI（可见性仍互通）。
@@ -380,6 +406,7 @@ fn main() {
             commands::asset_graph::asset_graph_full,
             commands::asset_graph::asset_graph_session_node,
             commands::asset_graph::asset_graph_sessions,
+            commands::asset_graph::asset_graph_extraction_queue,
             commands::asset_graph::asset_graph_rebuild,
             commands::pi_agent::agent_runtime_info,
             commands::pi_agent::agent_create_session,
@@ -390,6 +417,7 @@ fn main() {
             commands::pi_agent::agent_prompt,
             commands::pi_agent::agent_steer,
             commands::pi_agent::agent_abort,
+            commands::pi_agent::agent_abort_session,
             commands::pi_agent::agent_delete_session,
             commands::pi_agent::agent_list_providers,
             commands::pi_agent::agent_list_models,
@@ -430,6 +458,19 @@ fn main() {
             commands::db::db_add_repository,
             commands::db::db_list_repositories,
             commands::db::db_remove_repository,
+            commands::share::share_create,
+            commands::share::share_import,
+            commands::share::share_import_cancel,
+            commands::share::share_take_pending_import,
+            commands::automation::automation_list_tasks,
+            commands::automation::automation_get_task,
+            commands::automation::automation_create_task,
+            commands::automation::automation_update_task,
+            commands::automation::automation_set_enabled,
+            commands::automation::automation_delete_task,
+            commands::automation::automation_list_runs,
+            commands::automation::automation_run_now,
+            commands::automation::automation_test_dingtalk_notify,
             remote_repo::commands::remote_repo,
             commands::db::pick_repository_folder,
             commands::ui::set_window_theme,

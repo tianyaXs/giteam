@@ -43,6 +43,9 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
+        // 只写机制（模式/字段/隔离语义）；何时委派与 USE FOR / DO NOT USE
+        // 取舍在 prompt.rs 工具清单——本描述随 schema 每轮发给模型，
+        // 与清单条目是同一受众，重复必分叉。
         "Spawn one or more specialized subagents (subagent_type=plan) in isolated sessions and wait \
          for them to finish. Each child gets a focused system prompt (goal + context) and returns \
          only a summary — intermediate tool calls stay out of your context.\n\n\
@@ -50,8 +53,7 @@ impl Tool for TaskTool {
          1. Single: description + subagent_type (+ optional prompt, context)\n\
          2. Batch:  tasks=[{description, subagent_type, prompt?, context?}, ...] — run in parallel \
          (capped concurrency).\n\n\
-         Pass all necessary paths/constraints via context; children have no memory of your chat. \
-         Prefer batch when two researches are independent. Skip for trivial one-shot answers."
+         Children have no memory of your chat; pass everything they need via prompt and context."
     }
 
     fn parameters(&self) -> Value {

@@ -1,0 +1,16 @@
+```json
+{
+  "quality": "high",
+  "session_intent": "完成缓存实现",
+  "entities": [
+    {
+      "id": "moka-cache-feature",
+      "type": "feature",
+      "title": "cache moka LRU 缓存",
+      "confidence": 0.92,
+      "evidence": "实现了基于 moka 的 LRU 缓存"
+    }
+  ],
+  "relations": []
+}
+```

@@ -6,6 +6,9 @@ on:
     tags:
       - 'cli-v*.*.*'
 
+permissions:
+  contents: write
+
 jobs:
   publish-platform:
     name: Publish ${{ matrix.platform.key }}
@@ -89,3 +92,41 @@ jobs:
         run: node ./scripts/publish-packages.js --root-only --skip-build --no-auto-bump
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    name: GitHub Release
+    needs: publish-root
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Giteam CLI ${{ github.ref_name }}" \
+            --notes "$(cat <<'EOF'
+          ## 项目分享（新）
+
+          - \`giteam share create\`：导出项目快照上传云端，输出分享地址、Git remote、代码/上下文体积
+          - \`giteam share import\`：凭 URL 或 \`giteam://import\` 深链导入（等同 \`giteam init --from\`）
+          - \`giteam share list\` / \`giteam share revoke\`：列出与撤销本工作区已发布分享
+          - \`giteam init --from <url>\`：远程导入；支持 \`--attach\` 将上下文合并到已有仓库
+          - JSON 输出含 \`gitUrl\`、\`repoSizeBytes\`、\`contextSizeBytes\`、\`contextSha256\`
+
+          ## Core 与 Control
+
+          - 新增 \`giteam-core/share\`：export / import / pack / redact / client 完整分享链路
+          - 导出自动脱敏敏感信息；代码 bundle 与上下文分包
+          - Control API \`/api/v1/agent/abort\` 支持 \`sessionId\` 作为 \`runId\` 替代参数
+
+          ## 安装
+
+          \`\`\`bash
+          npm install -g giteam@0.1.53
+          \`\`\`
+
+          桌面端请同步升级至 **desktop-v0.2.45** 以使用分享 UI 与自动化模块。
+          EOF
+          )"

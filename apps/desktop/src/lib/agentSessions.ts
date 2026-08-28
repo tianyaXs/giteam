@@ -5,6 +5,8 @@ export type AgentChatMessage = {
   /** 本地保留的运行失败信息；服务端历史不一定返回失败事件。 */
   error?: string;
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
+  /** 用户从资产图谱引用的节点（仅展示；模型上下文在发送时已注入）。 */
+  graphRefs?: import("./graphContextRefs").GraphContextRef[];
 };
 
 export type AgentChatSession = {
@@ -12,6 +14,12 @@ export type AgentChatSession = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** 会话当前 provider（服务端真相；有会话时 UI 只读此字段）。 */
+  provider?: string;
+  /** 会话当前 model id（服务端真相）。 */
+  model?: string;
+  parentId?: string;
+  sessionKind?: string;
   messages: AgentChatMessage[];
   turnStart: number;
   loaded: boolean;
@@ -24,7 +32,13 @@ export type ChatSessionSummary = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** 会话绑定的 provider（来自 list/getSession，禁止再靠 localStorage 猜）。 */
+  provider?: string;
+  /** 会话绑定的 model id。 */
+  model?: string;
   parentId?: string;
+  /** `"primary"` | `"subagent"`；子会话不得进侧栏。 */
+  sessionKind?: string;
   archivedAt?: number;
 };
 
@@ -104,16 +118,34 @@ export function newAgentSession(seedPrompt?: string, indexHint?: number): AgentC
 }
 
 export function agentSessionFromSummary(summary: ChatSessionSummary, indexHint?: number): AgentChatSession {
+  const provider = String(summary.provider || "").trim();
+  const model = String(summary.model || "").trim();
+  const parentId = String(summary.parentId || "").trim();
+  const sessionKind = String(summary.sessionKind || "").trim();
   return {
     id: summary.id,
     title: toAgentSessionTitle(summary.title || "", indexHint),
     createdAt: summary.createdAt || Date.now(),
     updatedAt: summary.updatedAt || summary.createdAt || Date.now(),
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    ...(parentId ? { parentId } : {}),
+    ...(sessionKind ? { sessionKind } : {}),
     messages: [],
     turnStart: 0,
     loaded: false,
     nextCursor: undefined
   };
+}
+
+/** 从会话对象拼出 provider/model ref；缺任一端则返回空（有会话时不得回落 draft）。 */
+export function modelRefFromChatSession(
+  session: Pick<AgentChatSession, "provider" | "model"> | null | undefined
+): string {
+  const provider = String(session?.provider || "").trim();
+  const model = String(session?.model || "").trim();
+  if (!provider || !model) return "";
+  return `${provider}/${model}`;
 }
 
 export function compareAgentSessionActivity(
@@ -134,9 +166,22 @@ export function isArchivedChatSessionSummary(
 }
 
 export function isChildChatSessionSummary(
-  summary: Pick<ChatSessionSummary, "parentId">
+  summary: Pick<ChatSessionSummary, "parentId" | "sessionKind">
 ): boolean {
+  const kind = String(summary.sessionKind || "").trim().toLowerCase();
+  if (kind === "subagent") return true;
   return Boolean(summary.parentId?.trim());
+}
+
+/** 主会话列表用：排除 task/subagent 子会话（与移动端 isPrimaryAgentSession 对齐）。 */
+export function isPrimaryAgentSessionSummary(
+  summary: Pick<{ sessionKind?: string; parentSessionId?: string; parentId?: string }, "sessionKind" | "parentSessionId" | "parentId">
+): boolean {
+  const kind = String(summary.sessionKind || "").trim().toLowerCase();
+  if (kind === "subagent") return false;
+  if (String(summary.parentSessionId || "").trim()) return false;
+  if (String(summary.parentId || "").trim()) return false;
+  return true;
 }
 
 export function filterRootAgentSessionSummaries(rows: ChatSessionSummary[]): ChatSessionSummary[] {
@@ -228,4 +273,159 @@ export function dropQueuedFollowUpsAlreadyInTranscript(
   );
   if (committed.size === 0) return queue;
   return queue.filter((item) => !committed.has(item.content.trim()));
+}
+
+/**
+ * history 比 live 短（JSONL 未落盘 / 同步过早）时，保留 live 末尾尚未入库的 assistant 气泡，
+ * 避免最终回复闪过后被残缺 history 整表替换抹掉。
+ */
+export function mergeHistoryMessagesPreservingLive(
+  history: AgentChatMessage[],
+  live: AgentChatMessage[],
+  options?: {
+    hasLiveParts?: (messageId: string) => boolean;
+    pickContent?: (historyContent: string, liveContent: string) => string;
+  }
+): AgentChatMessage[] {
+  if (!Array.isArray(live) || live.length === 0) return history;
+  if (!Array.isArray(history) || history.length === 0) {
+    return live.filter((row) => {
+      if (row.role !== "assistant") return false;
+      return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+    });
+  }
+
+  const historyIds = new Set(history.map((row) => row.id));
+  const liveById = new Map(live.map((row) => [row.id, row]));
+  const enriched = history.map((row) => {
+    if (row.role !== "assistant") return row;
+    const liveRow = liveById.get(row.id);
+    if (!liveRow) return row;
+    const content = options?.pickContent?.(row.content || "", liveRow.content || "") || row.content;
+    if (content && content !== row.content) return { ...row, content };
+    return row;
+  });
+
+  let lastSharedLiveIndex = -1;
+  for (let i = live.length - 1; i >= 0; i -= 1) {
+    if (historyIds.has(live[i].id)) {
+      lastSharedLiveIndex = i;
+      break;
+    }
+  }
+  const trailing = live.slice(lastSharedLiveIndex + 1).filter((row) => {
+    if (historyIds.has(row.id)) return false;
+    if (row.role !== "assistant") return false;
+    return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+  });
+  return trailing.length > 0 ? [...enriched, ...trailing] : enriched;
+}
+
+function assistantTailAfterUser(messages: AgentChatMessage[], userIndex: number): AgentChatMessage[] {
+  if (userIndex < 0 || userIndex >= messages.length) return [];
+  const tail: AgentChatMessage[] = [];
+  for (let i = userIndex + 1; i < messages.length; i += 1) {
+    const row = messages[i];
+    if (row.role === "user") break;
+    if (row.role === "assistant") tail.push(row);
+  }
+  return tail;
+}
+
+function findHistoryUserAnchor(
+  history: AgentChatMessage[],
+  currentUser: AgentChatMessage | undefined
+): number {
+  if (!currentUser) return -1;
+  const byId = history.findIndex((row) => row.id === currentUser.id);
+  if (byId >= 0) return byId;
+  const content = String(currentUser.content || "").trim();
+  if (!content) return -1;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const row = history[i];
+    if (row.role !== "user") continue;
+    if (String(row.content || "").trim() === content) return i;
+  }
+  return -1;
+}
+
+/**
+ * Pi 式收口：run 结束后用 history 对账「当前轮」assistant 尾部，只 append/patch，不整表替换。
+ * 补齐 JSONL 已有、live 漏掉的最终总结，且保留现有 id / 时间线 DOM。
+ */
+export function reconcilePromptTailFromHistory(
+  current: AgentChatMessage[],
+  history: AgentChatMessage[],
+  options?: {
+    pickContent?: (historyContent: string, currentContent: string) => string;
+    hasLiveParts?: (messageId: string) => boolean;
+  }
+): { messages: AgentChatMessage[]; changed: boolean; touchedAssistantIds: string[] } {
+  if (!Array.isArray(current) || current.length === 0 || !Array.isArray(history) || history.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  let lastUserIdx = -1;
+  for (let i = current.length - 1; i >= 0; i -= 1) {
+    if (current[i]?.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  const historyUserIdx = findHistoryUserAnchor(history, current[lastUserIdx]);
+  if (historyUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+
+  const historyTail = assistantTailAfterUser(history, historyUserIdx);
+  const currentTail = assistantTailAfterUser(current, lastUserIdx);
+  if (historyTail.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+
+  const pickContent =
+    options?.pickContent
+    || ((historyContent: string, liveContent: string) =>
+      liveContent.length > historyContent.length ? liveContent : historyContent);
+  const touchedAssistantIds: string[] = [];
+  const historyIds = new Set(historyTail.map((row) => row.id));
+  const currentById = new Map(currentTail.map((row) => [row.id, row]));
+  const mergedTail: AgentChatMessage[] = [];
+
+  for (const historyRow of historyTail) {
+    const existing = currentById.get(historyRow.id);
+    if (existing) {
+      const content = pickContent(historyRow.content || "", existing.content || "");
+      if (content !== existing.content) {
+        mergedTail.push({ ...existing, content });
+        touchedAssistantIds.push(historyRow.id);
+      } else {
+        mergedTail.push(existing);
+      }
+      continue;
+    }
+    mergedTail.push({ ...historyRow });
+    touchedAssistantIds.push(historyRow.id);
+  }
+
+  for (const row of currentTail) {
+    if (historyIds.has(row.id)) continue;
+    const keep =
+      Boolean(String(row.content || "").trim())
+      || Boolean(options?.hasLiveParts?.(row.id));
+    if (keep) mergedTail.push(row);
+  }
+
+  const prefix = current.slice(0, lastUserIdx + 1);
+  const suffix = current.slice(lastUserIdx + 1 + currentTail.length);
+  const next = [...prefix, ...mergedTail, ...suffix];
+  const changed =
+    next.length !== current.length
+    || next.some((row, index) => row.id !== current[index]?.id || row.content !== current[index]?.content);
+  if (!changed) {
+    return { messages: current, changed: false, touchedAssistantIds: [] };
+  }
+  return { messages: next, changed: true, touchedAssistantIds };
 }

@@ -1,8 +1,8 @@
 use super::pi_agent::{
     default_data_dir, AgentEvent, AgentEventEnvelope, AgentEventReceiver, AgentEventSink,
     AgentInteractionReply, CustomProviderInput, PiAgentError, PiAgentService, PiSessionConfig,
+    SteerOutcome,
 };
-use futures::executor::block_on;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,15 +17,41 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// pi agent 调用必须在 tokio runtime 上执行。
+///
+/// `web_search`/`web_fetch` 等网络工具用 async `reqwest`（rustls），依赖 tokio reactor；
+/// control server 的同步 HTTP 线程本身无 tokio 上下文，若用 `futures::executor::block_on`
+/// 跑 pi，turn 进入 reqwest 时会 panic（连接 EOF + run 状态未清理 + session 锁死）。
+/// 这里用进程级单例 tokio runtime 承载所有 pi 调用，与桌面 Tauri 路径行为对齐。
+/// `handle_connection` 是独立 `thread::spawn`（非 tokio 线程），在其中调 `block_on` 安全。
+static PI_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+fn pi_runtime() -> &'static tokio::runtime::Runtime {
+    PI_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("failed to build pi tokio runtime")
+    })
+}
+
+/// 在 pi 专属 tokio runtime 上同步驱动 future（替代原 `futures::executor::block_on`）。
+fn pi_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    pi_runtime().block_on(future)
+}
+
 const DEFAULT_CONTROL_SERVER_HOST: &str = "0.0.0.0";
 const DEFAULT_CONTROL_SERVER_PORT: u16 = 4100;
 const DEFAULT_PAIR_TTL_MODE: &str = "24h";
+/// preferred 被占用时顺延探测的端口数量（含 preferred 自身共 N+1 次尝试）。
+const CONTROL_PORT_FALLBACK_RANGE: u16 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlServerSettings {
     pub enabled: bool,
     pub host: String,
+    /// 偏好端口（持久化）；实际监听端口见运行时 `bound_port` / health.listeningPort。
     pub port: u16,
     #[serde(default)]
     pub public_base_url: String,
@@ -46,7 +72,11 @@ pub struct ControlPairCodeInfo {
 pub struct ControlAccessInfo {
     pub enabled: bool,
     pub host: String,
+    /// 当前应连接的端口（实际监听端口）。
     pub port: u16,
+    /// 设置里的偏好端口；若与 port 不同说明发生了端口顺延。
+    #[serde(default)]
+    pub preferred_port: u16,
     pub public_base_url: String,
     pub pair_code: String,
     pub expires_at: u64,
@@ -59,7 +89,10 @@ pub struct ControlAccessInfo {
 struct ControlRuntime {
     stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
+    /// 持久化偏好配置（`settings.port` = preferred）。
     settings: ControlServerSettings,
+    /// 本进程实际 bind 成功的端口。
+    bound_port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -236,13 +269,33 @@ fn control_server_settings_path() -> Option<PathBuf> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join(".config")
+                        .join("giteam")
+                        .join("control-server.json"),
+                );
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
             return Some(PathBuf::from(p).join("giteam").join("control-server.json"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let h = home.trim();
         if !h.is_empty() {
             return Some(
@@ -333,6 +386,134 @@ pub fn get_mobile_model_state_for_desktop() -> Result<Value, String> {
     read_mobile_model_state()
 }
 
+/// 启动时若存在旧 mobile-model-state，确保其为合法对象（兼容迁移入口）。
+pub fn migrate_legacy_mobile_model_state_if_needed() {
+    let _ = read_mobile_model_state();
+}
+
+fn json_string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Composer 用轻量模型列表：优先读可见性 state，缺省则回退本进程已配置凭据的 Pi 模型。
+fn build_mobile_models_response() -> Result<Value, String> {
+    let state = match read_mobile_model_state()? {
+        Value::Null => None,
+        other => Some(other),
+    };
+
+    let mut label_by_id: HashMap<String, String> = HashMap::new();
+    let mut active_model = String::new();
+    let mut hidden: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enabled: Option<std::collections::HashSet<String>> = None;
+    let mut available: Vec<String> = Vec::new();
+
+    if let Some(ref st) = state {
+        if let Some(obj) = st.as_object() {
+            if let Some(labels) = obj.get("modelLabels").and_then(|v| v.as_object()) {
+                for (k, v) in labels {
+                    if let Some(name) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        label_by_id.insert(k.trim().to_string(), name.to_string());
+                    }
+                }
+            }
+            active_model = obj
+                .get("activeModel")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            for h in json_string_list(obj.get("hiddenModels")) {
+                hidden.insert(h);
+            }
+            let enabled_list = json_string_list(obj.get("enabledModels"));
+            // 空数组 = 桌面尚未勾选任何「打开的模型」，不能当成「全部关闭」。
+            // 否则新机（尤其 Windows）已配 API Key 但未在设置里逐个打开时，
+            // 手机会拿到恒空列表；Mac 老用户因 localStorage 已有勾选而不易复现。
+            if obj.contains_key("enabledModels") && !enabled_list.is_empty() {
+                enabled = Some(enabled_list.into_iter().collect());
+            }
+            available = json_string_list(obj.get("availableModels"))
+                .into_iter()
+                .filter(|r| r.contains('/'))
+                .collect();
+        }
+    }
+
+    // 本进程 Pi：补 label，并在无 state.available 时提供凭据模型全集。
+    let pi_models = PiAgentService::global().list_models().unwrap_or_default();
+    let mut credentialed: Vec<String> = Vec::new();
+    for m in &pi_models {
+        let id = format!("{}/{}", m.provider, m.model_id);
+        if !m.name.trim().is_empty() {
+            label_by_id.entry(id.clone()).or_insert_with(|| m.name.clone());
+        }
+        if m.has_credential {
+            credentialed.push(id);
+        }
+    }
+
+    if available.is_empty() {
+        available = credentialed.clone();
+    }
+
+    let mut refs: Vec<String> = Vec::new();
+    if let Some(enabled_set) = enabled.as_ref() {
+        for r in &available {
+            if enabled_set.contains(r) && !hidden.contains(r) {
+                refs.push(r.clone());
+            }
+        }
+        for r in enabled_set {
+            if hidden.contains(r) || refs.iter().any(|x| x == r) {
+                continue;
+            }
+            if r.contains('/') && (credentialed.is_empty() || credentialed.iter().any(|c| c == r)) {
+                refs.push(r.clone());
+            }
+        }
+    } else {
+        for r in &available {
+            if !hidden.contains(r) {
+                refs.push(r.clone());
+            }
+        }
+    }
+
+    let models: Vec<Value> = refs
+        .into_iter()
+        .filter_map(|id| {
+            let slash = id.find('/')?;
+            let provider = id[..slash].to_string();
+            let model_id = id[slash + 1..].to_string();
+            let label = label_by_id
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| model_id.clone());
+            Some(serde_json::json!({
+                "id": id,
+                "label": label,
+                "provider": provider,
+                "modelId": model_id
+            }))
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "models": models,
+        "activeModel": active_model,
+        "source": if state.is_some() { "visibility+pi" } else { "pi" }
+    }))
+}
+
 fn control_auth_token_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -349,13 +530,33 @@ fn control_auth_token_path() -> Option<PathBuf> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = appdata.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
+            }
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let h = home.trim();
+            if !h.is_empty() {
+                return Some(
+                    PathBuf::from(h)
+                        .join(".config")
+                        .join("giteam")
+                        .join("control-auth.json"),
+                );
+            }
+        }
+    }
     if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
         let p = xdg_config_home.trim();
         if !p.is_empty() {
             return Some(PathBuf::from(p).join("giteam").join("control-auth.json"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         let h = home.trim();
         if !h.is_empty() {
             return Some(
@@ -388,16 +589,17 @@ fn read_persisted_bearer_token() -> String {
         .unwrap_or_else(generate_token)
 }
 
-/// Bearer used by cloud tunnel when proxying to the local Control Server.
+/// 云中继转发到本机 Control 时使用的 Bearer。
+/// 必须走 `current_bearer_token()`：仅读盘会在「Host 已起但从未写过 control-auth.json」
+/// （健康检查不鉴权、新机/Windows 常见）时返回 None，导致 /mobile/models 恒 401。
 pub fn loopback_bearer_token() -> Option<String> {
-    let path = control_auth_token_path()?;
-    let raw = fs::read_to_string(path).ok()?;
-    let parsed = serde_json::from_str::<Value>(&raw).ok()?;
-    parsed
-        .get("token")
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let token = current_bearer_token();
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn write_persisted_bearer_token(token: &str) {
@@ -446,7 +648,9 @@ fn read_control_server_settings() -> ControlServerSettings {
 
 fn write_control_server_settings(settings: &ControlServerSettings) -> Result<(), String> {
     let Some(path) = control_server_settings_path() else {
-        return Ok(());
+        return Err(
+            "control server settings path unavailable (set HOME/USERPROFILE/APPDATA)".to_string(),
+        );
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create control config dir failed: {e}"))?;
@@ -481,10 +685,67 @@ fn normalize_control_server_settings(
 fn effective_control_server_settings() -> ControlServerSettings {
     if let Ok(guard) = runtime_cell().lock() {
         if let Some(rt) = guard.as_ref() {
-            return rt.settings.clone();
+            let mut settings = rt.settings.clone();
+            // URL / QR 使用实际监听端口
+            settings.port = rt.bound_port;
+            return settings;
         }
     }
     read_control_server_settings()
+}
+
+/// 本进程 Control 是否在跑。
+pub fn control_is_running() -> bool {
+    runtime_cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|_| ()))
+        .is_some()
+}
+
+/// 本进程实际监听端口（未运行则 None）。
+pub fn control_bound_port() -> Option<u16> {
+    runtime_cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|rt| rt.bound_port))
+}
+
+fn try_bind_control_listener(
+    host: &str,
+    preferred_port: u16,
+) -> Result<(TcpListener, u16), String> {
+    let mut last_err = String::new();
+    for offset in 0..=CONTROL_PORT_FALLBACK_RANGE {
+        let port = match preferred_port.checked_add(offset) {
+            Some(p) if p > 0 => p,
+            _ => continue,
+        };
+        let addr = format!("{host}:{port}");
+        match TcpListener::bind(addr.as_str()) {
+            Ok(listener) => {
+                if offset > 0 {
+                    eprintln!(
+                        "[control] preferred port {preferred_port} in use; listening on {port}"
+                    );
+                }
+                return Ok((listener, port));
+            }
+            Err(e) => {
+                last_err = format!("control server bind failed on {addr}: {e}");
+                if e.kind() != ErrorKind::AddrInUse {
+                    // 非占用类错误（权限等）在 preferred 上直接失败；顺延端口上继续试
+                    if offset == 0 {
+                        return Err(last_err);
+                    }
+                }
+            }
+        }
+    }
+    Err(format!(
+        "control server bind failed: ports {preferred_port}..{} all unavailable ({last_err})",
+        preferred_port.saturating_add(CONTROL_PORT_FALLBACK_RANGE)
+    ))
 }
 
 fn normalize_pair_code_ttl_mode(raw: &str) -> String {
@@ -658,24 +919,33 @@ fn current_bearer_token() -> String {
     token.clone()
 }
 
+fn is_usable_private_v4(v4: std::net::Ipv4Addr) -> bool {
+    let oct = v4.octets();
+    let is_private = oct[0] == 10
+        || (oct[0] == 172 && (16..=31).contains(&oct[1]))
+        || (oct[0] == 192 && oct[1] == 168)
+        || (oct[0] == 100 && (64..=127).contains(&oct[1]));
+    let is_reserved_benchmark = oct[0] == 198 && (oct[1] == 18 || oct[1] == 19);
+    is_private && !is_reserved_benchmark && !v4.is_loopback()
+}
+
+/// 通过 UDP「假连接」读出本机出口网卡地址；多目标兜底（Windows 无外网/防火墙时 8.8.8.8 也可能失败）。
 fn detect_primary_lan_ip() -> Option<String> {
-    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    let _ = sock.connect("8.8.8.8:80");
-    let ip = sock.local_addr().ok()?.ip();
-    if ip.is_loopback() {
-        return None;
-    }
-    if let IpAddr::V4(v4) = ip {
-        let oct = v4.octets();
-        let is_private = oct[0] == 10
-            || (oct[0] == 172 && (16..=31).contains(&oct[1]))
-            || (oct[0] == 192 && oct[1] == 168)
-            || (oct[0] == 100 && (64..=127).contains(&oct[1]));
-        let is_reserved_benchmark = oct[0] == 198 && (oct[1] == 18 || oct[1] == 19);
-        if is_private && !is_reserved_benchmark {
-            return Some(v4.to_string());
+    for target in ["8.8.8.8:80", "1.1.1.1:80", "9.9.9.9:80", "192.168.1.1:80"] {
+        let Ok(sock) = UdpSocket::bind("0.0.0.0:0") else {
+            continue;
+        };
+        if sock.connect(target).is_err() {
+            continue;
         }
-        return None;
+        let Ok(addr) = sock.local_addr() else {
+            continue;
+        };
+        if let IpAddr::V4(v4) = addr.ip() {
+            if is_usable_private_v4(v4) {
+                return Some(v4.to_string());
+            }
+        }
     }
     None
 }
@@ -881,13 +1151,59 @@ fn write_sse_headers(stream: &mut TcpStream) -> Result<(), String> {
 }
 
 fn write_sse_event(stream: &mut TcpStream, event: &str, payload: &Value) -> Result<(), String> {
+    write_sse_event_with_id(stream, event, None, payload)
+}
+
+fn write_sse_event_with_id(
+    stream: &mut TcpStream,
+    event: &str,
+    id: Option<u64>,
+    payload: &Value,
+) -> Result<(), String> {
     let body =
         serde_json::to_string(payload).map_err(|e| format!("encode sse payload failed: {e}"))?;
-    let chunk = format!("event: {event}\ndata: {body}\n\n");
+    let chunk = match id {
+        Some(id) => format!("id: {id}\nevent: {event}\ndata: {body}\n\n"),
+        None => format!("event: {event}\ndata: {body}\n\n"),
+    };
     write_stream_all(stream, chunk.as_bytes(), "write sse event")?;
     stream
         .flush()
         .map_err(|e| format!("write sse event failed: {e}"))
+}
+
+fn parse_sse_after_seq(req: &HttpRequest) -> u64 {
+    req.query
+        .get("afterSeq")
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| {
+            req.headers
+                .get("last-event-id")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn is_terminal_agent_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::RunCompleted
+            | AgentEvent::RunFailed { .. }
+            | AgentEvent::SessionStatusChanged {
+                status: super::pi_agent::AgentSessionStatus::Idle
+                    | super::pi_agent::AgentSessionStatus::Aborted
+                    | super::pi_agent::AgentSessionStatus::Failed,
+                ..
+            }
+    )
+}
+
+fn write_agent_sse_event(stream: &mut TcpStream, event: &AgentEventEnvelope) -> Result<bool, String> {
+    let terminal = is_terminal_agent_event(&event.event);
+    let payload = serde_json::to_value(event)
+        .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
+    write_sse_event_with_id(stream, "agent", Some(event.sequence), &payload)?;
+    Ok(terminal)
 }
 
 fn extract_bearer(req: &HttpRequest) -> String {
@@ -962,48 +1278,54 @@ fn handle_agent_events_sse(mut stream: TcpStream, req: &HttpRequest) {
         );
         return;
     }
+    let after_seq = parse_sse_after_seq(req);
     if let Err(error) = write_sse_headers(&mut stream) {
         eprintln!("[control] Pi agent SSE headers failed: {error}");
         return;
     }
-    let receiver: AgentEventReceiver =
-        PiAgentService::global().subscribe_events(session_id, run_id);
+    let (replay, receiver): (Vec<AgentEventEnvelope>, AgentEventReceiver) =
+        PiAgentService::global().subscribe_events_after(session_id, run_id, after_seq);
     let _ = write_sse_event(
         &mut stream,
         "ready",
         &serde_json::json!({
             "sessionId": session_id,
             "runId": run_id,
+            "afterSeq": after_seq,
+            "replayCount": replay.len(),
             "mode": "pi-in-process"
         }),
     );
 
+    for event in replay {
+        match write_agent_sse_event(&mut stream, &event) {
+            Ok(true) => {
+                let _ = write_sse_event(
+                    &mut stream,
+                    "end",
+                    &serde_json::json!({ "runId": run_id, "via": "replay" }),
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(_) => return,
+        }
+    }
+
     loop {
         match receiver.recv_timeout(Duration::from_secs(20)) {
             Ok(event) => {
-                let terminal = matches!(
-                    event.event,
-                    AgentEvent::RunCompleted
-                        | AgentEvent::RunFailed { .. }
-                        | AgentEvent::SessionStatusChanged {
-                            status: super::pi_agent::AgentSessionStatus::Idle
-                                | super::pi_agent::AgentSessionStatus::Aborted
-                                | super::pi_agent::AgentSessionStatus::Failed,
-                            ..
-                        }
-                );
-                let payload = serde_json::to_value(&event)
-                    .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
-                if write_sse_event(&mut stream, "agent", &payload).is_err() {
-                    break;
-                }
-                if terminal {
-                    let _ = write_sse_event(
-                        &mut stream,
-                        "end",
-                        &serde_json::json!({ "runId": run_id }),
-                    );
-                    break;
+                match write_agent_sse_event(&mut stream, &event) {
+                    Ok(true) => {
+                        let _ = write_sse_event(
+                            &mut stream,
+                            "end",
+                            &serde_json::json!({ "runId": run_id }),
+                        );
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(_) => break,
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -1037,6 +1359,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/health" {
         let settings = read_control_server_settings();
         let mode = normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str());
+        let listening = control_bound_port().unwrap_or(settings.port);
         return (
             200,
             serde_json::json!({
@@ -1045,7 +1368,9 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 "service": {
                     "enabled": settings.enabled,
                     "host": settings.host,
-                    "port": settings.port
+                    "port": settings.port,
+                    "listeningPort": listening,
+                    "portRemapped": listening != settings.port
                 },
                 "auth": {
                     "pairCodeTtlMode": mode,
@@ -1053,6 +1378,110 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 },
                 "agentRuntime": PiAgentService::global().runtime_info(),
             }),
+        );
+    }
+
+    // ── 仓库资产图谱（只读可视化端点，设计文档 §4.3）──
+    // repoPath 定位图谱实例（未挂载返回 404 提示先创建会话触发挂载）。
+    if req.method == "GET" && req.path == "/api/v1/graph/summary" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        return (200, serde_json::to_value(graph.query().counts()).unwrap_or(Value::Null));
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/search" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let q = req.query.get("q").map(String::as_str).unwrap_or("");
+        let node_type = req.query.get("type").map(String::as_str);
+        let hits = graph.query().search(q, node_type, 30);
+        return (
+            200,
+            serde_json::json!({ "query": q, "hits": hits }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/subgraph" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let center = req.query.get("center").map(String::as_str).unwrap_or("");
+        let hops = req
+            .query
+            .get("hops")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(2);
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(150);
+        let view = graph.query().subgraph(center, hops, limit, None);
+        return (
+            200,
+            serde_json::json!({
+                "center": view.center,
+                "nodes": view.nodes,
+                "edges": view.edges,
+            }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/full" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1000);
+        let compact = req
+            .query
+            .get("compact")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(true);
+        let view = graph.query().full_graph_with_mode(limit, compact, None);
+        return (
+            200,
+            serde_json::json!({
+                "center": view.center,
+                "nodes": view.nodes,
+                "edges": view.edges,
+            }),
+        );
+    }
+    if req.method == "GET" && req.path == "/api/v1/graph/sessions" {
+        let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
+        let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
+            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+        };
+        let Ok(graph) = graph.lock() else {
+            return (500, serde_json::json!({ "error": "asset graph busy" }));
+        };
+        let limit = req
+            .query
+            .get("limit")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(20);
+        return (
+            200,
+            serde_json::json!({ "sessions": graph.query().recent_sessions(limit) }),
         );
     }
 
@@ -1103,9 +1532,19 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         };
     }
 
-    // 手机端读取桌面端推送的模型启用状态。手机不在 loopback，故用 bearer token
-    // 鉴权（ensure_authorized），而非 ensure_loopback。文件缺失返回 null，
-    // 客户端回退到 GET /api/v1/agent/providers。
+    // 手机 Composer 轻量模型清单：enabled ∩ available − hidden（同源可见性文件 + 本进程 Pi）。
+    if req.method == "GET" && req.path == "/api/v1/mobile/models" {
+        if let Err(e) = ensure_authorized(&req) {
+            return (401, serde_json::json!({ "error": e }));
+        }
+        return match build_mobile_models_response() {
+            Ok(value) => (200, value),
+            Err(e) => (500, serde_json::json!({ "error": e })),
+        };
+    }
+
+    // 手机端读取桌面端推送的模型启用状态（兼容旧客户端；新客户端优先 /api/v1/mobile/models）。
+    // 手机不在 loopback，故用 bearer token 鉴权（ensure_authorized），而非 ensure_loopback。
     if req.method == "GET" && req.path == "/api/v1/admin/mobile/model-state" {
         if let Err(e) = ensure_authorized(&req) {
             return (401, serde_json::json!({ "error": e }));
@@ -1259,6 +1698,25 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": format!("create Pi session directory failed: {error}") }),
             );
         }
+        // 仓库资产图谱：会话创建即挂载（打开 + 增量回放存量会话）。
+        // service.create_session 内已有同款挂载（带子代理宿主），此处是
+        // 兜底（图谱被 detach 后的路径）；同样注入宿主启用语义抽取。
+        // 失败只记日志——图谱是旁路能力，绝不阻塞会话创建。
+        if crate::asset_graph::attached(Path::new(&repo_path)).is_none() {
+            let attach_result = match PiAgentService::global().asset_graph_subagent_host() {
+                Some(host) => crate::asset_graph::attach_repo_with_extraction(
+                    Path::new(&repo_path),
+                    host,
+                ),
+                None => crate::asset_graph::attach_repo(Path::new(&repo_path)),
+            };
+            match attach_result {
+                Ok((indexed, skipped)) => {
+                    eprintln!("[asset-graph] attached {repo_path}: replayed {indexed}, unchanged {skipped}");
+                }
+                Err(error) => eprintln!("[asset-graph] attach {repo_path} failed: {error}"),
+            }
+        }
         let config = PiSessionConfig {
             repo_path: PathBuf::from(repo_path),
             session_dir,
@@ -1285,7 +1743,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             session_kind: "primary".to_string(),
         };
         ensure_stable_process_cwd();
-        return match block_on(PiAgentService::global().create_session(config)) {
+        return match pi_block_on(PiAgentService::global().create_session(config)) {
             Ok(summary) => serde_json::to_value(summary)
                 .map(|value| (201, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1301,7 +1759,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            return match block_on(PiAgentService::global().session_summary(session_id)) {
+            return match pi_block_on(PiAgentService::global().session_summary(session_id)) {
                 Ok(session) => serde_json::to_value(session)
                     .map(|value| (200, value))
                     .unwrap_or_else(|error| {
@@ -1310,7 +1768,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 Err(error) => pi_error_response(error),
             };
         }
-        return match block_on(PiAgentService::global().list_sessions()) {
+        return match pi_block_on(PiAgentService::global().list_sessions()) {
             Ok(sessions) => serde_json::to_value(sessions)
                 .map(|value| (200, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1364,7 +1822,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if session_id.is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().messages(session_id)) {
+        return match pi_block_on(PiAgentService::global().messages(session_id)) {
             Ok(messages) => serde_json::to_value(messages)
                 .map(|value| (200, value))
                 .unwrap_or_else(|error| (500, serde_json::json!({ "error": error.to_string() }))),
@@ -1392,34 +1850,70 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         let run_id = request
             .run_id
             .unwrap_or_else(|| format!("control-{}-{}", request.session_id, now_unix_secs()));
-        let events: Arc<Mutex<Vec<AgentEventEnvelope>>> = Arc::new(Mutex::new(Vec::new()));
-        let events_for_sink = Arc::clone(&events);
-        let sink: AgentEventSink = Arc::new(move |event| {
-            if let Ok(mut events) = events_for_sink.lock() {
-                events.push(event);
+        // 后台化执行：prompt 会阻塞到整个 run 完成（联网搜索等可远超云端网关 120s
+        // unary 超时），若在 HTTP handler 内同步等待，网关会先返回 504、而本地 run
+        // 仍在跑，手机端误判发送失败。事件全量经 subscribe_events → SSE 通道下发
+        //（含最终 run.completed/run.failed 终态），响应体只需立即回 runId。
+        // sink 留空：事件不缺通道，仅 HTTP 响应不再攒 events 数组。
+        let response = serde_json::json!({
+            "runId": run_id,
+            "message": Value::Null,
+            "events": [],
+        });
+        let sink: AgentEventSink = Arc::new(|_event| {});
+        let session_id = request.session_id.clone();
+        thread::spawn(move || {
+            let result = pi_block_on(PiAgentService::global().prompt(
+                session_id.as_str(),
+                run_id.as_str(),
+                request.prompt,
+                request.images,
+                sink,
+            ));
+            if let Err(error) = result {
+                eprintln!("[control] background agent prompt failed: {error}");
+                // 早期失败（session 不存在等）发生在任何事件之前，SSE 订阅者
+                // 收不到终态会悬等；补发 run.failed 让手机端走正常失败收尾。
+                PiAgentService::global().publish_run_failed(
+                    session_id.as_str(),
+                    run_id.as_str(),
+                    &error.to_string(),
+                );
             }
         });
-        let result = block_on(PiAgentService::global().prompt(
-            request.session_id.as_str(),
-            run_id.as_str(),
-            request.prompt,
-            request.images,
-            sink,
-        ));
-        return match result {
-            Ok(message) => {
-                let events = events.lock().map(|items| items.clone()).unwrap_or_default();
-                (
-                    200,
-                    serde_json::json!({
-                        "runId": run_id,
-                        "message": message,
-                        "events": events,
-                    }),
-                )
-            }
-            Err(error) => pi_error_response(error),
+        return (200, response);
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/steer" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
         };
+        let session_id = raw
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let message = raw
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if session_id.is_empty() || message.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "sessionId and message are required" }),
+            );
+        }
+        // 同步排队（service 层内存队列，turn 边界投递）；事件经既有 SSE 通道下发。
+        let outcome = match PiAgentService::global().steer(session_id, message) {
+            Ok(SteerOutcome::Queued { run_id }) => {
+                serde_json::json!({ "status": "queued", "runId": run_id })
+            }
+            Ok(SteerOutcome::Idle) => serde_json::json!({ "status": "idle" }),
+            Err(error) => return pi_error_response(error),
+        };
+        return (200, outcome);
     }
 
     if req.method == "POST" && req.path == "/api/v1/agent/abort" {
@@ -1432,12 +1926,47 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim();
-        if run_id.is_empty() {
-            return (400, serde_json::json!({ "error": "runId is required" }));
+        if !run_id.is_empty() {
+            return (
+                200,
+                serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            );
+        }
+        let session_id = raw
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if session_id.is_empty() {
+            return (
+                400,
+                serde_json::json!({ "error": "runId or sessionId is required" }),
+            );
         }
         return (
             200,
-            serde_json::json!({ "ok": PiAgentService::global().abort(run_id) }),
+            serde_json::json!({ "ok": PiAgentService::global().abort_session(session_id) }),
+        );
+    }
+
+    if req.method == "GET" && req.path == "/api/v1/agent/run" {
+        let run_id = req
+            .query
+            .get("runId")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if run_id.is_empty() {
+            return (400, serde_json::json!({ "error": "runId is required" }));
+        }
+        let session_id = PiAgentService::global().run_active_session(run_id);
+        return (
+            200,
+            serde_json::json!({
+                "runId": run_id,
+                "active": session_id.is_some(),
+                "sessionId": session_id,
+            }),
         );
     }
 
@@ -1678,7 +2207,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "sessionId, provider and modelId are required" }),
             );
         }
-        return match block_on(PiAgentService::global().set_model(
+        return match pi_block_on(PiAgentService::global().set_model(
             request.session_id.as_str(),
             request.provider.as_str(),
             request.model_id.as_str(),
@@ -1705,7 +2234,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "sessionId and level are required" }),
             );
         }
-        return match block_on(PiAgentService::global().set_thinking_level(
+        return match pi_block_on(PiAgentService::global().set_thinking_level(
             request.session_id.as_str(),
             request.level.as_str(),
         )) {
@@ -1728,7 +2257,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if request.session_id.trim().is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().set_session_options(
+        return match pi_block_on(PiAgentService::global().set_session_options(
             request.session_id.as_str(),
             request.enabled_tools,
             request.append_system_prompt,
@@ -1789,7 +2318,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if request.session_id.trim().is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match block_on(PiAgentService::global().set_auto_approve(
+        return match pi_block_on(PiAgentService::global().set_auto_approve(
             request.session_id.as_str(),
             request.enabled,
         )) {
@@ -1839,12 +2368,13 @@ fn handle_connection(mut stream: TcpStream, remote_ip: Option<IpAddr>) {
 }
 
 fn run_control_server_loop(
-    settings: ControlServerSettings,
+    host: String,
+    bound_port: u16,
     listener: TcpListener,
     stop: Arc<AtomicBool>,
 ) {
-    let addr = format!("{}:{}", settings.host, settings.port);
-    eprintln!("[control] listening on http://{}", addr);
+    let addr = format!("{host}:{bound_port}");
+    eprintln!("[control] listening on http://{addr}");
 
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -1884,9 +2414,10 @@ pub fn ensure_stable_process_cwd() {
         return;
     }
     let fallback = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
-        .or_else(|| Some(PathBuf::from("/")));
+        .or_else(|| env::temp_dir().is_dir().then(env::temp_dir));
     if let Some(path) = fallback {
         if let Err(error) = env::set_current_dir(&path) {
             eprintln!(
@@ -1906,11 +2437,14 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
     // npm 全局包安装临时目录可能在进程存活期间被删掉；Pi SDK create_session
     // 会调 std::env::current_dir()，cwd 失效会直接 500「cwd lookup failed」。
     ensure_stable_process_cwd();
+    migrate_legacy_mobile_model_state_if_needed();
     let settings = normalize_control_server_settings(settings)?;
     if !settings.enabled {
         stop_control_server();
         return Ok(());
     }
+    // 起服即落盘 Bearer，供云中继 loopback 转发与本机诊断（勿等首次鉴权请求）。
+    let _ = current_bearer_token();
     if let Ok(mut guard) = runtime_cell().lock() {
         if let Some(current) = guard.as_ref() {
             if current.settings.host == settings.host
@@ -1919,9 +2453,13 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
                 && current.settings.public_base_url == settings.public_base_url
                 && current.settings.pair_code_ttl_mode == settings.pair_code_ttl_mode
             {
-                let port = settings.port;
+                let port = current.bound_port;
                 drop(guard);
-                let _ = crate::cloud::start_cloud_tunnel_background(port);
+                // 配置未变：仅 CLI 进程（owner != desktop）且 tunnel 未运行时才拉，
+                // 已运行则幂等跳过（避免误掐已连好的 tunnel）。
+                if should_cli_own_tunnel() && !crate::cloud::tunnel_running() {
+                    let _ = crate::cloud::start_cloud_tunnel_background(port);
+                }
                 return Ok(());
             }
         }
@@ -1931,29 +2469,43 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
                 let _ = join.join();
             }
         }
-        let addr = format!("{}:{}", settings.host, settings.port);
-        let listener = TcpListener::bind(addr.as_str())
-            .map_err(|e| format!("control server bind failed on {addr}: {e}"))?;
+        let (listener, bound_port) =
+            try_bind_control_listener(settings.host.as_str(), settings.port)?;
         listener
             .set_nonblocking(true)
-            .map_err(|e| format!("control server set_nonblocking failed on {addr}: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "control server set_nonblocking failed on {}:{}: {e}",
+                    settings.host, bound_port
+                )
+            })?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
-        let cfg_for_thread = settings.clone();
-        let port = settings.port;
+        let host_for_thread = settings.host.clone();
         let join = thread::spawn(move || {
-            run_control_server_loop(cfg_for_thread, listener, stop_for_thread)
+            run_control_server_loop(host_for_thread, bound_port, listener, stop_for_thread)
         });
         *guard = Some(ControlRuntime {
             stop,
             join: Some(join),
             settings,
+            bound_port,
         });
         drop(guard);
-        let _ = crate::cloud::start_cloud_tunnel_background(port);
+        // 桌面场景 owner=desktop，tunnel 由桌面进程独占，CLI service 不拉。
+        if should_cli_own_tunnel() {
+            let _ = crate::cloud::start_cloud_tunnel_background(bound_port);
+        }
         return Ok(());
     }
     Err("failed to lock control runtime".to_string())
+}
+
+/// 只有 owner != "desktop" 时，CLI service 进程才负责拉 cloud tunnel。
+/// owner 为空（CLI-only 用户）视为 cli；owner=desktop（桌面用户）让位给桌面进程，
+/// 消除桌面 Tauri 进程与 CLI service 子进程抢 gateway 同一 device slot 的抖动。
+fn should_cli_own_tunnel() -> bool {
+    crate::cloud::get_cloud_link_settings().tunnel_owner != "desktop"
 }
 
 pub fn start_control_server() -> Result<(), String> {
@@ -1999,6 +2551,7 @@ pub fn refresh_control_pair_code() -> Result<ControlPairCodeInfo, String> {
 
 #[cfg_attr(feature = "tauri-app", tauri::command)]
 pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
+    let preferred = read_control_server_settings();
     let settings = effective_control_server_settings();
     let pair = current_pair_code();
     let mut urls: Vec<String> = Vec::new();
@@ -2019,6 +2572,7 @@ pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
         enabled: settings.enabled,
         host: settings.host,
         port: settings.port,
+        preferred_port: preferred.port,
         public_base_url: settings.public_base_url,
         pair_code: pair.code,
         expires_at: pair.expires_at,
@@ -2026,4 +2580,76 @@ pub fn get_control_access_info() -> Result<ControlAccessInfo, String> {
         pair_code_ttl_mode: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()),
         no_auth: normalize_pair_code_ttl_mode(settings.pair_code_ttl_mode.as_str()) == "none",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! 资产图谱 HTTP 端点的路由级冒烟测试：构造 HttpRequest 直接打
+    //! handle_api_request，验证 404（未挂载）/ 200（挂载后）与载荷形状。
+
+    use super::*;
+
+    fn get(path: &str, query: &[(&str, &str)]) -> HttpRequest {
+        let mut q = HashMap::new();
+        for (k, v) in query {
+            q.insert((*k).to_string(), (*v).to_string());
+        }
+        HttpRequest {
+            method: "GET".into(),
+            path: path.into(),
+            query: q,
+            headers: HashMap::new(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn graph_endpoints_route_and_respond() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("mkdir repo");
+        let repo_str = repo.to_string_lossy().to_string();
+
+        // 未挂载：summary/search/subgraph 均 404。
+        let (status, _) = handle_api_request(
+            get("/api/v1/graph/summary", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 404);
+        let (status, _) = handle_api_request(
+            get("/api/v1/graph/search", &[("repoPath", repo_str.as_str()), ("q", "x")]),
+            None,
+        );
+        assert_eq!(status, 404);
+
+        // 挂载（空图）→ 200 + 计数载荷。
+        crate::asset_graph::attach_repo(&repo).expect("attach");
+        let (status, body) = handle_api_request(
+            get("/api/v1/graph/summary", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["nodes"], serde_json::json!(0));
+
+        // sessions 端点形状。
+        let (status, body) = handle_api_request(
+            get("/api/v1/graph/sessions", &[("repoPath", repo_str.as_str())]),
+            None,
+        );
+        assert_eq!(status, 200);
+        assert!(body["sessions"].is_array());
+
+        // subgraph：空中心 → 空视图（200 而非 404）。
+        let (status, body) = handle_api_request(
+            get(
+                "/api/v1/graph/subgraph",
+                &[("repoPath", repo_str.as_str()), ("center", "nothing")],
+            ),
+            None,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body["nodes"].as_array().map(Vec::len), Some(0));
+
+        crate::asset_graph::detach(&repo);
+    }
 }

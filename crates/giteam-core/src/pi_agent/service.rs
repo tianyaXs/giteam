@@ -311,6 +311,10 @@ struct ManagedSession {
     /// 遗留的消息在下次 prompt 的 run_loop 开头 drain（pi 自带边界）。
     /// Arc 供 fetcher 闭包无锁共享；上限与 pi MAX_STEERING_QUEUE_SIZE 对齐。
     pending_steers: Arc<Mutex<Vec<String>>>,
+    /// 内存侧会话类型；list 过滤优先读这里，避免 catalog 写入竞态把子会话漏进主列表。
+    session_kind: String,
+    parent_session_id: Option<String>,
+    parent_tool_call_id: Option<String>,
 }
 
 struct ActiveRun {
@@ -330,6 +334,15 @@ pub enum SteerOutcome {
 }
 
 type EventSubscriberKey = (String, String);
+
+/// 冷启动恢复失败缓存：避免 list_sessions 轮询时反复尝试重建并刷屏日志。
+struct RestoreFailure {
+    message: String,
+    at: Instant,
+}
+
+/// 同一错误在此窗口内不再重试 restore / 不再打日志。
+const RESTORE_FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
 
 pub struct PiAgentService {
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
@@ -352,6 +365,8 @@ pub struct PiAgentService {
     self_weak: Mutex<Option<Weak<PiAgentService>>>,
     /// 旁路抽取串行锁：parent_session_id → 锁。同父多轮抽取排队，避免并发打爆 provider。
     extract_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// session_id → 最近一次 restore 失败（模型缺失 / API Key 等）。
+    restore_failures: Mutex<HashMap<String, RestoreFailure>>,
 }
 
 impl Default for PiAgentService {
@@ -405,6 +420,8 @@ impl PiAgentService {
         // 然后 vault 与该目录下的 auth.json 对齐。必须在任何 Pi session 创建前完成。
         let secrets = if load_catalog {
             ensure_pi_agent_dir_env();
+            // 须在首次 grep/find 前注入；pi 对 rg/fd 探测结果 OnceLock 缓存。
+            let _ = crate::pi_agent::ensure_agent_bins();
             // Pi 云端默认 HTTP 整请求超时 60s；子 agent 调研/长流式很容易踩中。
             // 桌面端强制抬到 30 分钟（除非用户显式设置了 PI_HTTP_REQUEST_TIMEOUT_SECS）。
             // 0 = 不限时。见 pi::http::client::DEFAULT_REMOTE_REQUEST_TIMEOUT_SECS。
@@ -425,6 +442,7 @@ impl PiAgentService {
             browser_controller: Mutex::new(None),
             self_weak: Mutex::new(None),
             extract_locks: Mutex::new(HashMap::new()),
+            restore_failures: Mutex::new(HashMap::new()),
         };
         if catalog_dirty {
             let _ = service.persist_catalog();
@@ -471,6 +489,15 @@ impl PiAgentService {
     #[must_use]
     pub fn active_run_count(&self) -> usize {
         self.active_runs.lock().map_or(0, |runs| runs.len())
+    }
+
+    /// 指定会话是否有进行中的 run（自动化 runner 用于 busy → skipped）。
+    #[must_use]
+    pub fn has_active_run_for_session(&self, session_id: &str) -> bool {
+        self.active_runs
+            .lock()
+            .map(|runs| runs.values().any(|run| run.session_id == session_id))
+            .unwrap_or(false)
     }
 
     /// Stop accepting work owned by this service and release all in-process
@@ -691,17 +718,12 @@ impl PiAgentService {
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             pending_steers,
+            session_kind: session_kind.clone(),
+            parent_session_id: parent_session_id.clone(),
+            parent_tool_call_id: parent_tool_call_id.clone(),
         });
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|error| PiAgentError::State(error.to_string()))?;
-        if sessions.contains_key(&session_id) {
-            return Err(PiAgentError::SessionAlreadyExists(session_id));
-        }
-        sessions.insert(session_id, managed);
-        drop(sessions);
-
+        // 先写 catalog，再进 sessions map：list_sessions 轮询若夹在中间，
+        // 会因无 record 默认 primary，把刚创建的子会话短暂漏进侧栏。
         if let Some(session_path) = session_path {
             let record = PersistedSessionRecord {
                 schema_version: 1,
@@ -728,6 +750,14 @@ impl PiAgentService {
                 .insert(summary.session_id.clone(), record);
             self.persist_catalog()?;
         }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?;
+        if sessions.contains_key(&session_id) {
+            return Err(PiAgentError::SessionAlreadyExists(session_id));
+        }
+        sessions.insert(session_id, managed);
         Ok(summary)
     }
 
@@ -772,8 +802,15 @@ impl PiAgentService {
         let mut catalog_dirty = false;
         let mut degraded_session_ids: Vec<String> = Vec::new();
         for session_id in record_ids {
+            // 冷却期内跳过 restore：仍以 catalog 元数据入列，避免反复打 Pi SDK / 刷日志。
+            if self.has_restore_failure_cooldown(&session_id) {
+                degraded_session_ids.push(session_id);
+                continue;
+            }
             match self.get_session(&session_id).await {
-                Ok(_) => {}
+                Ok(_) => {
+                    self.clear_restore_failure(&session_id);
+                }
                 Err(error) => {
                     let message = error.to_string();
                     if message.contains("Session not found") {
@@ -785,10 +822,13 @@ impl PiAgentService {
                                 );
                             }
                         }
+                        self.clear_restore_failure(&session_id);
                     } else {
-                        eprintln!(
-                            "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
-                        );
+                        if self.note_restore_failure(&session_id, &message) {
+                            eprintln!(
+                                "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
+                            );
+                        }
                         degraded_session_ids.push(session_id);
                     }
                 }
@@ -808,13 +848,15 @@ impl PiAgentService {
         let mut summaries = Vec::with_capacity(sessions.len());
         let mut titles_to_cache: Vec<(String, String)> = Vec::new();
         for (session_id, session) in sessions {
-            // 子 agent：靠 kind 或 parent 标记排除，不进主列表（UI 靠 subagent.* 事件）。
-            // extract 子代理是 ephemeral 无记录会话：靠注册表排除（运行中的瞬态窗口）。
-            let kind = self.record_session_kind(&session_id);
-            if kind == "subagent"
-                || self.record_parent_session_id(&session_id).is_some()
-                || crate::asset_graph::extraction::is_extract_session(&session_id)
-            {
+            // 子 agent：优先读内存元数据（创建即有），catalog 仅作冷启动/恢复兜底。
+            // 旧逻辑只靠 record 且缺省 primary，会在 catalog 写入前把子会话漏进侧栏。
+            if session_hidden_from_primary_list(
+                &session.session_kind,
+                session.parent_session_id.as_deref(),
+                &session_id,
+                self.record_session_kind(&session_id).as_str(),
+                self.record_parent_session_id(&session_id).as_deref(),
+            ) {
                 continue;
             }
 
@@ -856,6 +898,19 @@ impl PiAgentService {
                     *snap = agent_messages;
                 }
             }
+            let session_kind = if !session.session_kind.trim().is_empty() {
+                session.session_kind.clone()
+            } else {
+                self.record_session_kind(&session_id)
+            };
+            let parent_session_id = session
+                .parent_session_id
+                .clone()
+                .or_else(|| self.record_parent_session_id(&session_id));
+            let parent_tool_call_id = session
+                .parent_tool_call_id
+                .clone()
+                .or_else(|| self.record_parent_tool_call_id(&session_id));
             summaries.push(PiSessionSummary {
                 session_id: live_id,
                 repo_path: session.repo_path.clone(),
@@ -864,9 +919,9 @@ impl PiAgentService {
                 message_count: state.message_count,
                 updated_at_ms: self.record_updated_at_ms(&session_id),
                 title,
-                session_kind: self.record_session_kind(&session_id),
-                parent_session_id: self.record_parent_session_id(&session_id),
-                parent_tool_call_id: self.record_parent_tool_call_id(&session_id),
+                session_kind,
+                parent_session_id,
+                parent_tool_call_id,
             });
         }
         if !titles_to_cache.is_empty() {
@@ -1263,45 +1318,63 @@ impl PiAgentService {
                     let cb = Arc::clone(&on_event);
                     move |event| cb(event)
                 };
-                let attempt_result = if image_degraded_retry {
-                    // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
+                // 与 abort 竞速整次 prompt（含 provider.stream().await 建连）：
+                // pi 只在 stream.next 循环里 select abort，connect/send 阶段听不到停止。
+                // 这里 drop 掉 prompt future，打断卡死的 HTTP 建连。
+                let do_image_degraded = image_degraded_retry;
+                if do_image_degraded {
                     image_degraded_retry = false;
-                    handle
-                        .prompt_with_abort(
-                            degraded_image_prompt.clone(),
-                            abort_signal_for_prompt.clone(),
-                            on_event_cb,
-                        )
-                        .await
-                } else if retry_count == 0 {
-                    match &content_blocks {
-                        None => {
+                }
+                let attempt_result = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => {
+                        Err(pi::error::Error::session("aborted".to_string()))
+                    }
+                    result = async {
+                        if do_image_degraded {
+                            // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
                             handle
                                 .prompt_with_abort(
-                                    effective_prompt.clone(),
+                                    degraded_image_prompt.clone(),
+                                    abort_signal_for_prompt.clone(),
+                                    on_event_cb,
+                                )
+                                .await
+                        } else if retry_count == 0 {
+                            match &content_blocks {
+                                None => {
+                                    handle
+                                        .prompt_with_abort(
+                                            effective_prompt.clone(),
+                                            abort_signal_for_prompt.clone(),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                                Some(blocks) => {
+                                    handle
+                                        .session_mut()
+                                        .run_with_content_with_abort(
+                                            blocks.clone(),
+                                            Some(abort_signal_for_prompt.clone()),
+                                            on_event_cb,
+                                        )
+                                        .await
+                                }
+                            }
+                        } else {
+                            handle
+                                .continue_turn_with_abort(
                                     abort_signal_for_prompt.clone(),
                                     on_event_cb,
                                 )
                                 .await
                         }
-                        Some(blocks) => {
-                            handle
-                                .session_mut()
-                                .run_with_content_with_abort(
-                                    blocks.clone(),
-                                    Some(abort_signal_for_prompt.clone()),
-                                    on_event_cb,
-                                )
-                                .await
-                        }
-                    }
-                } else {
-                    handle
-                        .continue_turn_with_abort(abort_signal_for_prompt.clone(), on_event_cb)
-                        .await
+                    } => result,
                 };
 
                 if abort_signal.is_aborted() {
+                    let _ = handle.session_mut().revert_incomplete_response().await;
                     final_error = Some(
                         attempt_result
                             .as_ref()
@@ -1404,17 +1477,12 @@ impl PiAgentService {
                     error_message,
                 });
 
-                // block_on 路径下用短睡切片检查 abort，避免一次长 sleep 无法响应停止。
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(u64::from(delay_ms));
-                let mut cancelled = false;
-                while std::time::Instant::now() < deadline {
-                    if abort_signal.is_aborted() {
-                        cancelled = true;
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
+                // 重试等待与 abort 竞速，避免长 sleep / 阻塞线程导致停止迟钝。
+                let cancelled = tokio::select! {
+                    biased;
+                    _ = abort_signal_for_prompt.wait() => true,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))) => false,
+                };
                 if cancelled {
                     emit_pi(pi::sdk::AgentEvent::AutoRetryEnd {
                         success: false,
@@ -1560,6 +1628,32 @@ impl PiAgentService {
         true
     }
 
+    /// 按 session 中止当前活跃 run（无 runId 时的前端兜底）。
+    #[must_use]
+    pub fn abort_session(&self, session_id: &str) -> bool {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return false;
+        }
+        let Ok(runs) = self.active_runs.lock() else {
+            return false;
+        };
+        let targets: Vec<String> = runs
+            .iter()
+            .filter(|(_, run)| run.session_id == session_id)
+            .map(|(run_id, _)| run_id.clone())
+            .collect();
+        drop(runs);
+        if targets.is_empty() {
+            return false;
+        }
+        let mut any = false;
+        for run_id in targets {
+            any |= self.abort(&run_id);
+        }
+        any
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<bool, PiAgentError> {
         let runs = self
             .active_runs
@@ -1655,17 +1749,26 @@ impl PiAgentService {
 
     /// 保存 provider 的 api key 到统一 vault（0600，原子写）。
     pub fn save_api_key(&self, provider: &str, key: &str) -> Result<(), PiAgentError> {
-        self.secret_store()?.set_api_key(provider, key)
+        self.secret_store()?.set_api_key(provider, key)?;
+        // 凭据变更后允许重新 restore 曾因 missing key / model 降级的会话。
+        self.clear_all_restore_failures();
+        Ok(())
     }
 
     /// 保存/更新自定义 provider（models.json），api key 只进 vault。
     pub fn save_custom_provider(&self, input: &CustomProviderInput) -> Result<(), PiAgentError> {
-        self.provider_catalog()?.save_custom_provider(input)
+        self.provider_catalog()?.save_custom_provider(input)?;
+        self.clear_all_restore_failures();
+        Ok(())
     }
 
     /// 删除自定义供应商（models.json 整项 + vault 凭据）。
     pub fn remove_custom_provider(&self, provider: &str) -> Result<bool, PiAgentError> {
-        self.provider_catalog()?.remove_custom_provider(provider)
+        let removed = self.provider_catalog()?.remove_custom_provider(provider)?;
+        if removed {
+            self.clear_all_restore_failures();
+        }
+        Ok(removed)
     }
 
     /// 连接 OpenAI Completions 兼容自定义端点（拉模型 + 写 models.json + vault）。
@@ -1677,8 +1780,11 @@ impl PiAgentService {
         name: &str,
         provider: Option<&str>,
     ) -> Result<(String, Vec<String>), PiAgentError> {
-        self.provider_catalog()?
-            .connect_openai_compatible(base_url, api_key, name, provider)
+        let outcome = self
+            .provider_catalog()?
+            .connect_openai_compatible(base_url, api_key, name, provider)?;
+        self.clear_all_restore_failures();
+        Ok(outcome)
     }
 
     /// 更新已有 provider 的 baseUrl（及可选 api），保留 models 列表。
@@ -2260,6 +2366,85 @@ impl PiAgentService {
 
     /// 旁路语义抽取：ephemeral 无工具 session + 单次 prompt。
     /// 不进 catalog、不投影 subagent.*；slug 稳定靠 prompt 注入已有实体。
+    fn resolve_extraction_parent_meta(
+        &self,
+        parent_session_id: &str,
+        fallback: Option<&super::subagents::ExtractionCompletionFallback>,
+    ) -> Result<
+        (
+            PathBuf,
+            PathBuf,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+        PiAgentError,
+    > {
+        let fb = fallback.filter(|f| !f.repo_path.trim().is_empty());
+        let fb_has_provider = fb.is_some_and(|f| {
+            f.provider.as_ref().is_some_and(|s| !s.trim().is_empty())
+                && f.model.as_ref().is_some_and(|s| !s.trim().is_empty())
+        });
+        if fb_has_provider {
+            let fb = fb.expect("checked");
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            return Ok((
+                repo_path,
+                session_dir,
+                fb.provider.clone(),
+                fb.model.clone(),
+                fb.thinking.clone(),
+            ));
+        }
+        if let Ok(records) = self.records.lock() {
+            if let Some(record) = records.get(parent_session_id) {
+                return Ok((
+                    record.repo_path.clone(),
+                    record.session_dir.clone(),
+                    (!record.provider.is_empty()).then_some(record.provider.clone()),
+                    (!record.model.is_empty()).then_some(record.model.clone()),
+                    record.thinking.clone(),
+                ));
+            }
+        }
+        if let Some(fb) = fb {
+            let repo_path = PathBuf::from(&fb.repo_path);
+            let session_dir = crate::pi_agent::pi_sessions_dir_for_repo(&repo_path)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("giteam-extract-{parent_session_id}"))
+                });
+            let provider = fb.provider.clone().filter(|s| !s.trim().is_empty());
+            let model = fb.model.clone().filter(|s| !s.trim().is_empty());
+            return Ok((
+                repo_path,
+                session_dir,
+                provider,
+                model,
+                fb.thinking.clone(),
+            ));
+        }
+        Err(PiAgentError::SessionNotFound(parent_session_id.to_string()))
+    }
+
+    /// Stage-1 入队时快照父会话 provider/model/repo（父 session 销毁后仍可抽）。
+    #[must_use]
+    pub fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let record = self.records.lock().ok()?.get(parent_session_id).cloned()?;
+        Some(super::subagents::ExtractionCompletionFallback {
+            repo_path: record.repo_path.to_string_lossy().into_owned(),
+            provider: (!record.provider.is_empty()).then_some(record.provider),
+            model: (!record.model.is_empty()).then_some(record.model),
+            thinking: record.thinking,
+        })
+    }
+
     pub async fn run_extraction_completion(
         &self,
         request: super::subagents::ExtractionCompletionRequest,
@@ -2280,24 +2465,10 @@ impl PiAgentService {
             .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
         let _queue_guard = extract_lock.lock().await;
 
-        let parent_meta = {
-            let records = self
-                .records
-                .lock()
-                .map_err(|error| PiAgentError::State(error.to_string()))?;
-            let record = records
-                .get(&request.parent_session_id)
-                .ok_or_else(|| {
-                    PiAgentError::SessionNotFound(request.parent_session_id.clone())
-                })?;
-            (
-                record.repo_path.clone(),
-                record.session_dir.clone(),
-                (!record.provider.is_empty()).then_some(record.provider.clone()),
-                (!record.model.is_empty()).then_some(record.model.clone()),
-                record.thinking.clone(),
-            )
-        };
+        let parent_meta = self.resolve_extraction_parent_meta(
+            &request.parent_session_id,
+            request.fallback.as_ref(),
+        )?;
         let (repo_path, session_dir, provider, model, thinking) = parent_meta;
 
         let mut config = PiSessionConfig::persistent(repo_path.clone(), session_dir);
@@ -2489,15 +2660,66 @@ impl PiAgentService {
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             pending_steers,
+            session_kind: record.session_kind.clone(),
+            parent_session_id: record.parent_session_id.clone(),
+            parent_tool_call_id: record.parent_tool_call_id.clone(),
         });
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|error| PiAgentError::State(error.to_string()))?;
+        self.clear_restore_failure(session_id);
         Ok(sessions
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::clone(&managed))
             .clone())
+    }
+
+    /// 冷却期内是否已有 restore 失败记录（同错不重试）。
+    fn has_restore_failure_cooldown(&self, session_id: &str) -> bool {
+        let Ok(mut map) = self.restore_failures.lock() else {
+            return false;
+        };
+        let Some(entry) = map.get(session_id) else {
+            return false;
+        };
+        if entry.at.elapsed() < RESTORE_FAILURE_COOLDOWN {
+            return true;
+        }
+        map.remove(session_id);
+        false
+    }
+
+    /// 记录 restore 失败。返回 `true` 表示应打印日志（首次或错误文案变化）。
+    fn note_restore_failure(&self, session_id: &str, message: &str) -> bool {
+        let Ok(mut map) = self.restore_failures.lock() else {
+            return true;
+        };
+        match map.get(session_id) {
+            Some(prev) if prev.message == message => false,
+            _ => {
+                map.insert(
+                    session_id.to_string(),
+                    RestoreFailure {
+                        message: message.to_string(),
+                        at: Instant::now(),
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    fn clear_restore_failure(&self, session_id: &str) {
+        if let Ok(mut map) = self.restore_failures.lock() {
+            map.remove(session_id);
+        }
+    }
+
+    fn clear_all_restore_failures(&self) {
+        if let Ok(mut map) = self.restore_failures.lock() {
+            map.clear();
+        }
     }
 
     fn persist_catalog(&self) -> Result<(), PiAgentError> {
@@ -2843,6 +3065,14 @@ impl SubagentHost for ServiceSubagentHost {
             context,
             extraction_id,
         ))
+    }
+
+    fn extraction_parent_snapshot(
+        &self,
+        parent_session_id: &str,
+    ) -> Option<super::subagents::ExtractionCompletionFallback> {
+        let service = self.weak.upgrade()?;
+        service.extraction_parent_snapshot(parent_session_id)
     }
 }
 
@@ -3355,6 +3585,31 @@ fn migrate_repo_session_paths(records: &mut HashMap<String, PersistedSessionReco
     dirty
 }
 
+/// 主会话侧栏是否应隐藏该 session。内存元数据优先，catalog 作兜底。
+fn session_hidden_from_primary_list(
+    memory_kind: &str,
+    memory_parent: Option<&str>,
+    session_id: &str,
+    catalog_kind: &str,
+    catalog_parent: Option<&str>,
+) -> bool {
+    let kind = if !memory_kind.trim().is_empty() {
+        memory_kind
+    } else {
+        catalog_kind
+    };
+    if kind.eq_ignore_ascii_case("subagent") {
+        return true;
+    }
+    if memory_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    if catalog_parent.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+        return true;
+    }
+    crate::asset_graph::extraction::is_extract_session(session_id)
+}
+
 fn remove_session_files(path: &PathBuf) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(path.with_extension("jsonl.bak"));
@@ -3810,5 +4065,38 @@ mod tests {
             r#"Invalid 'input[2].call_id': string too long. Expected a string with maximum length 64, but got a string with length 1044 instead.","code":"string_above_max_length""#
         ));
         assert!(!is_tool_call_id_overflow_error("HTTP 400 invalid api key"));
+    }
+
+    #[test]
+    fn session_hidden_from_primary_list_prefers_memory_subagent_kind() {
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            None,
+            "child-1",
+            "primary",
+            None,
+        ));
+        assert!(session_hidden_from_primary_list(
+            "primary",
+            Some("parent-1"),
+            "child-2",
+            "primary",
+            None,
+        ));
+        assert!(!session_hidden_from_primary_list(
+            "primary",
+            None,
+            "main-1",
+            "primary",
+            None,
+        ));
+        // catalog 尚未写入时，仅靠内存 kind 也能挡住
+        assert!(session_hidden_from_primary_list(
+            "subagent",
+            Some("parent"),
+            "child-3",
+            "primary",
+            None,
+        ));
     }
 }

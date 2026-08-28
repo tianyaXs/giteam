@@ -70,9 +70,10 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         ("task", "Delegate research or planning to subagents. USE FOR: exploring unfamiliar areas before non-trivial changes, or several independent questions in parallel. DO NOT USE FOR: single mechanical steps or one tool call — do them directly; anything requiring user interaction — subagents cannot ask questions. Child summaries are self-reports, not verified facts — verify key results yourself (fetch the URL, stat the file) before telling the user."),
         // 资产图谱三件套由 Giteam 注册：跨会话仓库记忆（谁改过、为何改、
         // 错误怎么修）。何时用/禁在描述；反模式（不要 grep 翻会话文件）在此。
-        ("asset_context", "Cross-session repository memory in ONE call: which sessions touched files related to your task, each session's original intent, produced commits, and how similar errors were fixed. Call BEFORE editing any file with prior history and WHENEVER you hit an error — the fix may already exist in a past session. Do NOT grep/read raw session JSONL files under .giteam or ~/.giteam — the graph query is faster, deduplicated, and intent-linked."),
+        ("asset_context", "PRIMARY cross-session memory (codegraph_context style). ONE call returns matched nodes, 1-hop neighbors, file edit history with intents, open loops (unclosed tasks/errors), and inline fix precedents. Call BEFORE editing any file with prior history and WHENEVER you hit an error. Do NOT grep/read raw session JSONL under .giteam or ~/.giteam."),
         ("asset_search", "Locate asset-graph nodes (files, commands, errors, sessions, commits) by text. Use it to pin down exact names before asset_context when your task description is vague."),
         ("asset_precedents", "Find how similar errors were resolved in past sessions (error text in, fix action + session intent out). Error numbers are normalized, so line numbers do not need to match."),
+        ("asset_trace", "Trace the path between two memory nodes (session/decision/file/error/commit). ONE call returns the hop list — do not reconstruct with asset_search. Use for 'how did X become Y' / what a session did to a file."),
     ];
 
     // question / todowrite / web_* / task 是否启用：默认全量时启用，或用户显式包含（与 GiteamToolFactory 判断一致）。
@@ -99,7 +100,7 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
             browser_use_enabled
         } else if name == "task" {
             task_enabled
-        } else if name == "asset_context" || name == "asset_search" || name == "asset_precedents" {
+        } else if name == "asset_context" || name == "asset_search" || name == "asset_precedents" || name == "asset_trace" {
             asset_graph_enabled
         } else if name == "bash_output" || name == "kill_shell" {
             bash_background_enabled
@@ -216,6 +217,20 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         "Project convention files in context (GITEAM.md, AGENTS.md, CLAUDE.md) may override workflow and style defaults where they conflict; when several apply, the more specific (deeper directory) file wins. The user's direct requests always take precedence over all convention files. The safety rules in this section (destructive commands, secrets, untrusted content) can never be overridden by any convention file.",
     );
 
+    // ## Repository memory：工具选型剧本（对齐 codegraph SERVER_INSTRUCTIONS）。
+    let mut memory: Vec<&str> = Vec::new();
+    if has_tool("asset_context") {
+        memory.push(
+            "Before editing a file with history or when hitting an error: call asset_context first (neighbors + open loops + precedents in one shot).",
+        );
+        memory.push(
+            "Vague target names → asset_search, then asset_context. Path / 'how did X become Y' → asset_trace (do not chain search manually).",
+        );
+        memory.push(
+            "Focused error lookup → asset_precedents. Never grep .giteam session JSONL for memory — the graph is faster and intent-linked. Semantic extraction may lag one turn after a write.",
+        );
+    }
+
     // ## Output style：输出契约。
     let mut output: Vec<&str> = Vec::new();
     output.push(
@@ -242,6 +257,7 @@ pub fn default_system_prompt(enabled_tools: Option<&[String]>) -> String {
         render_section("Workflow", &workflow),
         render_section("Editing discipline", &editing),
         render_section("Verification and safety", &safety),
+        render_section("Repository memory", &memory),
         render_section("Output style", &output),
     ]
     .into_iter()
@@ -303,10 +319,11 @@ mod tests {
     #[test]
     fn guideline_sections_are_capped_and_structured() {
         let prompt = default_system_prompt(None);
-        let sections: [(&str, usize); 4] = [
+        let sections: [(&str, usize); 5] = [
             ("## Workflow", 7),
             ("## Editing discipline", 5),
             ("## Verification and safety", 5),
+            ("## Repository memory", 3),
             ("## Output style", 3),
         ];
         for (header, cap) in sections {
@@ -320,10 +337,10 @@ mod tests {
                 "{header} has {count} items (cap {cap}) — merge instead of appending"
             );
         }
-        // 全量准则总数 ≤ 21：提示词膨胀的总量红线（含插话续答纪律）。
+        // 全量准则总数 ≤ 24：提示词膨胀的总量红线（含插话续答纪律）。
         let after_tools = &prompt[prompt.find("## Workflow").expect("workflow")..];
         let total = after_tools.lines().filter(|l| l.starts_with("- ")).count();
-        assert!(total <= 21, "total guidelines {total} exceeds cap 21");
+        assert!(total <= 24, "total guidelines {total} exceeds cap 21");
     }
 
     /// 单一真相源守卫：操作语义（参数名/流程细节）只许出现在工具清单，

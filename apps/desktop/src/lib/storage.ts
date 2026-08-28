@@ -21,8 +21,11 @@ export async function saveReviewAction(action: ReviewAction): Promise<void> {
   await invoke("db_save_review_action", { action });
 }
 
-export async function addRepository(path: string): Promise<RepositoryEntry> {
-  return invoke<RepositoryEntry>("db_add_repository", { path });
+export async function addRepository(path: string, name?: string): Promise<RepositoryEntry> {
+  return invoke<RepositoryEntry>("db_add_repository", {
+    path,
+    name: name?.trim() ? name.trim() : null,
+  });
 }
 
 export async function listRepositories(): Promise<RepositoryEntry[]> {

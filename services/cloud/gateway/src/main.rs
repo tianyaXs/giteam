@@ -41,8 +41,19 @@ async fn main() -> anyhow::Result<()> {
     sqlx::raw_sql(include_str!("../migrations/002_access_keys.sql"))
         .execute(&pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/003_shares.sql"))
+        .execute(&pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/004_shares_split.sql"))
+        .execute(&pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/005_dingtalk.sql"))
+        .execute(&pool)
+        .await?;
 
     let state = AppState::new(config.clone(), pool);
+    tokio::fs::create_dir_all(&config.share_storage_dir).await?;
+    tokio::spawn(routes::share::sweeper(state.clone()));
     let mut app = Router::new()
         .merge(routes::router())
         .layer(CorsLayer::permissive())

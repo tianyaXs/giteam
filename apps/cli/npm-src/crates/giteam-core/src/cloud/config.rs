@@ -46,6 +46,11 @@ pub struct CloudLinkSettings {
     /// Local vault of known keys (provider-style). Never drop except manual delete.
     #[serde(default)]
     pub access_keys: Vec<CloudAccessKeyRecord>,
+    /// 谁负责跑 cloud tunnel："desktop"（桌面 Tauri 进程）或 "cli"（CLI service 子进程）。
+    /// 空串 = 未迁移；桌面进程首次启动会迁为 "desktop"。用于消除桌面进程与 CLI service
+    /// 子进程用同一 device_token 抢 gateway 同一 device slot 的抖动。
+    #[serde(default)]
+    pub tunnel_owner: String,
 }
 
 impl Default for CloudLinkSettings {
@@ -60,6 +65,7 @@ impl Default for CloudLinkSettings {
             key_name: String::new(),
             device_name: String::new(),
             access_keys: Vec::new(),
+            tunnel_owner: String::new(),
         }
     }
 }

@@ -5,13 +5,16 @@
 //! 并带长驻命令前台护栏，避免再起服务挂死会话。
 
 mod approval;
+mod asset_graph_tools;
 mod background;
 mod browser_use;
+mod command_safety;
 mod shell_resolver;
 mod edit_guard;
 mod question;
 mod task;
 mod todo;
+mod tool_budget;
 mod web;
 
 use std::path::{Path, PathBuf};
@@ -29,7 +32,9 @@ pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use question::QuestionTool;
 pub use task::TaskTool;
+pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool};
 pub use todo::TodoTool;
+pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
 
 /// 基于 pi `default_tool_registry` 装配，写/执行类工具包装 ApprovalTool；
@@ -55,6 +60,11 @@ pub struct GiteamToolFactory {
     session_dir: Option<PathBuf>,
     /// 子 agent 宿主；主会话注入，plan 子会话为 None（禁止再委派）。
     subagent_host: Option<Arc<dyn SubagentHost>>,
+    /// 工具结果预算（截断/落盘）；子 agent 用紧预算。
+    tool_budget: Arc<ToolBudgetConfig>,
+    /// 资产图谱工具（asset_context 等）：enabled_tools 未显式指定（默认全量）
+    /// 或显式包含 "asset_context" 时为 true。子 agent 同样可用（只读）。
+    asset_graph_enabled: bool,
 }
 
 impl GiteamToolFactory {
@@ -65,6 +75,7 @@ impl GiteamToolFactory {
         session_dir: Option<PathBuf>,
         browser_controller: SharedBrowserController,
         subagent_host: Option<Arc<dyn SubagentHost>>,
+        tool_budget: ToolBudgetConfig,
     ) -> Self {
         let question_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
@@ -78,7 +89,10 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
         let task_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
+        let asset_graph_enabled = enabled_tools
+            .is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
         Self {
+            asset_graph_enabled,
             hub,
             question_enabled,
             todo_enabled,
@@ -89,6 +103,7 @@ impl GiteamToolFactory {
             browser_controller,
             session_dir,
             subagent_host,
+            tool_budget: Arc::new(tool_budget),
         }
     }
 }
@@ -117,9 +132,11 @@ impl ToolFactory for GiteamToolFactory {
             .collect();
         let tools = default_tool_registry(&builtin, cwd, config).into_tools();
 
-        // 统一包装链：read 套记录器登记读取历史；edit 先套护栏（内层）强制 read-before-edit；
-        // 写/执行类再包 ApprovalTool（外层）。edit 路径为 edit → EditGuardTool → ApprovalTool，
-        // 审批放行后仍经护栏校验。
+        // 统一包装链：
+        // 1) read → ReadRecorder；edit → EditGuard
+        // 2) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
+        // 3) 写/执行类 → ApprovalTool（最外）
+        // edit 路径：edit → EditGuard → ToolBudget → ApprovalTool。
         let wrap = |tool: Box<dyn Tool>| -> Box<dyn Tool> {
             let name = tool.name().to_string();
             let tool: Box<dyn Tool> = if name == "read" {
@@ -129,6 +146,8 @@ impl ToolFactory for GiteamToolFactory {
             } else {
                 tool
             };
+            let tool: Box<dyn Tool> =
+                Box::new(ToolBudgetTool::new(tool, Arc::clone(&self.tool_budget)));
             if InteractionRisk::for_tool(tool.name()).requires_approval() {
                 Box::new(ApprovalTool::new(tool, Arc::clone(&self.hub))) as Box<dyn Tool>
             } else {
@@ -153,6 +172,15 @@ impl ToolFactory for GiteamToolFactory {
         }
         if self.question_enabled || wants_question {
             registry.push(Box::new(QuestionTool::new(Arc::clone(&self.hub))));
+        }
+        // 资产图谱三件套：只读（InteractionRisk::Read，免审批）、自带 8KB
+        // 输出限幅；与 Todo/Question 同模式不经 wrap（ToolBudget 面向大输出
+        // 工具如 read/bash，这里无需再套）。
+        if self.asset_graph_enabled {
+            registry.push(Box::new(AssetContextTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetSearchTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetPrecedentsTool::new(cwd.to_path_buf())));
+            registry.push(Box::new(AssetTraceTool::new(cwd.to_path_buf())));
         }
         if self.todo_enabled || wants_todo {
             registry.push(Box::new(TodoTool::new()));
@@ -196,17 +224,38 @@ mod tests {
         ) -> std::result::Result<SubagentSpawnResult, String> {
             Err("stub".to_string())
         }
+
+        async fn run_extraction_completion(
+            &self,
+            _request: crate::pi_agent::ExtractionCompletionRequest,
+        ) -> std::result::Result<crate::pi_agent::ExtractionCompletionResult, String> {
+            Err("stub".to_string())
+        }
     }
 
     fn make_factory(enabled_tools: Option<&[String]>) -> GiteamToolFactory {
         let hub = Arc::new(InteractionHub::new(Arc::new(InteractionStore::new())));
-        GiteamToolFactory::new(hub, enabled_tools, None, None, None)
+        GiteamToolFactory::new(
+            hub,
+            enabled_tools,
+            None,
+            None,
+            None,
+            ToolBudgetConfig::for_primary(None),
+        )
     }
 
     fn make_factory_with_host(enabled_tools: Option<&[String]>) -> GiteamToolFactory {
         let hub = Arc::new(InteractionHub::new(Arc::new(InteractionStore::new())));
         let host: Arc<dyn SubagentHost> = Arc::new(StubSubagentHost);
-        GiteamToolFactory::new(hub, enabled_tools, None, None, Some(host))
+        GiteamToolFactory::new(
+            hub,
+            enabled_tools,
+            None,
+            None,
+            Some(host),
+            ToolBudgetConfig::for_primary(None),
+        )
     }
 
     fn tool_names(registry: &ToolRegistry) -> Vec<String> {

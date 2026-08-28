@@ -128,7 +128,7 @@ pub async fn asset_graph_session_node(
         let Ok(graph) = graph.lock() else {
             return serde_json::json!({ "nodeId": null });
         };
-        serde_json::json!({ "nodeId": graph.query().session_node_id(&session_id) })
+        serde_json::json!({ "nodeId": graph.query().session_focus_node_id(&session_id) })
     })
     .await
     .unwrap_or_else(|_| serde_json::json!({ "nodeId": null }))
@@ -187,6 +187,28 @@ fn time_range(from_ms: Option<i64>, to_ms: Option<i64>) -> Option<(i64, i64)> {
         (Some(from), Some(to)) => Some((from.min(to), from.max(to))),
         _ => None,
     }
+}
+
+/// 抽取队列摘要：图谱顶栏「沉淀中」指示器；pending+claimed=0 时前端隐藏。
+/// 未挂载时也会直接读记忆库，避免轮询总是看到空队列。
+#[tauri::command]
+pub async fn asset_graph_extraction_queue(repo_path: String) -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = giteam_core::asset_graph::extraction_queue_summary(std::path::Path::new(&repo_path));
+        serde_json::json!({
+            "pending": s.pending,
+            "claimed": s.claimed,
+            "updatedAtMs": s.updated_at_ms,
+        })
+    })
+    .await
+    .unwrap_or_else(|_| {
+        serde_json::json!({
+            "pending": 0,
+            "claimed": 0,
+            "updatedAtMs": 0,
+        })
+    })
 }
 
 /// 手动触发存量回放（面板「重建索引」按钮；会话创建时也会自动增量回放）。

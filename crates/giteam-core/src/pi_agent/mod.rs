@@ -4,6 +4,7 @@ mod events;
 mod https_egress;
 mod interactions;
 mod mcp;
+mod managed_bins;
 mod messages;
 mod permissions;
 mod project_memory;
@@ -39,6 +40,10 @@ pub use prompt::default_system_prompt;
 pub use providers::{
     AgentModelCost, AgentModelInfo, AgentProviderInfo, CustomProviderInput, ProviderCatalog,
 };
+pub use managed_bins::{
+    agent_bin_dir, agent_bin_dir_string, ensure_agent_bins, prepend_agent_bin_to_path, BinEnsureReport,
+    BinSource,
+};
 pub use secrets::{
     default_data_dir, default_pi_agent_dir, ensure_data_dir, ensure_pi_agent_dir_env,
     ensure_pi_retry_settings, ensure_repo_pi_sessions_dir, ensure_workspace_giteam_gitignore,
@@ -53,7 +58,8 @@ pub use service::{
 };
 pub use subagents::{
     build_child_system_prompt, build_extract_system_prompt, child_stall_secs, child_timeout_secs,
-    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionRequest,
+    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionFallback,
+    ExtractionCompletionRequest,
     ExtractionCompletionResult, MemoryExtractionPublisher, SubagentDefinition, SubagentHost,
     SubagentSpawnRequest, SubagentSpawnResult, SubagentType, DEFAULT_CHILD_STALL_SECS,
     DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS, EXTRACT_ROLE_RULES,

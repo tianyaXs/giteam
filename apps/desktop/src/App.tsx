@@ -18,6 +18,7 @@ import {
   ArrowDownIcon
 } from "./components/icons";
 import { AgentApiDialog } from "./components/agent/AgentApiDialog";
+import { AddProjectDialog } from "./components/AddProjectDialog";
 import { AgentAuthDialog } from "./components/agent/AgentAuthDialog";
 import { AgentCustomProviderDialog, normalizeOpenAICompatibleBaseUrl } from "./components/agent/AgentCustomProviderDialog";
 import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentModulePanel";
@@ -25,10 +26,20 @@ import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPicke
 import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
 import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
 import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentChatFrame";
+import { AutomationView } from "./components/automation/AutomationView";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { AssetGraphPanel } from "./components/agent/AssetGraphPanel";
+import {
+  formatGraphContextBlock,
+  formatLocalFileAttachmentHint,
+  formatUiOnlyFileAttachmentHint,
+  IMAGE_ONLY_USER_PROMPT,
+  isCompactionSummaryUserText,
+  normalizeUserMessageForDisplay,
+  type GraphContextRef,
+} from "./lib/graphContextRefs";
 import { SearchPanel } from "./components/search/SearchPanel";
 import type { SearchHit, SearchScope } from "./lib/sessionSearch";
 import { AgentTodoProgressCard } from "./components/agent/AgentTodoProgressCard";
@@ -183,6 +194,7 @@ import {
   getCommitFilePatch,
   getGitWorktreeFileContent,
   getGitWorktreeFilePatch,
+  getLocalBranches,
   readRepoTerminalOutput,
   resizeRepoTerminalSession,
   sendRepoTerminalInput,
@@ -249,6 +261,8 @@ import {
   mergeAgentMessageErrors,
   mergeAgentStreamText,
   pickPreferredAgentContent,
+  appendMissingTextPartsToLive,
+  livePartsHaveTextPart,
   dedupeAgentDuplicateTextParts,
   readAgentTodosFromPart,
   toDisplayJson
@@ -285,7 +299,9 @@ import {
   clipAgentSessionTitle,
   compareAgentSessionActivity,
   filterActiveAgentSessionSummaries,
+  isPrimaryAgentSessionSummary,
   agentSessionFromSummary,
+  modelRefFromChatSession,
   sortAgentSessionSummaries,
   appendAssistantMessage,
   commitUserBeforeLiveAssistant,
@@ -299,7 +315,9 @@ import {
   type AgentDetailedPart,
   type AgentMessagePageCacheEntry,
   type ChatSessionSummary,
-  type AgentTodoItem
+  type AgentTodoItem,
+  mergeHistoryMessagesPreservingLive,
+  reconcilePromptTailFromHistory
 } from "./lib/agentSessions";
 import {
   type AgentSkillInfo,
@@ -323,6 +341,7 @@ import {
 import { extractToolDetails, extractToolOutputText } from "./lib/agent/toolPresentation";
 import {
   applySubagentChildEventToPart,
+  buildBatchTaskChildPartsFromDetails,
   enrichTaskToolPart,
   extractTaskDescriptionFromParentInput,
   parseIndexedParentToolCallId
@@ -339,6 +358,16 @@ import {
   saveReviewAction,
   saveReviewRecord
 } from "./lib/storage";
+import {
+  shareCreate,
+  shareImport,
+  shareImportCancel,
+  listenShareImportProgress,
+  isShareImportCancelled,
+  type ShareCreateResult,
+  type ShareImportProgress,
+  type ShareImportResult
+} from "./lib/share";
 import {
   appendTerminalError,
   createTerminalTabState,
@@ -381,6 +410,7 @@ import {
   readBranchParentMap,
   readWorkspaceAgentBindings,
   readWorktreeParentMap,
+  sameRepoPath,
   writeBranchParentMap,
   writeWorkspaceAgentBindings,
   writeWorktreeParentMap,
@@ -479,7 +509,7 @@ const SPLASH_MIN_DISPLAY_MS = 600;
 const SPLASH_MAX_DISPLAY_MS = 8000;
 const AGENT_MODEL_VIS_KEY = "giteam.agent.model-visibility.v1";
 const AGENT_MODEL_ENABLE_KEY = "giteam.agent.model-enabled.v1";
-const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v1";
+const AGENT_MODEL_SELECTION_KEY = "giteam.agent.model-selection.v2";
 const AGENT_SESSION_PAGE_SIZE = 3;
 const AGENT_SIDEBAR_SESSION_POLL_MS = 45000;
 const AGENT_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
@@ -514,6 +544,7 @@ const AGENT_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.agent.auto-accept-permissions.
 migrateLocalStoragePrefix("giteam.opencode.model-visibility.v1", AGENT_MODEL_VIS_KEY);
 migrateLocalStoragePrefix("giteam.opencode.model-enabled.v1", AGENT_MODEL_ENABLE_KEY);
 migrateLocalStoragePrefix("giteam.opencode.model-selection.v1", AGENT_MODEL_SELECTION_KEY);
+migrateLocalStoragePrefix("giteam.agent.model-selection.v1", AGENT_MODEL_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.agent-selection.v1", AGENT_COMPOSER_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.thinking-selection.v1", AGENT_THINKING_SELECTION_KEY);
 migrateLocalStoragePrefix("giteam.opencode.auto-accept-permissions.v1", AGENT_AUTO_ACCEPT_PERMISSIONS_KEY);
@@ -567,9 +598,31 @@ function buildToolPart(options: {
   return part;
 }
 
+function mergeCompletedUserChatMessage(
+  mapped: AgentChatMessage,
+  previous?: AgentChatMessage
+): AgentChatMessage {
+  const display = normalizeUserMessageForDisplay(mapped, previous);
+  return {
+    ...mapped,
+    content: display.content,
+    graphRefs: display.graphRefs,
+    attachments: previous?.attachments || mapped.attachments
+  };
+}
+
 function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | null {
   if (message.role !== "user" && message.role !== "assistant") return null;
-  const content = message.parts.map(agentPartText).join("");
+  const rawContent = message.parts.map(agentPartText).join("");
+  let content = rawContent;
+  let graphRefs: GraphContextRef[] | undefined;
+  if (message.role === "user") {
+    // Pi messages() 在压缩点注入 synthetic user 摘要；事件流不会推该气泡，history 对账需跳过。
+    if (isCompactionSummaryUserText(rawContent)) return null;
+    const normalized = normalizeUserMessageForDisplay({ content: rawContent });
+    content = normalized.content;
+    graphRefs = normalized.graphRefs;
+  }
   const images = message.parts
     .filter((part): part is Extract<AgentPart, { type: "image" }> => part.type === "image")
     .map((part, index) => ({
@@ -583,6 +636,7 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
     id: message.id,
     role: message.role,
     content,
+    graphRefs,
     attachments: images.length > 0 ? images : undefined
   };
 }
@@ -590,15 +644,26 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
 function agentSummaryToChatSummary(summary: AgentSessionSummary): ChatSessionSummary {
   const updatedAt = summary.updatedAtMs > 0 ? summary.updatedAtMs : Date.now();
   const parentId = String(summary.parentSessionId || "").trim();
+  const provider = String(summary.provider || "").trim();
+  const model = String(summary.model || "").trim();
+  const sessionKind = String(summary.sessionKind || "").trim();
   return {
     id: summary.sessionId,
     // 标题来自后端派生的首条用户消息摘要；空会话回退 id 前缀。
     title: String(summary.title || "").trim() || `Session ${summary.sessionId.slice(0, 8)}`,
     createdAt: updatedAt,
     updatedAt,
-    ...(parentId ? { parentId } : {})
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    ...(parentId ? { parentId } : {}),
+    ...(sessionKind ? { sessionKind } : {})
   };
 }
+
+function modelRefFromAgentSummary(summary: Pick<AgentSessionSummary, "provider" | "model">): string {
+  return normalizeModelRef(`${String(summary.provider || "").trim()}/${String(summary.model || "").trim()}`);
+}
+
 
 /** 收集会话内全部 ToolResult（pi 中它是独立的 tool 角色消息），按 toolCallId 索引，
  * 供 assistant 消息的 toolCall part 合并 output/error。 */
@@ -752,6 +817,31 @@ async function hydrateTaskPartsFromChildSessions(
       });
       nextParts.push(enriched);
       changed = true;
+    }
+    // 批并行父 task：history 往往只有父 toolCall + details.tasks，没有 parent:index 子卡。
+    // 冷加载时从 details 补齐终态，避免 UI 只剩父壳或误标中断。
+    const existingIds = new Set(
+      nextParts.map((part) =>
+        String((part as { toolCallId?: string }).toolCallId || (part as { id?: string }).id || "").trim()
+      ).filter(Boolean)
+    );
+    for (const part of nextParts.slice()) {
+      if (String((part as { toolName?: string }).toolName || "").trim() !== "task") continue;
+      const toolCallId = String(
+        (part as { toolCallId?: string }).toolCallId || (part as { id?: string }).id || ""
+      ).trim();
+      if (!toolCallId || toolCallId.includes(":")) continue;
+      const details = (part as { details?: unknown }).details;
+      const children = buildBatchTaskChildPartsFromDetails(toolCallId, details, nextParts);
+      for (const child of children) {
+        const childId = String(
+          (child as { toolCallId?: string }).toolCallId || (child as { id?: string }).id || ""
+        ).trim();
+        if (!childId || existingIds.has(childId)) continue;
+        nextParts.push(child);
+        existingIds.add(childId);
+        changed = true;
+      }
     }
     if (changed) {
       next[messageId] = { ...detail, parts: nextParts };
@@ -973,6 +1063,7 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
+  const [mainMode, setMainMode] = useState<"agent" | "automation">("agent");
   const [browserPaneUrl, setBrowserPaneUrl] = useState("");
   const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
   const rightOpenTabs = useMemo(
@@ -996,6 +1087,21 @@ export function App() {
   const [stagingFile, setStagingFile] = useState("");
   const [unstagingFile, setUnstagingFile] = useState("");
   const [busy, setBusy] = useState(false);
+  const [shareBusyRepoId, setShareBusyRepoId] = useState<string | null>(null);
+  const [shareResult, setShareResult] = useState<{ repoName: string; result: ShareCreateResult } | null>(null);
+  const [shareError, setShareError] = useState("");
+  const [addProjectOpen, setAddProjectOpen] = useState(false);
+  const [addProjectStep, setAddProjectStep] = useState<"type" | "local" | "remote">("type");
+  const [addProjectSource, setAddProjectSource] = useState<"local" | "remote">("local");
+  const [addProjectName, setAddProjectName] = useState("");
+  const [addProjectLocalPath, setAddProjectLocalPath] = useState("");
+  const [addProjectTargetPath, setAddProjectTargetPath] = useState("");
+  const [addProjectShareUrl, setAddProjectShareUrl] = useState("");
+  const [shareImportBusy, setShareImportBusy] = useState(false);
+  const [shareImportProgress, setShareImportProgress] = useState<ShareImportProgress | null>(null);
+  const [shareImportResult, setShareImportResult] = useState<ShareImportResult | null>(null);
+  const [shareImportError, setShareImportError] = useState("");
+  const [addProjectBusy, setAddProjectBusy] = useState(false);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -1115,9 +1221,8 @@ export function App() {
   const {
     savedModels: agentSavedModels,
     draftModel: agentDraftModel,
-    sessionModel: agentSessionModel,
     rememberSavedModel: rememberAgentSavedModel,
-    selectModel: selectAgentModel
+    selectDraftModel: selectAgentDraftModel
   } = useAgentModelSelection(`${AGENT_MODEL_SELECTION_KEY}:global`);
   const [showAgentModelPicker, setShowAgentModelPicker] = useState(false);
   const [agentModelPickerSearch, setAgentModelPickerSearch] = useState("");
@@ -1168,6 +1273,7 @@ export function App() {
   const [agentProviderConfigBusy, setAgentProviderConfigBusy] = useState(false);
   const [agentPromptInput, setAgentPromptInput] = useState("");
   const [agentImageAttachments, setAgentImageAttachments] = useState<AgentAttachment[]>([]);
+  const [agentGraphContextRefs, setAgentGraphContextRefs] = useState<GraphContextRef[]>([]);
   const [agentAttachmentMenuOpen, setAgentAttachmentMenuOpen] = useState(false);
   const [agentDefinitions, setAgentDefinitions] = useState<AgentDefinition[]>([]);
   const [agentDefinitionsLoading, setAgentDefinitionsLoading] = useState(false);
@@ -1272,6 +1378,13 @@ export function App() {
   // 否则会把「跨会话定位」带过去的关键词一起清掉。
   const [highlightKeyword, setHighlightKeyword] = useState("");
   const agentInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const handleCiteGraphNode = useCallback((ref: GraphContextRef) => {
+    setAgentGraphContextRefs((prev) => {
+      if (prev.some((item) => item.nodeId === ref.nodeId)) return prev;
+      return [...prev, ref];
+    });
+    requestAnimationFrame(() => agentInputRef.current?.focus({ preventScroll: true }));
+  }, []);
   const agentInputComposingRef = useRef(false);
   const agentImageInputRef = useRef<HTMLInputElement | null>(null);
   const agentViewportTodosSigRef = useRef("");
@@ -1908,7 +2021,8 @@ export function App() {
   const activeAgentModel = useMemo(() => {
     return resolveActiveAgentModel({
       activeSessionId: activeAgentSessionId,
-      sessionModel: agentSessionModel,
+      // 有会话时只认会话对象上的 provider/model（服务端真相），禁止再读 localStorage 影子映射。
+      sessionModelRef: modelRefFromChatSession(activeAgentSession),
       draftModel: agentDraftModel,
       configuredModel: agentConfig?.configuredModel || "",
       savedModels: agentSavedModels,
@@ -1919,7 +2033,8 @@ export function App() {
     });
   }, [
     activeAgentSessionId,
-    agentSessionModel,
+    activeAgentSession?.provider,
+    activeAgentSession?.model,
     agentDraftModel,
     agentConfig?.configuredModel,
     agentSavedModels,
@@ -1928,6 +2043,18 @@ export function App() {
     agentEnabledModels,
     agentProviderNames
   ]);
+
+  // 活动会话的 provider/model 变化时，同步旁路 picker state（禁止再用 draft 覆盖会话真相）。
+  useEffect(() => {
+    const sid = activeAgentSessionId.trim();
+    if (!sid) return;
+    const provider = String(activeAgentSession?.provider || "").trim();
+    const model = String(activeAgentSession?.model || "").trim();
+    if (!provider || !model) return;
+    setAgentModelProvider(provider);
+    setAgentSelectedModel(model);
+  }, [activeAgentSessionId, activeAgentSession?.provider, activeAgentSession?.model]);
+
   const agentMessages = activeAgentSession?.messages ?? [];
   const agentSessionLoading = Boolean(
     hydratingActiveAgentSession
@@ -2170,6 +2297,16 @@ export function App() {
       setAgentSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : [next, ...prev]));
       const targetRepoId = repos.find((repo) => normalizeWorkspacePath(repo.path) === normalizeWorkspacePath(target))?.id || selectedRepo?.id || "";
       upsertSidebarAgentSession(targetRepoId, next);
+      // provider/model 已随 agentSummaryToChatSummary → agentSessionFromSummary 写入 next。
+      const createdModelRef = modelRefFromAgentSummary(createdAgent);
+      if (createdModelRef) {
+        selectAgentDraftModel(createdModelRef);
+        const parsedCreated = parseModelRef(createdModelRef);
+        if (parsedCreated) {
+          setAgentModelProvider(parsedCreated.provider);
+          setAgentSelectedModel(parsedCreated.model);
+        }
+      }
       selectAgentSession(created.id, "new");
       if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
       if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
@@ -2236,6 +2373,8 @@ export function App() {
   function upsertSidebarAgentSession(repoId: string, session: AgentChatSession) {
     const id = repoId.trim();
     if (!id || !session.id.trim()) return;
+    // 子任务会话绝不能进侧栏（完成瞬间 list 竞态的最后一道防线）。
+    if (!isPrimaryAgentSessionSummary(session)) return;
     setSidebarAgentSessionsByRepo((prev) => {
       const limit = Math.max(AGENT_SESSION_PAGE_SIZE, getRepoSessionFetchLimit(id));
       const existing = prev[id] || [];
@@ -2322,6 +2461,7 @@ export function App() {
   }
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
+    setMainMode("agent");
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
     agentSessionsRepoIdRef.current = repo.id;
@@ -2430,11 +2570,23 @@ export function App() {
       providerMap: agentGlobalConfigProviderMap
     });
   }
-  function beginSplitDrag(kind: "sidebar" | "right", clientX: number) {
+  function beginSplitDrag(kind: "sidebar" | "right" | "changes", clientX: number) {
+    // 同步禁用选中：不能等 useEffect，否则 mousedown→mousemove 之间会拖蓝选中左右栏文本。
+    const root = document.documentElement;
+    root.classList.add("wb-split-resizing");
+    root.style.setProperty("cursor", "col-resize");
+    root.style.setProperty("user-select", "none");
+    (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    window.getSelection()?.removeAllRanges();
+    const startWidth =
+      kind === "sidebar" ? sidebarWidth : kind === "right" ? rightPaneWidth : changesSidebarWidth;
     setDraggingSplit({
       kind,
       startX: clientX,
-      startWidth: kind === "sidebar" ? sidebarWidth : rightPaneWidth
+      startWidth
     });
   }
 
@@ -2468,52 +2620,76 @@ export function App() {
     setAgentConfigBusy(true);
     try {
       const parsed = parseModelRef(normalized);
-      // OpenCode-like: selecting a model updates local selection (session/draft) and recent list.
-      // It does NOT write server /config.model unless explicitly requested elsewhere.
       const sid = activeAgentSessionId.trim();
-      selectAgentModel(normalized, sid);
-      if (parsed) {
+      // 无会话：只更新草稿预选（新建会话时写入服务端）。
+      // 有会话：唯一真相是 setModel 返回的 summary → 写回 AgentChatSession。
+      if (!sid) {
+        selectAgentDraftModel(normalized);
+        if (parsed) {
+          ensureProviderExists(parsed.provider);
+          setAgentModelProvider(parsed.provider);
+          setAgentSelectedModel(parsed.model);
+        }
+      } else if (parsed) {
         ensureProviderExists(parsed.provider);
-        // 备份当前选择：setModel 失败时回滚，避免 UI 显示新模型而 session 仍是旧 provider。
-        const prevProvider = agentModelProvider;
-        const prevModel = agentSelectedModel;
+        const prevProvider = String(activeAgentSession?.provider || agentModelProvider || "").trim();
+        const prevModel = String(activeAgentSession?.model || agentSelectedModel || "").trim();
+        // 乐观更新会话对象（显示立刻跟上选择）。
+        updateAgentSessionById(sid, (session) => ({
+          ...session,
+          provider: parsed.provider,
+          model: parsed.model
+        }));
         setAgentModelProvider(parsed.provider);
         setAgentSelectedModel(parsed.model);
-        if (sid) {
-          try {
-            await agentClient.setModel(sid, parsed.provider, parsed.model);
-            const piLevel = toPiThinkingLevel(
-              clampThinkingLevelToModel(
-                sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
-                agentModelInfoByRef[normalized] || null
-              ),
-              agentModelInfoByRef[normalized] || null
-            );
-            if (piLevel) await agentClient.setThinking(sid, piLevel);
-          } catch (error) {
-            // setModel 失败（如目标模型不在 pi 运行时 registry）：必须回滚 UI 并明确报错。
-            // 否则 UI 显示新模型而 session 仍用旧 provider，发送时才穿帮（如发图报旧 provider）。
-            appendAgentDebugLog(`session.setModel.error ${sid} ${String(error)}`);
-            setAgentModelProvider(prevProvider);
-            setAgentSelectedModel(prevModel);
-            throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
-          }
-          // 切换成功：清当前会话残留的运行失败错误占位（上一 provider 的报错），否则 UI 仍显示
-          // 旧 provider 的错误——例如已切到 gptluna，最后一条却仍显示 kimi-coding 报错（问题3）。
-          updateAgentSessionById(sid, (session) => {
-            let changed = false;
-            const messages = session.messages.map((message) => {
-              if (message.role === "assistant" && Boolean(message.error) && !(message.content || "").trim()) {
-                changed = true;
-                return { ...message, error: "" };
-              }
-              return message;
-            });
-            return changed ? { ...session, messages } : session;
-          });
+        selectAgentDraftModel(normalized); // 同时记住为下次新建默认
+        try {
+          const updated = await agentClient.setModel(sid, parsed.provider, parsed.model);
+          const serverProvider = String(updated.provider || parsed.provider).trim();
+          const serverModel = String(updated.model || parsed.model).trim();
+          const serverRef = normalizeModelRef(`${serverProvider}/${serverModel}`) || normalized;
+          updateAgentSessionById(sid, (session) => ({
+            ...session,
+            provider: serverProvider,
+            model: serverModel
+          }));
+          setAgentModelProvider(serverProvider);
+          setAgentSelectedModel(serverModel);
+          selectAgentDraftModel(serverRef);
+          rememberAgentSavedModel(serverRef);
+          const piLevel = toPiThinkingLevel(
+            clampThinkingLevelToModel(
+              agentSessionThinkingLevel[sid] || agentDraftThinkingLevel,
+              agentModelInfoByRef[serverRef] || agentModelInfoByRef[normalized] || null
+            ),
+            agentModelInfoByRef[serverRef] || agentModelInfoByRef[normalized] || null
+          );
+          if (piLevel) await agentClient.setThinking(sid, piLevel);
+        } catch (error) {
+          appendAgentDebugLog(`session.setModel.error ${sid} ${String(error)}`);
+          // 整段回滚到切换前的会话模型（服务端未改动）。
+          updateAgentSessionById(sid, (session) => ({
+            ...session,
+            ...(prevProvider ? { provider: prevProvider } : { provider: undefined }),
+            ...(prevModel ? { model: prevModel } : { model: undefined })
+          }));
+          setAgentModelProvider(prevProvider);
+          setAgentSelectedModel(prevModel);
+          throw new Error(`模型切换失败：${String(error instanceof Error ? error.message : error)}`);
         }
+        // 切换成功：清当前会话残留的运行失败错误占位（上一 provider 的报错）。
+        updateAgentSessionById(sid, (session) => {
+          let changed = false;
+          const messages = session.messages.map((message) => {
+            if (message.role === "assistant" && Boolean(message.error) && !(message.content || "").trim()) {
+              changed = true;
+              return { ...message, error: "" };
+            }
+            return message;
+          });
+          return changed ? { ...session, messages } : session;
+        });
       }
-      // 切换模型后钳制推理档到新模型能力。
       const clamped = clampThinkingLevelToModel(
         sid ? (agentSessionThinkingLevel[sid] || agentDraftThinkingLevel) : agentDraftThinkingLevel,
         agentModelInfoByRef[normalized] || null
@@ -3038,7 +3214,11 @@ export function App() {
             return {
               ...session,
               title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
-              messages: session.messages.map((item) => (item.id === mapped.id ? { ...item, ...mapped } : item)),
+              messages: session.messages.map((item) => (
+                item.id === mapped.id
+                  ? mergeCompletedUserChatMessage({ ...item, ...mapped }, item)
+                  : item
+              )),
               loaded: true,
               updatedAt: Date.now()
             };
@@ -3059,11 +3239,17 @@ export function App() {
           let messages = session.messages.flatMap((item) => {
             if (item.id === mapped.id) {
               replacedOptimistic = true;
-              return [{ ...item, ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             if (pendingId && item.id === pendingId) {
               replacedOptimistic = true;
-              return [{ ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             // 兜底：队列丢失时仍允许替换最早一条乐观（仅无 pendingId 时）。
             if (
@@ -3075,7 +3261,10 @@ export function App() {
               && String(item.content || "").trim() === userText
             ) {
               replacedOptimistic = true;
-              return [{ ...mapped, attachments: item.attachments || mapped.attachments }];
+              return [mergeCompletedUserChatMessage(
+                { ...mapped, attachments: item.attachments || mapped.attachments },
+                item
+              )];
             }
             return [item];
           });
@@ -3092,7 +3281,11 @@ export function App() {
             ).trim();
             const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
             const liveActive = Boolean(streamingId) && !frozen?.has(streamingId);
-            messages = commitUserBeforeLiveAssistant(messages, mapped, liveActive ? streamingId : "");
+            messages = commitUserBeforeLiveAssistant(
+              messages,
+              mergeCompletedUserChatMessage(mapped),
+              liveActive ? streamingId : ""
+            );
           }
           const seen = new Set<string>();
           messages = messages.filter((item) => {
@@ -3290,6 +3483,7 @@ export function App() {
   }
 
   function openSidebarAgentSession(repo: RepositoryEntry, session: ChatSessionSummary) {
+    setMainMode("agent");
     pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
     const cachedSession = agentSessions.find((item) => item.id === session.id) ?? null;
     // 远程 run 过程中会话可能已有 live 消息：直接展示，避免 hydration 卡在 getMessages 锁上转圈。
@@ -3329,6 +3523,18 @@ export function App() {
     setDraftAgentSession(false);
     selectAgentSession(session.id, "click");
     bindAgentSessionToWorkspace(session.id, repo.path, repo.name);
+    void agentClient.getSession(session.id).then((summary) => {
+      const provider = String(summary.provider || "").trim();
+      const model = String(summary.model || "").trim();
+      if (!provider || !model) return;
+      updateAgentSessionById(summary.sessionId, (row) => ({ ...row, provider, model }));
+      if (activeAgentSessionIdRef.current === summary.sessionId) {
+        setAgentModelProvider(provider);
+        setAgentSelectedModel(model);
+      }
+    }).catch((error) => {
+      appendAgentDebugLog(`session.getModel.error ${session.id} ${String(error)}`);
+    });
     void loadAgentSessionMessages(session.id, repo.path).catch((e) => setError(String(e)));
   }
 
@@ -3471,8 +3677,10 @@ export function App() {
       setSidebarAgentSessionLoadingByRepo((prev) => ({ ...prev, [repoId]: true }));
     }
     try {
-      const rows = (await agentClient.listSessions())
+      const listed = (await agentClient.listSessions())
         .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPathArg))
+        .filter(isPrimaryAgentSessionSummary);
+      const rows = listed
         .map(agentSummaryToChatSummary)
         // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
         .sort(compareAgentSessionActivity)
@@ -3538,8 +3746,10 @@ export function App() {
     const pendingAtRequest = pendingSidebarSessionSelectionRef.current;
     const limit = Math.max(AGENT_SESSION_PAGE_SIZE, limitArg ?? agentSessionFetchLimit);
     appendAgentDebugLog("session.list requested");
-    const rows = (await agentClient.listSessions())
+    const listed = (await agentClient.listSessions())
       .filter((session) => normalizeWorkspacePath(session.repoPath) === normalizeWorkspacePath(repoPath))
+      .filter(isPrimaryAgentSessionSummary);
+    const rows = listed
       .map(agentSummaryToChatSummary)
       // 先按活跃度排序再截断：后端分页顺序不该决定谁进第一页。
       .sort(compareAgentSessionActivity)
@@ -3579,6 +3789,9 @@ export function App() {
           title: s.title.trim() || freshRow.title,
           createdAt: freshRow.createdAt,
           updatedAt: freshRow.updatedAt,
+          // 服务端 catalog 是模型真相：列表刷新时覆盖本地会话上的 provider/model。
+          ...(freshRow.provider ? { provider: freshRow.provider } : {}),
+          ...(freshRow.model ? { model: freshRow.model } : {}),
         };
       });
     const freshRows = sortAgentSessionSummaries(visibleRows.filter((s) => !prevList.some((p) => p.id === s.id))).map((s, i) => agentSessionFromSummary(s, i + 1));
@@ -3619,6 +3832,8 @@ export function App() {
           title: cached.title.trim() || session.title,
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
+          ...(session.provider ? { provider: session.provider } : {}),
+          ...(session.model ? { model: session.model } : {}),
         }
         : session;
     });
@@ -3739,6 +3954,21 @@ export function App() {
             return { ...item, content: richer };
           }
           return item;
+        });
+        // history 可能缺最终 assistant（JSONL 未落盘）：保留 live 末尾气泡，避免闪过后被抹掉。
+        mapped = mergeHistoryMessagesPreservingLive(mapped, currentSession.messages, {
+          hasLiveParts: (messageId) => {
+            const parts =
+              agentLivePartsByServerMessageIdRef.current[messageId]
+              || [];
+            return parts.some((part) => {
+              const type = String((part as { type?: string }).type || "");
+              if (type === "text") return Boolean(String((part as { text?: string }).text || "").trim());
+              return false;
+            });
+          },
+          pickContent: (historyContent, liveContent) =>
+            pickPreferredAgentContent(historyContent, liveContent)
         });
       }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
@@ -3910,6 +4140,16 @@ export function App() {
     const repoIdAtCreate = selectedRepo?.id || newSessionTargetRepoId;
     upsertSidebarAgentSession(repoIdAtCreate, next);
     if (repoIdAtCreate) setExpandedProjectIds((prev) => (prev.includes(repoIdAtCreate) ? prev : [...prev, repoIdAtCreate]));
+    // provider/model 已写在 next（来自服务端 create summary）；草稿同步为下次新建默认。
+    const createdModelRef = modelRefFromAgentSummary(createdAgent) || parsedModel;
+    if (createdModelRef) {
+      selectAgentDraftModel(createdModelRef);
+      const parsedCreated = parseModelRef(createdModelRef);
+      if (parsedCreated) {
+        setAgentModelProvider(parsedCreated.provider);
+        setAgentSelectedModel(parsedCreated.model);
+      }
+    }
     selectAgentSession(created.id, "new");
     if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
     setAgentSessionThinkingLevel((prev) => ({ ...prev, [created.id]: activeAgentThinkingLevel }));
@@ -3929,6 +4169,7 @@ export function App() {
   }
 
   async function createAndSwitchAgentSessionForSidebar(seedPrompt?: string) {
+    setMainMode("agent");
     const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
     if (!targetRepo) {
       setError("请先导入并选择一个工作区。");
@@ -4238,7 +4479,9 @@ export function App() {
 
   useEffect(() => {
     if (!draggingSplit) return;
+    const root = document.documentElement;
     const onMove = (e: MouseEvent) => {
+      e.preventDefault();
       const delta = e.clientX - draggingSplit.startX;
       if (draggingSplit.kind === "sidebar") {
         setSidebarWidth(clamp(draggingSplit.startWidth + delta, 292, 340));
@@ -4248,16 +4491,35 @@ export function App() {
         setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 232, 360));
       }
     };
-    const onUp = () => setDraggingSplit(null);
+    const clearSplitResizeLock = () => {
+      root.classList.remove("wb-split-resizing");
+      root.style.removeProperty("cursor");
+      root.style.removeProperty("user-select");
+      (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "";
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "";
+    };
+    const onUp = () => {
+      clearSplitResizeLock();
+      setDraggingSplit(null);
+    };
+    root.classList.add("wb-split-resizing");
+    root.style.setProperty("cursor", "col-resize");
+    root.style.setProperty("user-select", "none");
+    (root.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
-    window.addEventListener("mousemove", onMove);
+    (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
+    window.getSelection()?.removeAllRanges();
+    window.addEventListener("mousemove", onMove, { passive: false });
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
     return () => {
-      document.body.style.userSelect = "";
-      document.body.style.cursor = "";
+      clearSplitResizeLock();
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
     };
   }, [draggingSplit]);
   function ensureRepoSelected(): boolean {
@@ -4386,6 +4648,216 @@ export function App() {
     }
   }
 
+  // 项目分享：右键「分享项目…」→ 导出快照上传云端，弹窗展示分享地址。
+  async function shareRepository(repo: RepositoryEntry) {
+    setShareBusyRepoId(repo.id);
+    setShareError("");
+    try {
+      const result = await shareCreate(repo.path);
+      setShareResult({ repoName: repo.name, result });
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setShareBusyRepoId(null);
+    }
+  }
+
+  // 落地页「在 Giteam 中打开」→ giteam://import?url=… 深链 → 确认导入。
+  // 冷启动时 Opened 可能早于 React 挂载：listen 之外再拉一次 pending。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    const openImport = (raw: string) => {
+      if (disposed || !raw.trim()) return;
+      setShareImportError("");
+      setShareImportResult(null);
+      setAddProjectShareUrl(raw.trim());
+      setAddProjectName("");
+      setAddProjectLocalPath("");
+      setAddProjectTargetPath("");
+      setAddProjectSource("remote");
+      setAddProjectStep("remote");
+      setAddProjectOpen(true);
+    };
+
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<string>("giteam://share-import", (event) => {
+          openImport(event.payload);
+        })
+      )
+      .then(async (fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+        // listen 就绪后再取 pending，避免冷启动 Opened 落在两者之间丢失。
+        try {
+          const pending = await invoke<string | null>("share_take_pending_import");
+          if (pending) openImport(pending);
+        } catch {
+          /* 旧包无此命令时忽略 */
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  function resetAddProjectDialog() {
+    setShareImportError("");
+    setShareImportProgress(null);
+    setAddProjectShareUrl("");
+    setAddProjectName("");
+    setAddProjectLocalPath("");
+    setAddProjectTargetPath("");
+    setAddProjectSource("local");
+    setAddProjectStep("type");
+    setAddProjectBusy(false);
+  }
+
+  function sanitizeProjectName(raw: string): string {
+    return raw.trim().replace(/[\\/]+/g, "-").replace(/^\.+/, "");
+  }
+
+  function joinProjectPath(parent: string, name: string): string {
+    const base = parent.trim().replace(/[/\\]+$/, "");
+    const leaf = sanitizeProjectName(name);
+    const sep = base.includes("\\") ? "\\" : "/";
+    return `${base}${sep}${leaf}`;
+  }
+
+  async function confirmShareImport() {
+    const url = addProjectShareUrl.trim();
+    const parent = addProjectTargetPath.trim();
+    const name = sanitizeProjectName(addProjectName);
+    if (!url || shareImportBusy) return;
+    if (!parent) {
+      setShareImportError("请选择保存位置");
+      return;
+    }
+    if (!name) {
+      setShareImportError("请填写项目名称");
+      return;
+    }
+    setShareImportBusy(true);
+    setShareImportError("");
+    setShareImportProgress({
+      stage: "meta",
+      message: "正在准备导入…",
+      percent: 1,
+    });
+    let unlistenProgress: (() => void) | undefined;
+    try {
+      unlistenProgress = await listenShareImportProgress((progress) => {
+        setShareImportProgress(progress);
+      });
+      const targetDir = joinProjectPath(parent, name);
+      const result = await shareImport(url, targetDir, undefined, name);
+      setShareImportResult(result);
+      setAddProjectOpen(false);
+      resetAddProjectDialog();
+      await refreshRepositories();
+      const all = await listRepositories();
+      const imported = all.find((repo) => sameRepoPath(repo.path, result.targetDir));
+      if (imported) setSelectedRepo(imported);
+    } catch (error) {
+      if (isShareImportCancelled(error)) {
+        setShareImportError("");
+        setShareImportProgress(null);
+        setShareImportBusy(false);
+        setAddProjectOpen(false);
+        resetAddProjectDialog();
+        return;
+      }
+      setShareImportError(error instanceof Error ? error.message : String(error));
+      setShareImportProgress(null);
+    } finally {
+      unlistenProgress?.();
+      setShareImportBusy(false);
+    }
+  }
+
+  async function cancelShareImport() {
+    if (!shareImportBusy) return;
+    setShareImportProgress((prev) => ({
+      stage: prev?.stage || "meta",
+      message: "正在取消…",
+      percent: prev?.percent ?? 0,
+      bytesDone: prev?.bytesDone ?? null,
+      bytesTotal: prev?.bytesTotal ?? null,
+    }));
+    try {
+      await shareImportCancel();
+    } catch {
+      // ignore
+    }
+  }
+
+  function openAddProjectDialog() {
+    if (busy || shareImportBusy || addProjectBusy) return;
+    resetAddProjectDialog();
+    setAddProjectOpen(true);
+  }
+
+  function continueAddProjectStep() {
+    if (addProjectSource === "local") {
+      setAddProjectStep("local");
+      return;
+    }
+    setAddProjectStep("remote");
+  }
+
+  async function pickAddProjectLocalPath() {
+    setShareImportError("");
+    try {
+      const path = await pickRepositoryFolder();
+      if (!path) return;
+      setAddProjectLocalPath(path);
+      if (!addProjectName.trim()) {
+        const base = path.split(/[/\\]/).filter(Boolean).pop() || "";
+        if (base) setAddProjectName(base);
+      }
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function pickAddProjectTargetPath() {
+    setShareImportError("");
+    try {
+      const path = await pickRepositoryFolder();
+      if (!path) return;
+      setAddProjectTargetPath(path);
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function confirmAddProjectLocal() {
+    const path = addProjectLocalPath.trim();
+    if (!path || addProjectBusy) return;
+    setAddProjectBusy(true);
+    setShareImportError("");
+    try {
+      const entry = await addRepository(path, sanitizeProjectName(addProjectName) || undefined);
+      await refreshRepositories();
+      setSelectedRepo(entry);
+      setGitPaneRepo(entry);
+      setMessage(`已导入仓库: ${entry.name}`);
+      setAddProjectOpen(false);
+      resetAddProjectDialog();
+    } catch (error) {
+      setShareImportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAddProjectBusy(false);
+    }
+  }
+
   // 启动屏隐藏判定：首批仓库列表 + 运行时检测 + agent 会话首轮加载均就绪后，
   // 补足最小展示时长再淡出——避免界面先露出"会话未加载完"的中间态。
   // 启动屏本体是 index.html 的内联 CSS 节点——transform/opacity 动画由合成器线程
@@ -4414,6 +4886,7 @@ export function App() {
   const {
     activateLinkedWorktree,
     checkoutBranchFromTopology,
+    createAndCheckoutBranch,
     checkoutRemoteBranchFromTopology,
     activateBranchWorkspace,
     deleteBranchFromTopology,
@@ -5323,8 +5796,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       setAgentConfiguredProviders(snapshot.configuredProviders);
 
       if (includeCurrentModel) {
-        // pi 没有服务端"当前模型"：选择是客户端状态，session 创建时生效，
-        // 活动 session 通过 agentClient.setModel 切换。
+        // 会话 provider/model 以服务端 catalog 为准；此处只同步草稿预选到旁路 picker state。
         const currentModel = normalizeModelRef(activeAgentModel || agentDraftModel || "");
         if (currentModel) {
           const parsed = parseModelRef(currentModel);
@@ -5455,7 +5927,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const active = parseModelRef(activeAgentModel);
       if (active?.provider === pid) {
         // 当前选中模型属于已删供应商时清空，避免继续发到失效端点。
-        selectAgentModel("", activeAgentSessionId.trim());
+        const sid = activeAgentSessionId.trim();
+        if (sid) {
+          updateAgentSessionById(sid, (session) => {
+            const next = { ...session };
+            delete next.provider;
+            delete next.model;
+            return next;
+          });
+        }
         setAgentModelProvider("");
         setAgentSelectedModel("");
       }
@@ -5478,13 +5958,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const typedPrompt = (options?.promptOverride ?? agentPromptInput).trim();
     const prompt = typedPrompt;
     const attachments = isQueueFlush ? [] : agentImageAttachments;
-    if (!prompt && attachments.length === 0) return;
+    const graphRefs = isQueueFlush ? [] : agentGraphContextRefs;
+    if (!prompt && attachments.length === 0 && graphRefs.length === 0) return;
     // 在任何 await 之前上锁并清空输入，避免连按 Enter 发出两次相同内容。
     if (agentPromptSubmitLockRef.current) return;
     agentPromptSubmitLockRef.current = true;
     if (!isQueueFlush) {
       setAgentPromptInput("");
       setAgentImageAttachments([]);
+      setAgentGraphContextRefs([]);
     }
     const releaseSubmitLock = () => {
       agentPromptSubmitLockRef.current = false;
@@ -5493,6 +5975,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (isQueueFlush) return;
       setAgentPromptInput(prompt);
       if (attachments.length > 0) setAgentImageAttachments(attachments);
+      if (graphRefs.length > 0) setAgentGraphContextRefs(graphRefs);
     };
 
     const selectedModel = normalizeModelRef(activeAgentModel || "");
@@ -5529,6 +6012,29 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
     // 发消息前确保当前 session hub 已同步 auto 偏好（覆盖：新建竞态、冷启动恢复会话）。
     await ensureSessionAutoAcceptPermissions(sessionId, agentAutoAcceptPermissions);
+    // 发送前把 UI 选择落到服务端会话，并以返回 summary 回写 AgentChatSession（唯一真相）。
+    const selectedParsed = parseModelRef(selectedModel);
+    if (selectedParsed) {
+      try {
+        const updated = await agentClient.setModel(sessionId, selectedParsed.provider, selectedParsed.model);
+        const serverProvider = String(updated.provider || selectedParsed.provider).trim();
+        const serverModel = String(updated.model || selectedParsed.model).trim();
+        updateAgentSessionById(sessionId, (session) => ({
+          ...session,
+          provider: serverProvider,
+          model: serverModel
+        }));
+        setAgentModelProvider(serverProvider);
+        setAgentSelectedModel(serverModel);
+      } catch (error) {
+        appendAgentDebugLog(`session.setModel.beforePrompt.error ${sessionId} ${String(error)}`);
+        restoreComposer();
+        releaseSubmitLock();
+        setError(`模型同步失败：${String(error instanceof Error ? error.message : error)}`);
+        setMessage("模型与会话不一致，请重新选择模型后再发送");
+        return;
+      }
+    }
     const modelInfo = agentModelInfoByRef[activeAgentModel] || null;
     const piThinking = toPiThinkingLevel(activeAgentThinkingLevel, modelInfo);
     if (piThinking) {
@@ -5586,18 +6092,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (isImageAttachment(attachment)) return [];
       const filename = attachment.filename || "unnamed attachment";
       if (attachment.sourcePath) {
-        return [[
-          "The user attached a local file named \"" + filename + "\".",
-          "Local path: " + attachment.sourcePath,
-          "Use the appropriate Pi tool to inspect it when needed."
-        ].join("\n")];
+        return [formatLocalFileAttachmentHint(filename, attachment.sourcePath)];
       }
-      return [[
-        "The user attached a file named \"" + filename + "\" (" + (attachment.mime || "unknown MIME type") + ").",
-        "The attachment was selected in the desktop UI but is not available as a filesystem path to the embedded agent."
-      ].join("\n")];
+      return [formatUiOnlyFileAttachmentHint(filename, attachment.mime || "unknown MIME type")];
     });
-    const sessionPrompt = [prompt, ...fileHints].filter(Boolean).join("\n\n").trim();
+    const graphContextBlock = formatGraphContextBlock(graphRefs);
+    const sessionPrompt = [prompt, graphContextBlock, ...fileHints].filter(Boolean).join("\n\n").trim();
     if (!sessionPrompt && multimodalImages.length === 0) {
       if (attachments.some((attachment) => isImageAttachment(attachment))) {
         restoreComposer();
@@ -5639,6 +6139,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           id: userId,
           role: "user",
           content: prompt,
+          graphRefs: graphRefs.length > 0 ? graphRefs : undefined,
           attachments: displayAttachments
         },
         { id: assistantId, role: "assistant", content: "" }
@@ -5676,6 +6177,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     let eventSubscription: { close: () => void } | null = null;
     let finalized = false;
     let finalizePromise: Promise<void> | null = null;
+    // 旁路记忆抽取在 run.completed 之后才回 completed/failed（ephemeral LLM 调用，
+    // 默认超时 120s）。finalize 立刻关订阅会丢这个终态事件，part 永远停在
+    // started，时间线卡片卡死「记录中」。跟踪在飞抽取，订阅留到其落地再关。
+    const pendingMemoryExtractions = new Set<string>();
+    let memoryGraceTimer: number | null = null;
+    const closeEventSubscription = () => {
+      if (memoryGraceTimer !== null) {
+        window.clearTimeout(memoryGraceTimer);
+        memoryGraceTimer = null;
+      }
+      if (eventSubscription) {
+        eventSubscription.close();
+        eventSubscription = null;
+      }
+    };
+    const closeSubscriptionWhenMemorySettled = () => {
+      if (finalized && pendingMemoryExtractions.size === 0) closeEventSubscription();
+    };
     /** 订阅已收到的事件数；>0 时禁止再整段回放 result.events（二次 ensure 会叠出同文气泡）。 */
     let liveEventCount = 0;
 
@@ -5814,6 +6333,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const localId = ensureLocalAssistant(message.id);
       const mapped = agentMessageToChatMessage(message);
       if (!mapped) return;
+      const softAppendCompletedTextToLive = () => {
+        const textBlocks = message.parts
+          .filter(
+            (part): part is Extract<AgentPart, { type: "text" }> =>
+              part.type === "text" && Boolean(part.text.trim())
+          )
+          .map((part) => part.text);
+        if (textBlocks.length === 0) return;
+        commitAgentLiveParts((prev) => {
+          const current = prev[message.id] || [];
+          const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
+          if (!changed) return prev;
+          return { ...prev, [message.id]: parts };
+        });
+      };
       updateAgentSessionById(sessionId, (session) => {
         const current = session.messages.find((item) => item.id === localId);
         // 手动暂停后 history replace 常不带 error；保留本地已写入的「已暂停」，避免被冲掉后又由 finalize 再塞一条。
@@ -5821,8 +6355,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         // 完成态若暂时没有 text block，不要用空/更短 content 盖掉已流式正文。
         // 但若 live 因 merge 拼出「双份假更长」，优先折叠后的完成态/单份正文。
         const nextContent = pickPreferredAgentContent(mapped.content, current?.content);
+        if (!current) {
+          return {
+            ...session,
+            messages: appendAssistantMessage(session.messages, {
+              ...mapped,
+              id: localId,
+              content: nextContent,
+              ...(preservedError ? { error: preservedError } : {})
+            }),
+            updatedAt: Date.now()
+          };
+        }
         if (
-          current &&
           current.content === nextContent &&
           String(current.error || "").trim() === preservedError
         ) {
@@ -5844,7 +6389,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         };
       });
       // 流式结束后的最终 replace 不要重建 live：否则刚稳定的时间线会被 history 结构换掉，列表闪一下。
-      if (options?.rebuildLive === false) return;
+      if (options?.rebuildLive === false) {
+        softAppendCompletedTextToLive();
+        return;
+      }
       // 按完成态消息的 block 顺序重建 live：与 session jsonl 一致（thinking → toolCall* → text），
       // 丢掉流式期乱序/幽灵工具；status/output 仍从旧 live 按 toolCallId 继承。
       const finalTools = message.parts.filter(
@@ -6012,10 +6560,18 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             next.push(part);
           }
         }
-        // 保留流式期写入的重试/失败/记忆事件（history message.parts 不含这些 ephemeral 类型）
+        // 保留流式期写入的重试/失败/记忆事件（history message.parts 不含这些 ephemeral 类型）。
+        // 成功重试不保留，避免「已重试」标签黏在最新正文下方。
         for (const part of current) {
           const type = String((part as { type?: string }).type || "");
           if (type !== "runtime.retry" && type !== "runtime.failure" && type !== "runtime.memory") continue;
+          if (
+            type === "runtime.retry"
+            && String((part as { phase?: string }).phase || "").trim() === "completed"
+            && (part as { success?: boolean | null }).success === true
+          ) {
+            continue;
+          }
           const id = String((part as { id?: string }).id || "").trim();
           if (!id) continue;
           if (next.some((item) => String((item as { id?: string }).id || "") === id)) continue;
@@ -6156,16 +6712,37 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       let id = messageId.trim();
       if (!id) return;
       if (frozenAssistantMessageIds.has(id)) {
-        // 已完成回合不再收新工具；挂到尚未冻结的当前回合，否则先缓冲到下一次 message.started。
+        const pid = String(
+          (part as { id?: string }).id
+          || (part as { toolCallId?: string }).toolCallId
+          || ""
+        ).trim();
+        const liveOnFrozen = agentLivePartsByServerMessageIdRef.current[id] || [];
+        const partIdOf = (item: AgentDetailedPart) =>
+          String(
+            (item as { id?: string }).id
+            || (item as { toolCallId?: string }).toolCallId
+            || ""
+          ).trim();
+        const existsOnFrozen = Boolean(pid && liveOnFrozen.some((item) => partIdOf(item) === pid));
+        const indexed = pid ? parseIndexedParentToolCallId(pid) : null;
+        const parentOnFrozen = Boolean(
+          indexed
+          && liveOnFrozen.some((item) => partIdOf(item) === indexed.parentId)
+        );
+        // 子任务终态/进度：工具卡已在该冻结消息上（或父 task 在其上）时必须写回，不能丢到下一条。
+        if (existsOnFrozen || parentOnFrozen) {
+          upsertAgentLivePart(id, part);
+          scrollToBottom();
+          return;
+        }
+        // 已完成回合不再收全新工具；挂到尚未冻结的当前回合，否则先缓冲到下一次 message.started。
         const current = currentServerAssistantId.trim();
         if (current && current !== id && !frozenAssistantMessageIds.has(current)) {
           id = current;
         } else {
-          const pid = String((part as { id?: string }).id || "").trim();
           if (pid) {
-            const hit = pendingToolsBeforeMessage.findIndex(
-              (item) => String((item as { id?: string }).id || "").trim() === pid
-            );
+            const hit = pendingToolsBeforeMessage.findIndex((item) => partIdOf(item) === pid);
             if (hit >= 0) pendingToolsBeforeMessage[hit] = { ...pendingToolsBeforeMessage[hit], ...part };
             else pendingToolsBeforeMessage.push(part);
           }
@@ -6238,18 +6815,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   let next = session.messages.flatMap((candidate) => {
                     if (candidate.id === mappedUser.id) {
                       replaced = true;
-                      return [{
-                        ...candidate,
-                        ...mappedUser,
-                        attachments: candidate.attachments || mappedUser.attachments
-                      }];
+                      return [mergeCompletedUserChatMessage(
+                        {
+                          ...candidate,
+                          ...mappedUser,
+                          attachments: candidate.attachments || mappedUser.attachments
+                        },
+                        candidate
+                      )];
                     }
                     if (pendingId && candidate.id === pendingId) {
                       replaced = true;
-                      return [{
-                        ...mappedUser,
-                        attachments: candidate.attachments || mappedUser.attachments
-                      }];
+                      return [mergeCompletedUserChatMessage(
+                        {
+                          ...mappedUser,
+                          attachments: candidate.attachments || mappedUser.attachments
+                        },
+                        candidate
+                      )];
                     }
                     return [candidate];
                   });
@@ -6259,7 +6842,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                       restore.unshift(pendingId);
                       agentPendingLocalUserIdsBySessionRef.current[sessionId] = restore;
                     }
-                    next = commitUserBeforeLiveAssistant(next, mappedUser, liveActive ? liveId : "");
+                    next = commitUserBeforeLiveAssistant(
+                      next,
+                      mergeCompletedUserChatMessage(mappedUser),
+                      liveActive ? liveId : ""
+                    );
                   }
                   const seen = new Set<string>();
                   return {
@@ -6401,20 +6988,34 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             } else if (phase === "started") {
               retryPart.maxAttempts = maxAttempts;
             }
-            upsertAgentLivePart(currentServerAssistantId, retryPart);
-            // 清掉旧版按 attempt/phase 生成的多行 retry:*，只留 runtime.retry 一条。
-            commitAgentLiveParts((prev) => {
-              const mid = currentServerAssistantId.trim();
-              const current = prev[mid];
-              if (!Array.isArray(current) || current.length === 0) return prev;
-              const next = current.filter((part) => {
-                const type = String((part as { type?: string }).type || "");
-                if (type !== "runtime.retry") return true;
-                return String((part as { id?: string }).id || "").trim() === "runtime.retry";
+            // 成功重试对用户已无信息量：直接移除，避免「已重试」永久挂在最新正文下方。
+            if (phase === "completed" && event.success) {
+              commitAgentLiveParts((prev) => {
+                const mid = currentServerAssistantId.trim();
+                const current = prev[mid];
+                if (!Array.isArray(current) || current.length === 0) return prev;
+                const next = current.filter(
+                  (part) => String((part as { type?: string }).type || "") !== "runtime.retry"
+                );
+                if (next.length === current.length) return prev;
+                return { ...prev, [mid]: next };
               });
-              if (next.length === current.length) return prev;
-              return { ...prev, [mid]: next };
-            });
+            } else {
+              upsertAgentLivePart(currentServerAssistantId, retryPart);
+              // 清掉旧版按 attempt/phase 生成的多行 retry:*，只留 runtime.retry 一条。
+              commitAgentLiveParts((prev) => {
+                const mid = currentServerAssistantId.trim();
+                const current = prev[mid];
+                if (!Array.isArray(current) || current.length === 0) return prev;
+                const next = current.filter((part) => {
+                  const type = String((part as { type?: string }).type || "");
+                  if (type !== "runtime.retry") return true;
+                  return String((part as { id?: string }).id || "").trim() === "runtime.retry";
+                });
+                if (next.length === current.length) return prev;
+                return { ...prev, [mid]: next };
+              });
+            }
           }
           setMessage(
             phase === "completed"
@@ -6429,6 +7030,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         case "memory.extraction.completed":
         case "memory.extraction.failed": {
           const extractionId = String(event.extractionId || "").trim() || "memory";
+          // 在飞登记先于挂载判断：即使这条终态事件找不到归属消息（无法上屏），
+          // 也必须把它从 pending 中清掉，否则订阅永远等不到收口。
+          if (event.type === "memory.extraction.started") {
+            pendingMemoryExtractions.add(extractionId);
+          } else {
+            pendingMemoryExtractions.delete(extractionId);
+          }
           if (!currentServerAssistantId && currentLocalAssistantId) {
             currentServerAssistantId = `memory-pending:${runId}`;
             localAssistantByMessageId.set(currentServerAssistantId, currentLocalAssistantId);
@@ -6437,7 +7045,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               [currentLocalAssistantId]: currentServerAssistantId
             }));
           }
-          if (!currentServerAssistantId) break;
+          if (!currentServerAssistantId) {
+            closeSubscriptionWhenMemorySettled();
+            break;
+          }
           const phase =
             event.type === "memory.extraction.started"
               ? "started"
@@ -6461,10 +7072,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             relationCount: Number(event.relationCount) || 0,
             intent: String(event.intent || "").trim(),
             entities,
+            quality: String(event.quality || "").trim(),
+            priority: String(event.priority || "").trim(),
             error: String(event.error || "").trim(),
             elapsedMs: Number(event.elapsedMs) || 0,
             status: phase === "started" ? "running" : phase === "failed" ? "error" : "completed"
           });
+          closeSubscriptionWhenMemorySettled();
           break;
         }
         case "runtime.compaction":
@@ -6529,12 +7143,46 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         case "tool.completed": {
           const toolCompletedId = String(event.toolCallId || "").trim();
           if (toolCompletedId) {
-            updateToolPart(currentServerAssistantId, buildToolPart({
+            const completedPart = buildToolPart({
               toolCallId: toolCompletedId,
               toolName: event.toolName || "",
               status: event.isError ? "error" : "completed",
               output: event.output
-            }));
+            });
+            updateToolPart(currentServerAssistantId, completedPart);
+            const toolName = String(
+              event.toolName
+              || (completedPart as { toolName?: string }).toolName
+              || ""
+            ).trim();
+            if (toolName === "task") {
+              const details = (completedPart as { details?: unknown }).details;
+              const live = agentLivePartsByServerMessageIdRef.current;
+              const partIdOf = (item: AgentDetailedPart) =>
+                String(
+                  (item as { id?: string }).id
+                  || (item as { toolCallId?: string }).toolCallId
+                  || ""
+                ).trim();
+              let targetMid = currentServerAssistantId.trim();
+              if (!(live[targetMid] || []).some((item) => partIdOf(item) === toolCompletedId)) {
+                for (const mid of frozenAssistantMessageIds) {
+                  if ((live[mid] || []).some((item) => partIdOf(item) === toolCompletedId)) {
+                    targetMid = mid;
+                    break;
+                  }
+                }
+              }
+              const existing = live[targetMid] || [];
+              const children = buildBatchTaskChildPartsFromDetails(
+                toolCompletedId,
+                details,
+                existing
+              );
+              for (const child of children) {
+                updateToolPart(targetMid, child);
+              }
+            }
           }
           break;
         }
@@ -6752,9 +7400,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       finalized = true;
       cancelStreamBatch();
       finalizePromise = (async () => {
-        if (eventSubscription) {
-          eventSubscription.close();
-          eventSubscription = null;
+        // 有在飞的记忆抽取时延迟关订阅（终态事件在 run.completed 之后到达）；
+        // 兜底计时对齐抽取超时（默认 120s）加余量，防事件丢失导致永不关闭。
+        if (pendingMemoryExtractions.size === 0) {
+          closeEventSubscription();
+        } else if (memoryGraceTimer === null) {
+          memoryGraceTimer = window.setTimeout(() => {
+            closeEventSubscription();
+          }, 150_000);
         }
         if (agentRunIdBySessionRef.current[sessionId] === runId) {
           delete agentRunIdBySessionRef.current[sessionId];
@@ -6798,13 +7451,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           let nextParts = parts.map((part) => {
             const type = String((part as { type?: string }).type || "");
             if (type === "toolCall") {
+              const toolName = String((part as { toolName?: string }).toolName || "").trim();
               const st = String((part as { status?: string }).status || "").trim().toLowerCase();
-              if (st !== "running" && st !== "pending" && st !== "deciding") return part;
-              return {
+              const sub = String((part as { subagentStatus?: string }).subagentStatus || "").trim().toLowerCase();
+              const stillOpen =
+                st === "running" || st === "pending" || st === "deciding"
+                || (toolName === "task" && (sub === "running" || sub === "pending"));
+              if (!stillOpen) return part;
+              const next = {
                 ...(part as object),
                 status: settleStatus,
                 isError: Boolean(failure)
               } as AgentDetailedPart;
+              if (toolName === "task") {
+                (next as { subagentStatus?: string }).subagentStatus = failure ? "failed" : "completed";
+              }
+              return next;
             }
             // 中止/失败时把仍停在「重试中」的行收成终态，避免暂停后整段消失或一直 pulse。
             if (failure && type === "runtime.retry") {
@@ -6886,6 +7548,81 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }
             return next;
           });
+        }
+
+        // Pi 式兜底：JSONL/history 已有最终总结但 live 漏事件时，只 patch 当前轮 tail，禁止整表 reload。
+        if (!failure) {
+          try {
+            const agentMessages = await agentClient.getMessages(sessionId);
+            const toolResults = agentToolResultsByCallId(agentMessages);
+            const historyChat = agentMessages
+              .map(agentMessageToChatMessage)
+              .filter((row): row is AgentChatMessage => Boolean(row));
+            let touchedAssistantIds: string[] = [];
+            updateAgentSessionById(sessionId, (session) => {
+              const result = reconcilePromptTailFromHistory(session.messages, historyChat, {
+                pickContent: pickPreferredAgentContent,
+                hasLiveParts: (messageId) => {
+                  const parts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
+                  return parts.some((part) => {
+                    const type = String((part as { type?: string }).type || "");
+                    return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
+                  });
+                }
+              });
+              touchedAssistantIds = result.touchedAssistantIds;
+              if (!result.changed) return session;
+              return { ...session, messages: result.messages, updatedAt: Date.now() };
+            });
+            const touchedIdSet = new Set(touchedAssistantIds);
+            const detailsPatch: Record<string, AgentDetailedMessage> = {};
+            for (const agentMsg of agentMessages) {
+              if (agentMsg.role !== "assistant" || !touchedIdSet.has(agentMsg.id)) continue;
+              const textBlocks = agentMsg.parts
+                .filter(
+                  (part): part is Extract<AgentPart, { type: "text" }> =>
+                    part.type === "text" && Boolean(part.text.trim())
+                )
+                .map((part) => part.text);
+              let liveHasText = livePartsHaveTextPart(
+                agentLivePartsByServerMessageIdRef.current[agentMsg.id]
+              );
+              if (textBlocks.length > 0) {
+                commitAgentLiveParts((prev) => {
+                  const current = prev[agentMsg.id] || [];
+                  const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
+                  if (!changed) return prev;
+                  liveHasText = true;
+                  return { ...prev, [agentMsg.id]: parts };
+                });
+              }
+              // live 已有 text part 时不再写 details：避免 fetched text:0 与 live text:soft 双轨。
+              if (liveHasText) continue;
+              const incoming = agentMessageToDetailedMessage(agentMsg, toolResults);
+              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
+              if (liveParts.length === 0) {
+                detailsPatch[agentMsg.id] = incoming;
+              }
+            }
+            if (Object.keys(detailsPatch).length > 0) {
+              setAgentDetailsByMessageId((prev) => {
+                const next = { ...prev };
+                for (const [messageId, incoming] of Object.entries(detailsPatch)) {
+                  const existing = prev[messageId];
+                  const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
+                  const incomingParts = Array.isArray(incoming.parts) ? incoming.parts : [];
+                  if (existingParts.length > incomingParts.length) continue;
+                  next[messageId] = incoming;
+                }
+                return next;
+              });
+            }
+            appendAgentDebugLog(
+              `agent.prompt.tailReconcile session=${sessionId} touched=${touchedAssistantIds.length}`
+            );
+          } catch (error) {
+            appendAgentDebugLog(`agent.prompt.tailReconcile.error session=${sessionId} ${String(error)}`);
+          }
         }
 
         // 工具收口后再清 busy/streaming，避免「运行中→已运行」与 parts 切换分两帧闪。
@@ -6978,7 +7715,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const result = await agentClient.prompt({
         sessionId,
         runId,
-        prompt: sessionPrompt || (multimodalImages.length > 0 ? "Please inspect the attached image(s)." : ""),
+        prompt: sessionPrompt || (multimodalImages.length > 0 ? IMAGE_ONLY_USER_PROMPT : ""),
         images: multimodalImages.map((image) => ({
           mimeType: image.mimeType,
           path: image.path
@@ -7004,11 +7741,38 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   async function stopAgentPrompt(sessionIdInput?: string) {
     const sid = (sessionIdInput || activeAgentSessionId || "").trim();
     if (!sid) return;
-    const runId = agentRunIdBySessionRef.current[sid];
-    if (!runId) return;
+
+    // 乐观停止：立刻清 busy / 流式态，按钮可再发；runId 留给后台 finalize 收口。
+    agentRunBusyBySessionRef.current[sid] = false;
+    setAgentRunBusyBySession((prev) => ({ ...prev, [sid]: false }));
+    const streamingId = String(agentStreamingAssistantIdBySession[sid] || "").trim();
+    setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sid]: "" }));
+    updateAgentSessionById(sid, (session) => {
+      const targetId =
+        streamingId
+        || [...session.messages].reverse().find((item) => item.role === "assistant")?.id
+        || "";
+      if (!targetId) return session;
+      return {
+        ...session,
+        messages: session.messages.map((item) =>
+          item.id === targetId
+            ? { ...item, error: item.error || "已暂停" }
+            : item
+        ),
+        updatedAt: Date.now(),
+      };
+    });
+
+    const runId = String(agentRunIdBySessionRef.current[sid] || "").trim();
     try {
-      const aborted = await agentClient.abort(runId);
-      appendAgentDebugLog("agent.prompt.abort session=" + sid + " run=" + runId + " ok=" + (aborted ? 1 : 0));
+      if (runId) {
+        const aborted = await agentClient.abort(runId);
+        appendAgentDebugLog("agent.prompt.abort session=" + sid + " run=" + runId + " ok=" + (aborted ? 1 : 0));
+      } else {
+        const aborted = await agentClient.abortSession(sid);
+        appendAgentDebugLog("agent.prompt.abort.session session=" + sid + " ok=" + (aborted ? 1 : 0));
+      }
     } catch (e) {
       appendAgentDebugLog("agent.prompt.abort.error session=" + sid + " " + String(e));
     }
@@ -7745,6 +8509,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     if (tab === "skills") void warmSkillsMarketplace();
   }
 
+  // 分支选择浮层打开时的轻量刷新：只拉分支列表，不触碰提交图与状态栏消息。
+  async function refreshBranchListForPicker() {
+    if (!selectedRepo) return;
+    try {
+      const branchList = await getLocalBranches(repoPath);
+      setBranches(branchList);
+    } catch {
+      // 浮层用的是已有分支快照，刷新失败静默忽略
+    }
+  }
+
   async function openToolFileInRightPane(input: {
     filePath: string;
     line?: number;
@@ -8393,6 +9168,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => { });
     };
   }, [applyAgentModelVisibility]);
+
+  // 自动化完成/失败通知：尊重全局 notificationsAgent。
+  useEffect(() => {
+    const unlistenPromise = listen<{ title?: string; body?: string }>(
+      "giteam://automation-notify",
+      (event) => {
+        if (!generalSettings.notificationsAgent) return;
+        const title = String(event.payload?.title || "任务").trim() || "任务";
+        const body = String(event.payload?.body || "").trim();
+        void showSettingsNotification(title, body);
+      }
+    );
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [generalSettings.notificationsAgent]);
 
   // 手机经云端/HTTP 发 prompt 时，桌面自己的 subscribeEvents 不会挂上该 runId。
   // 全局 hook：流式事件直接写 UI；终态再拉权威快照对账。
@@ -9530,7 +10321,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       isRepoSessionsLoading={isRepoSessionsLoading}
       isRepoSessionsPaging={isRepoSessionsPaging}
       isRepoSessionsLoaded={hasLoadedSidebarRepoSessions}
-      onImportRepository={() => void pickAndImportRepository()}
+      onImportRepository={() => openAddProjectDialog()}
       onCreateSession={() => void createAndSwitchAgentSessionForSidebar()}
       onOpenSearch={() => setSearchPanelOpen(true)}
       onToggleRepoSessions={toggleRepoSessions}
@@ -9550,6 +10341,16 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       rightPaneTab={rightPaneTab}
       rightOptionalTabs={rightOptionalTabs}
       rightModules={rightModuleVisibility}
+      branchPicker={selectedRepo ? {
+        repoName: selectedRepo.name,
+        currentBranch: worktreeOverview.branch || selectedBranch,
+        branches,
+        uncommittedCount: worktreeChangeStats.total,
+        busy,
+        onCheckoutBranch: (branchName) => void checkoutBranchFromTopology(branchName),
+        onCreateAndCheckout: (branchName) => createAndCheckoutBranch(branchName),
+        onRefreshBranches: () => void refreshBranchListForPicker(),
+      } : null}
       onOpenRightPane={openRightPane}
       onOpenSettings={() => {
         setSettingsInitialSection("general");
@@ -9559,6 +10360,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       mobileClientConnected={mobileClientConnected}
       remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
       onOpenRemoteRepos={openRemoteRepoInspector}
+      automationActive={mainMode === "automation"}
+      onOpenAutomation={() => {
+        setMainMode("automation");
+        // 内嵌浏览器子 webview 可能盖在主区域上，进自动化前先全部隐藏。
+        if (IS_TAURI) {
+          void invoke("hide_all_browser").catch(() => {});
+        }
+      }}
     />
   );
 
@@ -9691,6 +10500,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onJumpLatest={jumpAgentToLatest}
               attachments={agentImageAttachments}
               onRemoveAttachment={(id) => setAgentImageAttachments((prev) => prev.filter((item) => item.id !== id))}
+              graphRefs={agentGraphContextRefs}
+              onRemoveGraphRef={(id) => setAgentGraphContextRefs((prev) => prev.filter((item) => item.id !== id))}
               slashOpen={agentSlashOpen}
               slashSuggestions={agentSlashSuggestions}
               slashActiveIndex={agentSlashActiveIndex}
@@ -9762,6 +10573,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                     activeAgentSessionBusy
                     && !agentPromptInput.trim()
                     && agentImageAttachments.length === 0
+                    && agentGraphContextRefs.length === 0
                   ) {
                     return;
                   }
@@ -9861,7 +10673,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               }}
               canSubmit={Boolean(
                 (activeAgentModel || "").trim()
-                && (agentPromptInput.trim() || agentImageAttachments.length > 0)
+                && (agentPromptInput.trim() || agentImageAttachments.length > 0 || agentGraphContextRefs.length > 0)
               )}
               onPrimaryAction={() => {
                 // busy + 有草稿 → runAgentPrompt 内入队；busy + 空 → 停止。
@@ -9906,7 +10718,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         <BrowserPanel url={browserPaneUrl} />
       ) : null}
       {rightPaneTab === "assetGraph" ? (
-        <AssetGraphPanel repoPath={repoPath} deferForContent={agentSessionLoading} currentSessionId={activeAgentSessionId} />
+        <AssetGraphPanel
+          repoPath={repoPath}
+          deferForContent={agentSessionLoading}
+          currentSessionId={activeAgentSessionId}
+          onCiteNode={handleCiteGraphNode}
+        />
       ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (
@@ -10079,7 +10896,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onDiscardFile={(path, isUntracked) => void handleDiscardChanges(path, isUntracked)}
           onDiscardEntries={(entries, label) => void handleDiscardEntries(entries, label)}
           onCopyText={(text) => void copyText(text)}
-          onBeginResize={(clientX) => setDraggingSplit({ kind: "changes", startX: clientX, startWidth: changesSidebarWidth })}
+          onBeginResize={(clientX) => beginSplitDrag("changes", clientX)}
         />
       ) : null}
 
@@ -10207,7 +11024,38 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden"
   );
 
-  const editor = (
+  const editor = mainMode === "automation" ? (
+    <motion.div
+      key="automation-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+      <AutomationView
+        repos={repos}
+        getRepoSessions={getVisibleRepoSessions}
+        ensureRepoSessions={(repo) => {
+          if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
+          void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+        }}
+        onOpenImportProject={() => openAddProjectDialog()}
+        modelOptions={agentConfiguredModelCandidates.map((ref) => {
+          const slash = ref.indexOf("/");
+          const provider = slash >= 0 ? ref.slice(0, slash) : "";
+          const modelId = slash >= 0 ? ref.slice(slash + 1) : ref;
+          const display = getAgentModelDisplay(ref);
+          return {
+            ref,
+            label: display.label || ref,
+            provider,
+            modelId,
+          };
+        })}
+        modelInfoByRef={agentModelInfoByRef}
+      />
+    </motion.div>
+  ) : (
     <div
       className={editorShellClass}
       style={{ containerType: "inline-size", "--chat-content-left": CHAT_CONTENT_LEFT_CSS } as CSSProperties}
@@ -10301,7 +11149,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         apiKey: key || undefined
       });
       // 保存即选中：当前模型是客户端选择状态（draft 选择 + 记忆列表）。
-      selectAgentModel(full, "");
+      selectAgentDraftModel(full);
       // 自定义 provider 同样尽力拉实时模型列表，补全目录。
       if (key) {
         const added = (await agentClient.refreshProviderModels(pid).catch(() => [] as string[])) ?? [];
@@ -10515,8 +11363,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             sidebarCollapsed={!leftDrawerOpen}
             sidebarResizing={draggingSplit?.kind === "sidebar"}
             rightPanelResizing={draggingSplit?.kind === "right"}
-            onSidebarResizeStart={(e) => beginSplitDrag("sidebar", e.clientX)}
-            onRightPanelResizeStart={(e) => beginSplitDrag("right", e.clientX)}
+            onSidebarResizeStart={(e) => {
+              e.preventDefault();
+              beginSplitDrag("sidebar", e.clientX);
+            }}
+            onRightPanelResizeStart={(e) => {
+              e.preventDefault();
+              beginSplitDrag("right", e.clientX);
+            }}
             panelPlacement={panelPlacement}
           />
         </SidebarProvider>
@@ -11590,6 +12444,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               {pinnedRepoIds.includes(repoContextMenu.repo.id) ? appText.unpinProject : appText.pinProject}
             </DropdownMenuItem>
             <DropdownMenuItem
+              onSelect={() => void shareRepository(repoContextMenu.repo)}
+              disabled={busy || shareBusyRepoId === repoContextMenu.repo.id}
+            >
+              {shareBusyRepoId === repoContextMenu.repo.id ? "分享中…" : "分享项目…"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onSelect={() => void closeRepository(repoContextMenu.repo)}
               disabled={busy}
             >
@@ -11597,6 +12457,143 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             </DropdownMenuItem>
           </FloatingContextMenu>
         ) : null}
+
+        <Dialog
+          open={Boolean(shareResult)}
+          onOpenChange={(open) => {
+            if (!open) setShareResult(null);
+          }}
+        >
+          <DialogContent className="w-[min(520px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>分享已创建 — {shareResult?.repoName}</DialogTitle>
+              <DialogDescription>
+                把地址发给协作者，对方打开后即可完成项目初始化（含代码、AI 会话与记忆）。
+              </DialogDescription>
+            </DialogHeader>
+            {shareResult ? (
+              <div className="flex flex-col gap-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md border border-border px-3 py-2 text-xs">
+                    {shareResult.result.shareUrl}
+                  </code>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void navigator.clipboard.writeText(shareResult.result.shareUrl)}
+                  >
+                    复制
+                  </Button>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {shareResult.result.sessions} 个会话 · {shareResult.result.memory ? "含记忆库" : "无记忆库"} ·{" "}
+                  {shareResult.result.reviews} 条 review · 脱敏 {shareResult.result.redactions} 处 ·{" "}
+                  代码 {(shareResult.result.repoSizeBytes / 1048576).toFixed(1)} MiB + 上下文{" "}
+                  {(shareResult.result.contextSizeBytes / 1048576).toFixed(1)} MiB
+                </div>
+                {shareResult.result.warnings.length > 0 ? (
+                  <div className="flex flex-col gap-1 text-xs text-amber-500">
+                    {shareResult.result.warnings.map((warning) => (
+                      <div key={warning}>⚠ {warning}</div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="text-xs text-muted-foreground">
+                  接收方也可在终端执行：giteam init --from {shareResult.result.shareUrl}
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(shareError)}
+          onOpenChange={(open) => {
+            if (!open) setShareError("");
+          }}
+        >
+          <DialogContent className="w-[min(440px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>分享失败</DialogTitle>
+              <DialogDescription className="break-all">{shareError}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline" size="sm">
+                  关闭
+                </Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <AddProjectDialog
+          open={addProjectOpen}
+          step={addProjectStep}
+          source={addProjectSource}
+          projectName={addProjectName}
+          localPath={addProjectLocalPath}
+          targetPath={addProjectTargetPath}
+          shareUrl={addProjectShareUrl}
+          busy={shareImportBusy || addProjectBusy}
+          importProgress={shareImportBusy ? shareImportProgress : null}
+          error={shareImportError}
+          onOpenChange={(open) => {
+            if (!open && shareImportBusy) {
+              void cancelShareImport();
+              return;
+            }
+            if (!open && addProjectBusy) return;
+            setAddProjectOpen(open);
+            if (!open) resetAddProjectDialog();
+          }}
+          onSourceChange={setAddProjectSource}
+          onProjectNameChange={setAddProjectName}
+          onShareUrlChange={(url) => {
+            setAddProjectShareUrl(url);
+            if (shareImportError) setShareImportError("");
+          }}
+          onBackToType={() => {
+            setAddProjectStep("type");
+            setShareImportError("");
+          }}
+          onContinue={continueAddProjectStep}
+          onPickLocalPath={() => pickAddProjectLocalPath()}
+          onPickTargetPath={() => pickAddProjectTargetPath()}
+          onConfirmLocal={() => confirmAddProjectLocal()}
+          onConfirmRemote={() => confirmShareImport()}
+          onCancelRemote={() => cancelShareImport()}
+        />
+
+        <Dialog
+          open={Boolean(shareImportResult)}
+          onOpenChange={(open) => {
+            if (!open) setShareImportResult(null);
+          }}
+        >
+          <DialogContent className="w-[min(520px,calc(100vw-32px))]">
+            <DialogHeader>
+              <DialogTitle>导入完成 — {shareImportResult?.repoName}</DialogTitle>
+              <DialogDescription className="break-all">{shareImportResult?.targetDir}</DialogDescription>
+            </DialogHeader>
+            {shareImportResult ? (
+              <div className="flex flex-col gap-2 text-sm">
+                <div className="text-xs text-muted-foreground">
+                  恢复 {shareImportResult.sessionsImported} 个会话 ·{" "}
+                  {shareImportResult.memoryImported ? "含记忆库" : "无记忆库"} · 附件{" "}
+                  {shareImportResult.attachmentsImported} 个 · review {shareImportResult.reviewsImported} 条
+                </div>
+                {shareImportResult.warnings.length > 0 ? (
+                  <div className="flex flex-col gap-1 text-xs text-amber-500">
+                    {shareImportResult.warnings.map((warning) => (
+                      <div key={warning}>⚠ {warning}</div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
 
         {sessionContextMenu ? (
           <FloatingContextMenu

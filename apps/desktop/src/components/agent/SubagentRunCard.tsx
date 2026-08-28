@@ -168,8 +168,10 @@ export function SubagentRunCard({
     || subagentStatus === "error"
     || status === "error";
   // 父回合结束后若仍标 running，按失败/中断展示，避免「已完成」组里挂着「进行中」。
-  const running = rawRunning && !settled;
-  const interrupted = rawRunning && settled && !isError;
+  // 但 status 已是 completed 时（tool.completed / settle 已落盘），不要再因过期的
+  // subagentStatus=running 误标「中断/任务失败」。
+  const running = rawRunning && !settled && status !== "completed";
+  const interrupted = rawRunning && settled && !isError && status !== "completed";
   const completed = !running && !isError && !interrupted
     && (subagentStatus === "completed" || status === "completed" || settled);
 

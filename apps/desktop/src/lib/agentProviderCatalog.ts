@@ -216,7 +216,13 @@ export function buildAgentConfiguredProviderSnapshot(
 
 export function resolveActiveAgentModel(input: {
   activeSessionId: string;
-  sessionModel: Record<string, string>;
+  /**
+   * 当前活动会话上的 provider/model ref（来自 AgentChatSession / 服务端 summary）。
+   * 有活动会话时这是唯一显示真相；空字符串表示会话模型尚未回填，也不得回落 draft。
+   */
+  sessionModelRef?: string;
+  /** @deprecated 旧影子映射；仅在 sessionModelRef 未传时作兼容回退。 */
+  sessionModel?: Record<string, string>;
   draftModel: string;
   configuredModel: string;
   savedModels: string[];
@@ -233,8 +239,15 @@ export function resolveActiveAgentModel(input: {
     providerNames: input.providerNames
   });
   const sessionId = input.activeSessionId.trim();
-  const fromSession = sessionId ? normalizeModelRef(input.sessionModel[sessionId] || "") : "";
-  if (fromSession && isAvailableModel(fromSession)) return fromSession;
+  if (sessionId) {
+    const fromSessionRef = normalizeModelRef(input.sessionModelRef || "");
+    if (fromSessionRef) return fromSessionRef;
+    // 兼容过渡：若调用方仍传旧 sessionModel map，可读一次，但不再作为长期真相。
+    const fromLegacyMap = normalizeModelRef(input.sessionModel?.[sessionId] || "");
+    if (fromLegacyMap) return fromLegacyMap;
+    // 有活动会话但尚未拿到 provider/model：返回空，禁止回落 draft（否则又会显示 A 跑 B）。
+    return "";
+  }
   const fromDraft = normalizeModelRef(input.draftModel || "");
   if (fromDraft && isAvailableModel(fromDraft)) return fromDraft;
   const configured = normalizeModelRef(input.configuredModel || "");

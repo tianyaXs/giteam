@@ -1,12 +1,12 @@
 {
   "name": "chitchat-gate",
-  "note": "门控：user_text ≤ 4 字符时不应触发抽取（不调 LLM）",
+  "note": "寒暄仍入队；价值由 Stage-1 抽取 agent no-op（gate=should_enqueue）",
   "input": {
     "user_text": "在吗",
     "assistant_text": "在的，有什么可以帮你？"
   },
   "expect": {
-    "gate": false,
+    "gate": true,
     "max_entities": 0
   }
 }

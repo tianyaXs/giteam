@@ -1,0 +1,36 @@
+{
+  "entities": [
+    {
+      "id": "event-dispatch-module",
+      "type": "module",
+      "title": "事件分发链路",
+      "confidence": 0.9,
+      "evidence": "事件分发链路横跨三个文件"
+    }
+  ],
+  "relations": [
+    {
+      "type": "located_in",
+      "subject": "event-dispatch-module",
+      "object": "crates/giteam-core/src/pi_agent/events.rs",
+      "confidence": 0.9,
+      "evidence": "crates/giteam-core/src/pi_agent/events.rs 负责 ring buffer 与订阅分发"
+    },
+    {
+      "type": "located_in",
+      "subject": "event-dispatch-module",
+      "object": "crates/giteam-core/src/pi_agent/service.rs",
+      "confidence": 0.9,
+      "evidence": "crates/giteam-core/src/pi_agent/service.rs 负责 run 级投影"
+    },
+    {
+      "type": "located_in",
+      "subject": "event-dispatch-module",
+      "object": "crates/giteam-core/src/control.rs",
+      "confidence": 0.9,
+      "evidence": "crates/giteam-core/src/control.rs 负责 HTTP 端点透出"
+    }
+  ],
+  "session_intent": "梳理事件分发链路横跨的文件",
+  "quality": "medium"
+}
