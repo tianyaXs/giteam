@@ -120,42 +120,26 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.46）
+            ## 本版重点（0.2.47）
 
-            - 远程导入：进度条（阶段 / 百分比 / 已传体积）+ 可取消
-            - 去掉「将导入到 …」重复文案；自动化「创建」去掉多余箭头
-            - Agent：`list_sessions` restore 失败冷却，避免模型缺失 / 无 Key 时日志刷屏
+            - 自动化任务支持**钉钉群机器人**通知（按任务配置 Webhook / 加签）
+            - 只推送最终摘要；标题为「任务：…」；表单内可测试发送
+            - 修复渠道保存错乱、成功不发、残留 running 无法立即运行等问题
+            - 列表运行状态与会话同步；创建后收起表单；深色主题选中/状态更清晰
+            - 拖拽侧栏分隔线时不再整页选中文本
 
             ## 自动化
 
-            - 左侧栏「自动化」入口；已导入项目可建定时任务（需保持 Giteam 运行）
-            - 新会话 / 已有会话；busy 时跳过；每天 / 工作日 / 每周 / 间隔 / 自定义
-            - 可指定模型、推理强度、通知级别；未读蓝点；本地 `~/.giteam/automation.db`
-
-            ## 项目分享
-
-            - 导出上传云端生成分享链接；脱敏敏感信息；代码与上下文分包
-            - 「添加项目」向导：本地导入或分享链接远程导入；`giteam://import` 深链
-            - 导入进度与取消；Windows 路径兼容
-
-            ## Agent 与会话
-
-            - history 对账补全最终回复；过滤 compaction 摘要块
-            - 更快停止 / abort；restore 失败降级入列且不再刷屏
-
-            ## 桌面界面
-
-            - 左侧分支选择；资产图谱 LOD；右侧栏胶囊 tab
-
-            ## CLI（请升级至 0.1.53）
-
-            - `giteam share create / import / list / revoke`
-            - `giteam init --from <url>` 与 `--attach`
+            - 通知渠道：系统通知 / 钉钉 / 不通知
+            - 立即运行前自动保存表单；运行中状态与 Agent 会话对齐
+            - 去掉详情右上角关闭按钮（避免与右侧栏冲突），可用底部「取消」
 
             ## 说明
 
-            打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包。
-            Windows 建议安装 Git for Windows。
+            - 钉钉一期以出站通知为主；群 @ 反向触发能力已预留，暂未开放入口
+            - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
+            - Windows 建议安装 Git for Windows
+            - 详细说明见 `docs/releases/desktop-v0.2.47.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
