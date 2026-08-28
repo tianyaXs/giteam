@@ -4623,9 +4623,9 @@ dependencies = [
 
 [[package]]
 name = "mcpstore"
-version = "2.0.9"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf23a13b9242e70888c11620b9a121084ad3f2e6b44799d6e2256948d6f631e"
+checksum = "764b64230325af05e5868847bdce7f13d8adb3e66fea8f9d157666c9ab087e7a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5202,9 +5202,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openkeyv"
-version = "0.1.5"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "565929e227e7f5ed293b657bbbc4ae2b621599a73f2319ac70020b29adf33369"
+checksum = "37448feace9c304394e24ddba6e483af755271dbc2866933492ef746e9850a28"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

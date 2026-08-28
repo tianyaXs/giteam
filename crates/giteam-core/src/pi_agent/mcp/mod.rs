@@ -32,7 +32,7 @@ pub enum McpError {
     #[error("IO 错误：{0}")]
     Io(#[from] std::io::Error),
     #[error("mcpstore 错误：{0}")]
-    Store(#[from] mcpstore::StoreError),
+    Store(#[from] mcpstore::Error),
     #[error("MCP 工具名冲突（{service}/{tool}），请重命名服务或工具")]
     NameCollision { service: String, tool: String },
     #[error("MCP 服务配置无效：{0}")]
