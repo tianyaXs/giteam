@@ -55,6 +55,10 @@ jobs:
         with:
           node-version: 22
 
+      # package-lock 由 npm 10 生成；Node 22 自带 npm 可能是 10.x，显式钉住避免 ci 漂移
+      - name: Pin npm 10
+        run: npm install -g npm@10.9.8
+
       - name: Verify updater signing secret
         shell: bash
         env:
