@@ -7,6 +7,7 @@ import {
   CheckIcon as StageAllIcon,
   ListTreeIcon,
   MinusIcon as UnstageAllIcon,
+  RefreshCwIcon,
   RotateCcwIcon
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -73,6 +74,9 @@ type GitChangesPanelProps = {
   pushing: boolean;
   gitOperationLabel: string;
   commitMenuAvailable: boolean;
+  /** 可同步的提交数（ahead）与落后数（behind）：>0 时主按钮切为 VSCode 式「Sync Changes N↑」入口。 */
+  syncAhead: number;
+  syncBehind: number;
   stagingFile: string;
   unstagingFile: string;
   discardingFile: string;
@@ -83,6 +87,8 @@ type GitChangesPanelProps = {
   onCommit: () => void;
   onCommitAndPush: () => void;
   onCommitAndSync: () => void;
+  /** 无可提交更改但有可推送/拉取内容时的同步入口（pull --ff-only + push）。 */
+  onSync: () => void;
   onPatchWindowChange: (count: number) => void;
   onToggleDir: (path: string) => void;
   onOpenFile: (path: string) => void;
@@ -316,6 +322,8 @@ export function GitChangesPanel({
   pushing,
   gitOperationLabel,
   commitMenuAvailable,
+  syncAhead,
+  syncBehind,
   stagingFile,
   unstagingFile,
   discardingFile,
@@ -326,6 +334,7 @@ export function GitChangesPanel({
   onCommit,
   onCommitAndPush,
   onCommitAndSync,
+  onSync,
   onPatchWindowChange,
   onToggleDir,
   onOpenFile,
@@ -348,8 +357,12 @@ export function GitChangesPanel({
   const selectedFileExt = previewFileName.split(".").pop()?.toLowerCase() || "";
   const shouldUseMarkdownPreview = selectedContent.previewKind === "markdown" || selectedFileExt === "md" || selectedFileExt === "markdown" || selectedFileExt === "mdx";
   const shouldUseDocumentPreview = shouldUseMarkdownPreview || (Boolean(selectedContent.dataBase64) && selectedContent.previewKind !== "text");
-  const hasSelectedCommitContent = changeStats.staged > 0;
-  const showPrimaryCommitAction = hasSelectedCommitContent || isGitBusy;
+  // 优先级：有未提交文件（含未暂存/未跟踪）→ 提交状态；无未提交但有未推送/可拉取 → Sync 状态。
+  // 提交弹窗会自动暂存未暂存文件（getCommitInput），所以只有未暂存更改时也能直接 Commit & Push。
+  const hasCommittableChanges = changeStats.total > 0;
+  const syncable = syncAhead > 0 || syncBehind > 0;
+  const showSyncState = !hasCommittableChanges && syncable;
+  const showPrimaryCommitAction = hasCommittableChanges || showSyncState || isGitBusy;
   const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
   const directoryPaneLabel = directoryPaneOpen ? "收起目录区" : "展开目录区";
   const directoryTrackWidth = directoryPaneOpen ? "min(var(--changes-sidebar-width, 276px), 42%)" : "0px";
@@ -476,6 +489,15 @@ export function GitChangesPanel({
 
   const commitPrimaryContent = gitOperationLabel ? (
     <span>{gitOperationLabel}</span>
+  ) : showSyncState ? (
+    <span className="inline-flex items-center gap-2">
+      <RefreshCwIcon data-icon="inline-start" />
+      <span>Sync Changes</span>
+      <span className="inline-flex items-center gap-1 tabular-nums opacity-85">
+        {syncAhead > 0 ? `${syncAhead}↑` : ""}
+        {syncBehind > 0 ? `${syncBehind}↓` : ""}
+      </span>
+    </span>
   ) : (
     <span className="inline-flex items-center gap-2">
       <CheckIcon data-icon="inline-start" />
@@ -651,10 +673,10 @@ export function GitChangesPanel({
                   variant="contrast"
                   size="sm"
                   className="rounded-r-none"
-                  onClick={onCommitAndPush}
-                  disabled={!hasSelectedCommitContent}
+                  onClick={showSyncState ? onSync : onCommitAndPush}
+                  disabled={showSyncState ? isGitBusy : !hasCommittableChanges}
                   aria-busy={isGitBusy}
-                  title={!hasSelectedCommitContent ? "没有可提交的已暂存更改" : ""}
+                  title={showSyncState ? "拉取并推送本地提交" : !hasCommittableChanges ? "没有可提交的更改" : ""}
                 >
                   {commitPrimaryContent}
                 </Button>
@@ -676,15 +698,23 @@ export function GitChangesPanel({
                       提交操作
                     </DropdownMenuLabel>
                     <DropdownMenuGroup>
+                      {syncable ? (
+                        <DropdownMenuItem
+                          onClick={onSync}
+                          disabled={isGitBusy}
+                        >
+                          Sync Changes{syncAhead > 0 ? ` ${syncAhead}↑` : ""}{syncBehind > 0 ? ` ${syncBehind}↓` : ""}
+                        </DropdownMenuItem>
+                      ) : null}
                       <DropdownMenuItem
                         onClick={onCommitAndPush}
-                        disabled={isGitBusy || !hasSelectedCommitContent}
+                        disabled={isGitBusy || !hasCommittableChanges}
                       >
                         Commit & Push
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         onClick={onCommit}
-                        disabled={isGitBusy || !hasSelectedCommitContent}
+                        disabled={isGitBusy || !hasCommittableChanges}
                       >
                         Commit
                       </DropdownMenuItem>
@@ -693,7 +723,7 @@ export function GitChangesPanel({
                     <DropdownMenuGroup>
                       <DropdownMenuItem
                         onClick={onCommitAndSync}
-                        disabled={isGitBusy || !hasSelectedCommitContent}
+                        disabled={isGitBusy || !hasCommittableChanges}
                       >
                         Commit & Create PR
                       </DropdownMenuItem>

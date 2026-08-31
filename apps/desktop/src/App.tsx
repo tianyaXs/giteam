@@ -4912,6 +4912,7 @@ export function App() {
     handleGitCommit,
     handleGitCommitAndPush,
     handleGitCommitAndSync,
+    handleGitSync,
     refreshScm,
     pullLatest,
     pushCurrent,
@@ -10870,6 +10871,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           pushing={pushing}
           gitOperationLabel={gitOperationLabel}
           commitMenuAvailable={commitMenuAvailable}
+          syncAhead={worktreeOverview.ahead}
+          syncBehind={worktreeOverview.behind}
           stagingFile={stagingFile}
           unstagingFile={unstagingFile}
           discardingFile={discardingFile}
@@ -10886,6 +10889,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onCommitAndSync={() => {
             setCommitDialogAction("commitSync");
           }}
+          onSync={() => void handleGitSync()}
           onPatchWindowChange={handleWorktreePatchWindowChange}
           onToggleDir={toggleWorktreeDir}
           onOpenFile={(path) => {
