@@ -86,11 +86,11 @@ textarea,
 /*
  * 主题自适应浅色滚动条：用前景色低透明度，亮色主题偏浅灰、暗色主题偏柔和浅条，
  * 避免系统默认深色粗条抢视觉。
+ * 注意：不要在这里加 scrollbar-width / scrollbar-color 标准属性——新版 WebKit
+ *（WKWebView）一旦见到它们就走 UI 进程绘制的原生滚动条，下面整组
+ * ::-webkit-scrollbar 规则全部失效，轨道出现系统灰底+边框线
+ *（实测对照：仅 webkit 规则时自定义渲染正常、8px 生效）。
  */
-.gt-subtle-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
-}
 
 .gt-subtle-scrollbar::-webkit-scrollbar {
   width: 8px;
