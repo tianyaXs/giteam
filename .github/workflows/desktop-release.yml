@@ -120,16 +120,17 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.50）
+            ## 本版重点（0.2.51）
 
-            - Agent：禁假性许可问（「直接跑一遍吗？」类），明显下一步直接做
-            - Agent：真决策只走 question；与会被否决的 bash/write 同轮互斥
+            - 审查面板：完善提交/Sync 主按钮逻辑（VSCode 式 Sync Changes）
+            - 分支切换：未提交变更阻塞时支持「提交后切换」
+            - 新增客户端使用文档
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.50.md`
+            - 详细说明见 `docs/releases/desktop-v0.2.51.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
