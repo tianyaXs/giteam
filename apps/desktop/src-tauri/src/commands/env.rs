@@ -11,8 +11,9 @@ const INSTALL_TIMEOUT_SECS: u64 = 15 * 60;
 const UNINSTALL_TIMEOUT_SECS: u64 = 2 * 60;
 
 /// Shared shell helpers for uninstall scripts. Homebrew may hang while fetching
-/// formulae.brew.sh even with HOMEBREW_NO_AUTO_UPDATE; timed brew + Cellar fallback
-/// keeps the desktop UI responsive.
+/// formulae.brew.sh even with HOMEBREW_NO_AUTO_UPDATE; timed brew + Cellar/Caskroom
+/// fallback keeps the desktop UI responsive. Also covers cask-installed tools
+/// (e.g. Entire lives under Caskroom, not Cellar).
 const UNINSTALL_SHELL_HELPERS: &str = r#"
 giteam_run_timed() {
   local timeout_secs=$1
@@ -49,6 +50,17 @@ giteam_brew_formula_installed() {
   return 1
 }
 
+giteam_brew_cask_installed() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Caskroom/$base" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 giteam_brew_remove_formula() {
   local base
   base=$(giteam_brew_cellar_name "$1")
@@ -62,21 +74,58 @@ giteam_brew_remove_formula() {
   done
 }
 
+giteam_brew_remove_cask() {
+  local base
+  base=$(giteam_brew_cellar_name "$1")
+  for prefix in /opt/homebrew /usr/local; do
+    if [ -d "$prefix/Caskroom/$base" ]; then
+      rm -rf "$prefix/Caskroom/$base"
+      echo "[giteam] removed $prefix/Caskroom/$base directly"
+    fi
+    # Cask apps often leave a bin symlink (e.g. entire -> Caskroom/...)
+    if [ -L "$prefix/bin/$base" ] || [ -f "$prefix/bin/$base" ]; then
+      rm -f "$prefix/bin/$base"
+      echo "[giteam] removed $prefix/bin/$base"
+    fi
+    rm -rf "$prefix/opt/$base" 2>/dev/null || true
+  done
+}
+
 giteam_brew_uninstall() {
   local formula=$1
-  if ! command -v brew >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! giteam_brew_formula_installed "$formula"; then
-    return 0
-  fi
-  echo "[giteam] uninstalling brew formula: $formula"
-  if giteam_run_timed 12 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew uninstall --force "$formula"; then
-    echo "[giteam] brew uninstall $formula succeeded"
+  local base
+  base=$(giteam_brew_cellar_name "$formula")
+  local has_formula=0
+  local has_cask=0
+  giteam_brew_formula_installed "$formula" && has_formula=1
+  giteam_brew_cask_installed "$formula" && has_cask=1
+
+  if command -v brew >/dev/null 2>&1; then
+    if [ "$has_cask" -eq 1 ]; then
+      echo "[giteam] uninstalling brew cask: $formula"
+      if giteam_run_timed 20 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew uninstall --cask --force "$formula"; then
+        echo "[giteam] brew cask uninstall $formula succeeded"
+      else
+        echo "[giteam] brew cask uninstall $formula timed out or failed; removing Caskroom directly"
+        giteam_brew_remove_cask "$formula"
+      fi
+    fi
+    if [ "$has_formula" -eq 1 ]; then
+      echo "[giteam] uninstalling brew formula: $formula"
+      if giteam_run_timed 12 env HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 brew uninstall --force "$formula"; then
+        echo "[giteam] brew uninstall $formula succeeded"
+      else
+        echo "[giteam] brew uninstall $formula timed out or failed; removing Cellar directly"
+        giteam_brew_remove_formula "$formula"
+      fi
+    fi
   else
-    echo "[giteam] brew uninstall $formula timed out or failed; removing Cellar directly"
-    giteam_brew_remove_formula "$formula"
+    echo "[giteam] brew not found; attempting direct Cellar/Caskroom cleanup for $base"
   fi
+
+  # Always sweep leftovers (GUI PATH / partial uninstalls).
+  giteam_brew_remove_formula "$formula"
+  giteam_brew_remove_cask "$formula"
 }
 
 giteam_find_npm() {
@@ -96,10 +145,21 @@ giteam_npm_uninstall() {
   local npm_cmd
   npm_cmd=$(giteam_find_npm)
   if [ -z "$npm_cmd" ]; then
-    return 0
+    echo "[giteam] npm not found; will still try removing known giteam bins"
+  else
+    echo "[giteam] npm uninstall: $*"
+    giteam_run_timed 60 "$npm_cmd" uninstall -g "$@" || echo "[giteam] npm uninstall timed out or failed"
+    local prefix
+    prefix=$("$npm_cmd" prefix -g 2>/dev/null || true)
+    if [ -n "$prefix" ]; then
+      for pkg in "$@"; do
+        rm -f "$prefix/bin/$pkg" 2>/dev/null || true
+      done
+    fi
   fi
-  echo "[giteam] npm uninstall: $*"
-  giteam_run_timed 60 "$npm_cmd" uninstall -g "$@" || echo "[giteam] npm uninstall timed out or failed"
+  for pkg in "$@"; do
+    rm -f "$HOME/.npm-global/bin/$pkg" "/usr/local/bin/$pkg" "/opt/homebrew/bin/$pkg" 2>/dev/null || true
+  done
 }
 "#;
 
@@ -659,26 +719,68 @@ winget install --id Git.Git -e --source winget --accept-package-agreements --acc
     }
 
     match (name, action) {
-        ("git", "install") => Ok(r#"if command -v brew >/dev/null 2>&1; then
-  brew install git
+        ("git", "install") | ("git", "update") => Ok(r#"if command -v brew >/dev/null 2>&1; then
+  if brew list --formula git >/dev/null 2>&1 || brew list git >/dev/null 2>&1; then
+    brew upgrade git || brew install git
+  else
+    brew install git
+  fi
 else
   xcode-select --install || true
   echo "Homebrew not found. Triggered Xcode Command Line Tools installer."
 fi"#),
-        ("git", "uninstall") => Ok(r#"if command -v brew >/dev/null 2>&1; then
+        ("git", "uninstall") => Ok(r#"rehash 2>/dev/null || true
+GIT_BEFORE=$(command -v git || true)
+if [ -z "$GIT_BEFORE" ]; then
+  echo "git not found; nothing to uninstall"
+  exit 0
+fi
+echo "[giteam] git currently at $GIT_BEFORE"
+if command -v brew >/dev/null 2>&1; then
   giteam_brew_uninstall git || true
-else
-  echo "Git installed by Xcode Command Line Tools must be removed manually."
-fi"#),
-        ("entire", "install") => Ok(r#"if ! command -v brew >/dev/null 2>&1; then
+fi
+rehash 2>/dev/null || true
+GIT_AFTER=$(command -v git || true)
+if [ -z "$GIT_AFTER" ]; then
+  echo "Git uninstall finished."
+  exit 0
+fi
+case "$GIT_AFTER" in
+  /usr/bin/git|/bin/git)
+    echo "检测到系统自带 Git（$GIT_AFTER），桌面端无法卸载。请通过系统设置或卸载 Xcode Command Line Tools 处理。"
+    exit 1
+    ;;
+  *)
+    echo "git 仍存在于 $GIT_AFTER，卸载未完成。"
+    exit 1
+    ;;
+esac"#),
+        ("entire", "install") | ("entire", "update") => Ok(r#"if ! command -v brew >/dev/null 2>&1; then
   echo "Homebrew is required to install Entire CLI."
   exit 2
 fi
 brew tap entireio/tap
-brew install entireio/tap/entire"#),
-        ("entire", "uninstall") => Ok(r##"giteam_brew_uninstall entire
-if [ -f "$HOME/.local/bin/entire" ]; then
+# Prefer upgrade/reinstall when already present (cask or formula).
+if brew list --cask entire >/dev/null 2>&1 || [ -d /opt/homebrew/Caskroom/entire ] || [ -d /usr/local/Caskroom/entire ]; then
+  brew upgrade --cask entireio/tap/entire 2>/dev/null || brew upgrade --cask entire 2>/dev/null || brew reinstall --cask entire || brew install --cask entireio/tap/entire || brew install entireio/tap/entire
+elif brew list --formula entire >/dev/null 2>&1 || brew list entireio/tap/entire >/dev/null 2>&1; then
+  brew upgrade entireio/tap/entire || brew upgrade entire || brew install entireio/tap/entire
+else
+  brew install entireio/tap/entire || brew install --cask entireio/tap/entire
+fi"#),
+        ("entire", "uninstall") => Ok(r##"rehash 2>/dev/null || true
+echo "[giteam] entire before: $(command -v entire || echo missing)"
+# Entire may be formula or cask (Caskroom/entire); try both names.
+giteam_brew_uninstall entireio/tap/entire
+giteam_brew_uninstall entire
+if [ -f "$HOME/.local/bin/entire" ] || [ -L "$HOME/.local/bin/entire" ]; then
   rm -f "$HOME/.local/bin/entire"
+  echo "[giteam] removed $HOME/.local/bin/entire"
+fi
+rehash 2>/dev/null || true
+if command -v entire >/dev/null 2>&1; then
+  echo "entire 仍存在于 $(command -v entire)，卸载未完成。"
+  exit 1
 fi
 echo "Entire uninstall finished.""##),
         ("giteam", "install") | ("giteam", "update") => Ok(r##"NPM_CMD=""
@@ -735,7 +837,24 @@ if [ -x "$BIN" ]; then
 else
   echo "[giteam] install finished but bin not found at $BIN"
 fi"##),
-        ("giteam", "uninstall") => Ok(r##"giteam_npm_uninstall giteam
+        ("giteam", "uninstall") => Ok(r##"rehash 2>/dev/null || true
+echo "[giteam] giteam before: $(command -v giteam || echo missing)"
+giteam_npm_uninstall giteam
+rehash 2>/dev/null || true
+# Ignore project-local node_modules/.bin shadows for verification.
+STILL=""
+if command -v giteam >/dev/null 2>&1; then
+  STILL=$(command -v giteam)
+  case "$STILL" in
+    *node_modules/.bin*|*node_modules\\*)
+      STILL=""
+      ;;
+  esac
+fi
+if [ -n "$STILL" ]; then
+  echo "giteam 仍存在于 $STILL，卸载未完成。"
+  exit 1
+fi
 echo "giteam uninstall finished.""##),
         // Mirrors the standalone macOS runtime bootstrap script so first-launch
         // setup can run inside the packaged desktop app without relying on an
@@ -850,6 +969,20 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
     }
 }
 
+fn dependency_still_installed(name: &str) -> bool {
+    match name {
+        "git" => check_dep("git", &["--version"], "brew install git").installed,
+        "entire" => check_dep(
+            "entire",
+            &["--version"],
+            "brew tap entireio/tap && brew install entireio/tap/entire",
+        )
+        .installed,
+        "giteam" => check_giteam_npm_global().installed,
+        _ => false,
+    }
+}
+
 #[tauri::command]
 pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<String, String> {
     let script = install_script(name, action)?;
@@ -874,6 +1007,7 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
 
     let script_owned = wrap_runtime_script(name, action, script);
     let action_owned = action.to_string();
+    let name_owned = name.to_string();
     let job_id_for_thread = job_id.clone();
     thread::spawn(move || {
         #[cfg(windows)]
@@ -895,7 +1029,6 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
         if action_owned == "uninstall" || action_owned == "bootstrap" {
             apply_homebrew_offline_env(&mut cmd);
         }
-        let _ = action_owned;
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -947,7 +1080,20 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if status.success() {
-                        set_job_done(&job_id_for_thread, true, status.code(), None);
+                        if action_owned == "uninstall" && dependency_still_installed(&name_owned) {
+                            let msg = format!(
+                                "{name_owned} 卸载后仍可检测到，可能是系统自带或不完全移除"
+                            );
+                            append_job_log(&job_id_for_thread, &msg);
+                            set_job_done(
+                                &job_id_for_thread,
+                                false,
+                                status.code(),
+                                Some(msg),
+                            );
+                        } else {
+                            set_job_done(&job_id_for_thread, true, status.code(), None);
+                        }
                     } else {
                         set_job_done(
                             &job_id_for_thread,

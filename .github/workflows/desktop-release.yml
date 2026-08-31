@@ -120,17 +120,17 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
           releaseBody: |
-            ## 本版重点（0.2.51）
+            ## 本版重点（0.2.52）
 
-            - 审查面板：完善提交/Sync 主按钮逻辑（VSCode 式 Sync Changes）
-            - 分支切换：未提交变更阻塞时支持「提交后切换」
-            - 新增客户端使用文档
+            - 插件设置：Codex 式插件 / 技能 / MCP 管理，MCP 添加弹窗更精致
+            - 运行时依赖改为安装 / 更新（不再提供卸载开关）
+            - 会话贴底跟随与中断渲染更稳，工具事件行减少抖动
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.51.md`
+            - 详细说明见 `docs/releases/desktop-v0.2.52.md`
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

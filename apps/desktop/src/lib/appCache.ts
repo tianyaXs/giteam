@@ -22,7 +22,7 @@ export type RuntimeRequirementsStatus = {
 export type RuntimeActionJobStatus = {
   jobId: string;
   name: string;
-  action: "install" | "uninstall" | "bootstrap";
+  action: "install" | "uninstall" | "bootstrap" | "update";
   status: "running" | "succeeded" | "failed";
   log: string;
   startedAtMs: number;

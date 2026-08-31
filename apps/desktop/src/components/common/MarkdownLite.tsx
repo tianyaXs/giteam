@@ -836,7 +836,9 @@ export function MarkdownLite(props: MarkdownLiteProps) {
         lineNumbers
         mode={props.streaming ? "streaming" : "static"}
         normalizeHtmlIndentation
-        parseIncompleteMarkdown={Boolean(props.streaming)}
+        // 中断后正文常是半截 markdown（表头未闭合、加粗未收尾）；若仅 streaming 时才容错，
+        // 切到 static 会解析失败并拖垮整棵消息树，表现为「中断后所有内容都不渲染」。
+        parseIncompleteMarkdown
         plugins={STREAMDOWN_PLUGINS}
         components={components}
         translations={STREAMDOWN_TRANSLATIONS}

@@ -1,10 +1,11 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SVGProps } from "react";
+import { useEffect, useMemo, useRef, useState, cloneElement, isValidElement, type CSSProperties, type ReactElement, type ReactNode, type SVGProps } from "react";
 import { createPortal } from "react-dom";
+import { Package, Plus, Search } from "lucide-react";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED, MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 import { UI_ZOOM_RANGE, CODE_FONT_RANGE } from "../../lib/useAppearanceFontSize";
-import { CheckIcon, AboutIcon, BellIcon, ImageIcon, LinkIcon, ModelIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
+import { CheckIcon, AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
@@ -14,8 +15,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { SegmentedControl } from "../ui/segmented";
-import { Skeleton } from "../ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { Tabs, TabsContent } from "../ui/tabs";
 import { AgentMcpSection } from "../agent/AgentMcpPanel";
 import { NavigatorPreview } from "./NavigatorPreview";
 import { ServiceSettingsPanel } from "./ServiceSettingsPanel";
@@ -84,7 +84,7 @@ const SETTINGS_TEXT = {
     installUpdate: "下载并安装", upToDate: "已是最新版本", downloading: "下载中", restartToUpdate: "重启以完成更新",
     updateUnsupported: "当前环境不支持在线更新", updateUnsupportedDesc: "请使用桌面端安装包运行以启用自动更新。",
     updateNotes: "更新内容", updateNotesEmpty: "此版本未提供更新说明。", updateFromTo: "版本", reviewWhatsNew: "查看更新内容", reviewWhatsNewDesc: "重新查看本次更新的说明", review: "查看", whatsNewLoadingLabel: "加载中…",
-    save: "保存", saving: "保存中...", installFirst: "先安装", install: "安装", uninstall: "卸载", installing: "安装中", uninstalling: "卸载中", checking: "检查中...", check: "检查", refresh: "刷新", installed: "已安装", missing: "缺失", saveMobileTitle: "保存本机 Host 配置", installDependencyTitle: "安装 giteam CLI（可选）", saveToApply: "保存后生效"
+    save: "保存", saving: "保存中...", installFirst: "先安装", install: "安装", update: "更新", uninstall: "卸载", installing: "安装中", updating: "更新中", uninstalling: "卸载中", checking: "检查中...", check: "检查", refresh: "刷新", installed: "已安装", missing: "缺失", saveMobileTitle: "保存本机 Host 配置", installDependencyTitle: "安装 giteam CLI（可选）", saveToApply: "保存后生效"
   },
   "zh-TW": {}, "en-US": {}
 } as const;
@@ -119,10 +119,10 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     installUpdate: "下載並安裝", upToDate: "已是最新版本", downloading: "下載中", restartToUpdate: "重新啟動以完成更新",
     updateUnsupported: "目前環境不支援線上更新", updateUnsupportedDesc: "請使用桌面端安裝包執行以啟用自動更新。",
     updateNotes: "更新內容", updateNotesEmpty: "此版本未提供更新說明。", updateFromTo: "版本", reviewWhatsNew: "查看更新內容", reviewWhatsNewDesc: "重新查看本次更新的說明", review: "查看", whatsNewLoadingLabel: "載入中…",
-    save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", uninstall: "解除安裝", installing: "安裝中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
+    save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", update: "更新", uninstall: "解除安裝", installing: "安裝中", updating: "更新中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
   },
   "en-US": {
-    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Manage plugins, skills, and MCP.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", uninstall: "Uninstall", installing: "Installing", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
+    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Manage plugins, skills, and MCP.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", update: "Update", uninstall: "Uninstall", installing: "Installing", updating: "Updating", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -222,11 +222,12 @@ type SettingsDialogProps = {
   installingDep: string;
   installingElapsed: number;
   runtimeJob: RuntimeActionJobStatus | null;
-  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
+  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "update") => void;
   onRefreshRuntime: () => void;
   modelsContent?: ReactNode;
   initialSection?: InitialSettingsSectionId;
   skillsContent?: ReactNode;
+  skillsCount?: number;
   skillsLoading?: boolean;
   onRefreshSkills?: () => void;
   onSkillsVisible?: () => void;
@@ -257,6 +258,8 @@ type SettingsSection = {
   kicker: string;
   title: string;
   description: string;
+  /** 内容区自带页头（如 Codex 式插件页），外层不再渲染 title/description */
+  embedHeader?: boolean;
   entries?: Array<SettingsEntry>;
   content?: ReactNode;
 };
@@ -267,7 +270,7 @@ const SETTINGS_SECTION_ICONS: Record<SettingsSectionId, SettingsNavIcon> = {
   general: SettingsIcon,
   appearance: ImageIcon,
   models: PackageIcon,
-  plugins: ModelIcon,
+  plugins: PluginsIcon,
   mobile: LinkIcon,
   remoteRepos: SyncIcon,
   updates: AboutIcon,
@@ -618,18 +621,13 @@ function SettingsGroup(props: { title: string; entries: Array<SettingsEntry>; wi
   );
 }
 
-function getRuntimeJobLine(job: RuntimeActionJobStatus, elapsed: number): string {
-  const actionText = job.action === "uninstall" ? "卸载" : "安装";
-  if (job.status === "running") return `${actionText}中 · ${elapsed}s`;
-  return job.status === "succeeded" ? `${actionText}完成` : `${actionText}失败`;
-}
-
 type PluginsTabId = "runtime" | "skills" | "mcp";
 
 type PluginsSettingsSectionProps = {
   repoPath: string;
   initialTab?: PluginsTabId;
   dependenciesTitle: string;
+  dependenciesDesc: string;
   installLabel: string;
   runtimeHeaderActionText: string;
   pluginDeps: RuntimeDependencyStatus[];
@@ -639,93 +637,126 @@ type PluginsSettingsSectionProps = {
   installingElapsed: number;
   runtimeJob: RuntimeActionJobStatus | null;
   onOpenRuntimeSetup: () => void;
-  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "uninstall") => void;
+  onRunDependencyAction: (name: RuntimeDepName, action: "install" | "update") => void;
   skillsContent?: ReactNode;
-  skillsEntries?: Array<SettingsEntry>;
+  skillsCount?: number;
   onSkillsVisible?: () => void;
+  onBrowseMarketplace?: () => void;
   onTabChange?: (tab: PluginsTabId) => void;
   text: Pick<
     Record<SettingsTextKey, string>,
-    "dependencies" | "install" | "uninstall" | "installing" | "uninstalling" | "checking" | "installed" | "missing"
+    "dependencies" | "install" | "update" | "installing" | "updating" | "installed" | "missing"
   >;
 };
 
-function PluginsTabContentSkeleton() {
-  return (
-    <div className="grid gap-3" aria-busy="true" aria-label="正在加载">
-      <Skeleton className="h-10 w-full" />
-      <Skeleton className="h-[76px] w-full" />
-      <Skeleton className="h-[76px] w-full" />
-    </div>
-  );
-}
+function RuntimePluginsCard(props: PluginsSettingsSectionProps & { searchQuery: string }) {
+  const filtered = useMemo(() => {
+    const q = props.searchQuery.trim().toLowerCase();
+    if (!q) return props.pluginDeps;
+    return props.pluginDeps.filter((dep) => {
+      const hay = [dep.name, dep.version || "", dep.installHint || "", dep.path || ""].join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }, [props.pluginDeps, props.searchQuery]);
 
-function RuntimePluginsCard(props: PluginsSettingsSectionProps) {
+  if (filtered.length === 0) {
+    return (
+      <Empty className="min-h-24">
+        <EmptyHeader>
+          <EmptyTitle className="text-sm">{props.pluginDeps.length === 0 ? "暂无插件" : "无匹配插件"}</EmptyTitle>
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+
   return (
-    <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
-      <CardContent className="flex flex-col gap-0 p-0">
-        <div className="flex items-center justify-between gap-4 border-b border-border/70 px-4 py-3.5">
-          <div className="min-w-0">
-            <strong className="block text-sm font-semibold leading-6 text-foreground">{props.dependenciesTitle}</strong>
-            <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">统一检查和安装必要插件。</p>
-          </div>
-          <Button variant="secondary" size="sm" disabled={props.runtimeBusy} onClick={props.onOpenRuntimeSetup}>
-            {props.installingDep ? props.runtimeHeaderActionText : props.installLabel}
-          </Button>
-        </div>
-        {props.pluginDeps.map((dep) => {
-          const depName = dep.name as RuntimeDepName;
-          const depJob = props.runtimeJob?.name === dep.name ? props.runtimeJob : null;
-          const action = dep.installed ? "uninstall" : "install";
-          const actionLabel = depJob?.status === "running"
-            ? depJob.action === "uninstall" ? props.text.uninstalling : props.text.installing
-            : dep.installed ? props.text.uninstall : props.text.install;
-          return (
-            <article key={dep.name} className="grid min-h-[76px] grid-cols-[minmax(0,1fr)_auto] items-center gap-8 border-b border-border/70 px-4 py-3.5 last:border-b-0">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <strong className="text-sm font-semibold text-foreground">{dep.name}</strong>
-                  <Badge variant={dep.installed ? "success" : "secondary"}>
-                    {props.checkingDeps[depName] ? props.text.checking : dep.installed ? props.text.installed : props.text.missing}
-                  </Badge>
-                </div>
-                <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">
-                  {props.checkingDeps[depName]
-                    ? props.text.checking
-                    : dep.installed
-                      ? dep.version || props.text.installed
-                      : dep.installHint || props.text.missing}
-                </p>
-                {dep.path ? <p className="mt-1 truncate font-mono text-[13px] text-muted-foreground">{dep.path}</p> : null}
-                {depJob ? (
-                  <p className="mt-1 text-[13px] text-muted-foreground">{getRuntimeJobLine(depJob, props.installingElapsed)}</p>
-                ) : null}
-              </div>
-              <div className="flex min-w-28 justify-end">
-                <Button
-                  variant={dep.installed ? "outline" : "secondary"}
-                  size="sm"
-                  disabled={props.runtimeBusy || props.checkingDeps[depName]}
-                  onClick={() => props.onRunDependencyAction(depName, action)}
+    <ul className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-border/80 bg-card">
+      {filtered.map((dep) => {
+        const depName = dep.name as RuntimeDepName;
+        const depJob = props.runtimeJob?.name === dep.name ? props.runtimeJob : null;
+        const depJobRunning = depJob?.status === "running";
+        const installingThis = props.installingDep === dep.name;
+        const busy =
+          depJobRunning
+          || installingThis
+          || (Boolean(props.installingDep) && props.installingDep !== dep.name)
+          || props.runtimeBusy;
+        const installed = dep.installed;
+        const action: "install" | "update" = installed ? "update" : "install";
+        const runningAction = depJobRunning ? depJob?.action : installingThis ? action : null;
+        const buttonLabel = runningAction === "update"
+          ? props.text.updating
+          : runningAction === "install"
+            ? props.text.installing
+            : installed
+              ? props.text.update
+              : props.text.install;
+        const subtitle = installed
+          ? [dep.version, dep.path].filter(Boolean).join(" · ") || props.text.installed
+          : dep.installHint || props.text.missing;
+        return (
+          <li key={dep.name} className="flex items-center gap-3 px-4 py-3.5">
+            <span
+              className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"
+              aria-hidden
+            >
+              <Package className="size-4" strokeWidth={1.75} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <strong className="truncate text-sm font-semibold text-foreground">{dep.name}</strong>
+                <Badge
+                  variant={installed ? "secondary" : "outline"}
+                  className="shrink-0 normal-case tracking-normal"
                 >
-                  {props.checkingDeps[depName] ? props.text.checking : actionLabel}
-                </Button>
+                  {installed ? props.text.installed : props.text.missing}
+                </Badge>
               </div>
-            </article>
-          );
-        })}
-      </CardContent>
-    </Card>
+              <p className="mt-0.5 truncate text-[13px] text-muted-foreground" title={subtitle}>
+                {subtitle}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant={installed ? "outline" : "secondary"}
+              className="h-8 shrink-0 rounded-lg px-3 text-[13px]"
+              disabled={busy}
+              onClick={() => props.onRunDependencyAction(depName, action)}
+            >
+              {buttonLabel}
+            </Button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
 function PluginsSettingsSection(props: PluginsSettingsSectionProps) {
-  const [tab, setTab] = useState<PluginsTabId>(props.initialTab ?? "runtime");
-  const deferredTab = useDeferredValue(tab);
-  const contentPending = tab !== deferredTab;
+  const initialTab = props.initialTab ?? "runtime";
+  const [tab, setTab] = useState<PluginsTabId>(initialTab);
+  /** 各 tab 独立搜索，切换时不清空，避免列表闪一下 */
+  const [searchByTab, setSearchByTab] = useState<Record<PluginsTabId, string>>({
+    runtime: "",
+    skills: "",
+    mcp: ""
+  });
+  const [mcpAddOpen, setMcpAddOpen] = useState(false);
+  const [mcpCount, setMcpCount] = useState(0);
+  /** 访问过的面板 forceMount 保活，Radix 默认会卸载 inactive Content 导致列表重建抖动 */
+  const [mountedTabs, setMountedTabs] = useState<Record<PluginsTabId, boolean>>(() => ({
+    runtime: initialTab === "runtime",
+    skills: initialTab === "skills",
+    mcp: initialTab === "mcp"
+  }));
 
   useEffect(() => {
-    if (props.initialTab) setTab(props.initialTab);
+    if (!props.initialTab) return;
+    setTab(props.initialTab);
+    setMountedTabs((prev) =>
+      prev[props.initialTab!] ? prev : { ...prev, [props.initialTab!]: true }
+    );
   }, [props.initialTab]);
 
   useEffect(() => {
@@ -736,37 +767,199 @@ function PluginsSettingsSection(props: PluginsSettingsSectionProps) {
     if (tab === "skills") props.onSkillsVisible?.();
   }, [props.onSkillsVisible, tab]);
 
+  useEffect(() => {
+    if (mcpAddOpen) {
+      setTab("mcp");
+      setMountedTabs((prev) => (prev.mcp ? prev : { ...prev, mcp: true }));
+    }
+  }, [mcpAddOpen]);
+
+  // 进入插件页即拉一次 MCP 数量，供标签计数（不必等切到 MCP）
+  useEffect(() => {
+    if (!MCP_MODULE_ENABLED || !props.repoPath.trim()) return;
+    let cancelled = false;
+    void import("../../lib/agentMcpData").then(({ listMcpServices }) =>
+      listMcpServices(props.repoPath)
+        .then((rows) => {
+          if (!cancelled) setMcpCount(rows.length);
+        })
+        .catch(() => {
+          /* 计数失败静默 */
+        })
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [props.repoPath]);
+
   const handleTabChange = (value: string) => {
-    setTab(value as PluginsTabId);
+    const next = value as PluginsTabId;
+    setTab(next);
+    setMountedTabs((prev) => (prev[next] ? prev : { ...prev, [next]: true }));
+  };
+
+  const searchQuery = searchByTab[tab] ?? "";
+  const setSearchQuery = (value: string) => {
+    setSearchByTab((prev) => ({ ...prev, [tab]: value }));
+  };
+
+  const skillsCount = props.skillsCount ?? 0;
+  const pluginCount = props.pluginDeps.length;
+  const searchPlaceholder =
+    tab === "mcp" ? "搜索 MCP 服务器" : tab === "skills" ? "搜索技能" : "搜索插件";
+
+  const openAddMcp = () => {
+    setTab("mcp");
+    setMountedTabs((prev) => (prev.mcp ? prev : { ...prev, mcp: true }));
+    setMcpAddOpen(true);
   };
 
   return (
-    <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4">
-      <TabsList variant="line" className="w-full justify-start border-b border-border">
-        <TabsTrigger value="runtime" className="flex-none px-3">插件</TabsTrigger>
-        <TabsTrigger value="skills" className="flex-none px-3">技能</TabsTrigger>
-        {MCP_MODULE_ENABLED ? <TabsTrigger value="mcp" className="flex-none px-3">MCP</TabsTrigger> : null}
-      </TabsList>
-      <TabsContent value="runtime" className="mt-0">
-        {contentPending && tab === "runtime" ? <PluginsTabContentSkeleton /> : <RuntimePluginsCard {...props} />}
-      </TabsContent>
-      <TabsContent value="skills" className="mt-0">
-        {contentPending && tab === "skills" ? (
-          <PluginsTabContentSkeleton />
-        ) : deferredTab === "skills" ? (
-          <div className="flex flex-col gap-6">
-            {props.skillsContent}
-            {props.skillsEntries?.length ? <SettingsRows entries={props.skillsEntries} /> : null}
+    <div className="flex flex-col gap-5">
+      <header className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">
+            {props.dependenciesTitle}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{props.dependenciesDesc}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {props.onBrowseMarketplace ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 rounded-full border-border/80 bg-transparent px-3 text-[13px] font-normal text-foreground shadow-none hover:bg-muted/50"
+              onClick={props.onBrowseMarketplace}
+            >
+              浏览目录
+            </Button>
+          ) : null}
+          {/* 安装插件 / 添加技能暂未开放；目前仅支持添加 MCP */}
+          {MCP_MODULE_ENABLED ? (
+            <Button
+              type="button"
+              variant="contrast"
+              size="sm"
+              className="h-8 rounded-full px-3.5 text-[13px]"
+              disabled={!props.repoPath}
+              onClick={openAddMcp}
+            >
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              添加
+            </Button>
+          ) : null}
+        </div>
+      </header>
+
+      <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* 选中态只加浅底 + 略小圆角，避免厚重胶囊 */}
+          <div className="flex flex-wrap items-center gap-0.5" role="tablist" aria-label="插件分区">
+            {(
+              [
+                { id: "runtime" as const, label: "插件", count: pluginCount },
+                { id: "skills" as const, label: "技能", count: skillsCount },
+                ...(MCP_MODULE_ENABLED
+                  ? [{ id: "mcp" as const, label: "MCP", count: mcpCount }]
+                  : [])
+              ] as const
+            ).map((item) => {
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  className={cn(
+                    "h-7 rounded-md px-2.5 text-[13px] transition-colors",
+                    active
+                      ? "bg-muted/60 font-medium text-foreground"
+                      : "font-normal text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() => handleTabChange(item.id)}
+                >
+                  {item.label}{" "}
+                  <span className="font-normal text-muted-foreground/70">{item.count}</span>
+                </button>
+              );
+            })}
           </div>
-        ) : null}
-      </TabsContent>
-      {MCP_MODULE_ENABLED ? (
-        <TabsContent value="mcp" className="mt-0">
-          {contentPending && tab === "mcp" ? <PluginsTabContentSkeleton /> : deferredTab === "mcp" ? <AgentMcpSection repoPath={props.repoPath} /> : null}
+          <div className="relative ml-auto min-w-[200px] flex-1 sm:max-w-[240px]">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={searchPlaceholder}
+              className="h-8 rounded-full border-border/70 bg-transparent pl-9 text-[13px] shadow-none"
+              aria-label={searchPlaceholder}
+            />
+          </div>
+        </div>
+
+        {/*
+          Radix TabsContent 默认在 inactive 时卸载（Presence）。
+          访问过的面板用 forceMount 保活，仅用 hidden 切显隐，避免列表重建抖动。
+        */}
+        <TabsContent
+          value="runtime"
+          forceMount={mountedTabs.runtime || undefined}
+          className="mt-0 data-[state=inactive]:hidden"
+        >
+          {mountedTabs.runtime ? (
+            <RuntimePluginsCard {...props} searchQuery={searchByTab.runtime} />
+          ) : null}
         </TabsContent>
-      ) : null}
-    </Tabs>
+        <TabsContent
+          value="skills"
+          forceMount={mountedTabs.skills || undefined}
+          className="mt-0 data-[state=inactive]:hidden"
+        >
+          {mountedTabs.skills ? (
+            <div className="flex flex-col gap-6">
+              {props.skillsContent ? (
+                <PluginsSkillsSearchBridge searchQuery={searchByTab.skills}>
+                  {props.skillsContent}
+                </PluginsSkillsSearchBridge>
+              ) : null}
+            </div>
+          ) : null}
+        </TabsContent>
+        {MCP_MODULE_ENABLED ? (
+          <TabsContent
+            value="mcp"
+            forceMount={mountedTabs.mcp || undefined}
+            className="mt-0 data-[state=inactive]:hidden"
+          >
+            {mountedTabs.mcp ? (
+              <AgentMcpSection
+                repoPath={props.repoPath}
+                searchQuery={searchByTab.mcp}
+                addOpen={mcpAddOpen}
+                onAddOpenChange={setMcpAddOpen}
+                onServiceCountChange={setMcpCount}
+              />
+            ) : null}
+          </TabsContent>
+        ) : null}
+      </Tabs>
+    </div>
   );
+}
+
+/** 把 searchQuery 注入 AgentSettingsSkillsGrid（若为该组件元素）。 */
+function PluginsSkillsSearchBridge({
+  searchQuery,
+  children
+}: {
+  searchQuery: string;
+  children: ReactNode;
+}) {
+  if (isValidElement(children)) {
+    return cloneElement(children as ReactElement<{ searchQuery?: string }>, { searchQuery });
+  }
+  return <>{children}</>;
 }
 
 export function SettingsDialog(props: SettingsDialogProps) {
@@ -1042,31 +1235,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
       remoteRepos: [],
       models: []
     };
-    const skillsSettingsEntries: Array<SettingsEntry> = [
-      {
-        title: text.apiKey,
-        description: props.skillsmpApiKey ? text.apiKeyConfigured : text.apiKeyDesc,
-        action: (
-          <div className="flex items-center justify-end gap-2">
-            <Input
-              className="h-8 w-64 rounded-md bg-muted/30 text-sm"
-              type="password"
-              placeholder="sk_live_skillsmp_..."
-              value={props.skillsmpApiKeyDraft}
-              onChange={(e) => props.onSkillsmpApiKeyDraftChange(e.target.value)}
-            />
-            <Button variant="secondary" size="sm" onClick={props.onSaveSkillsmpApiKey}>
-              {text.save}
-            </Button>
-            {props.skillsmpApiKey ? (
-              <Button variant="ghost" size="sm" onClick={props.onClearSkillsmpApiKey}>
-                清除
-              </Button>
-            ) : null}
-          </div>
-        )
-      }
-    ];
     const notificationEntries: Array<SettingsEntry> = [
       { title: text.agentNotifications, description: text.agentNotificationsDesc, action: <SwitchControl checked={props.generalSettings.notificationsAgent} onChange={(checked) => updateGeneral({ notificationsAgent: checked })} /> },
       { title: text.permissionNotifications, description: text.permissionNotificationsDesc, action: <SwitchControl checked={props.generalSettings.notificationsPermissions} onChange={(checked) => updateGeneral({ notificationsPermissions: checked })} /> },
@@ -1212,9 +1380,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
     const pluginDeps = [props.runtimeStatus.git, props.runtimeStatus.entire, props.runtimeStatus.giteam]
       .filter((dep): dep is RuntimeDependencyStatus => Boolean(dep));
     const runtimeBusy = props.runtimeChecking || Boolean(props.installingDep);
-    const runtimeHeaderActionText = props.runtimeJob?.status === "running" && props.runtimeJob.action === "uninstall"
-      ? text.uninstalling
-      : text.installing;
+    const runtimeHeaderActionText =
+      props.runtimeJob?.status === "running" && props.runtimeJob.action === "update"
+        ? text.updating
+        : text.installing;
 
     return [
       {
@@ -1297,11 +1466,13 @@ export function SettingsDialog(props: SettingsDialogProps) {
         kicker: text.dependenciesKicker,
         title: text.dependencies,
         description: text.dependenciesDesc,
+        embedHeader: true,
         content: (
           <PluginsSettingsSection
             repoPath={props.repoPath}
             initialTab={initialPluginsTab}
             dependenciesTitle={text.dependencies}
+            dependenciesDesc={text.dependenciesDesc}
             installLabel={text.install}
             runtimeHeaderActionText={runtimeHeaderActionText}
             pluginDeps={pluginDeps}
@@ -1313,8 +1484,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
             onOpenRuntimeSetup={props.onOpenRuntimeSetup}
             onRunDependencyAction={props.onRunDependencyAction}
             skillsContent={props.skillsContent}
-            skillsEntries={skillsSettingsEntries}
+            skillsCount={props.skillsCount}
             onSkillsVisible={props.onSkillsVisible}
+            onBrowseMarketplace={props.onOpenSkillsMarketplaceSettings}
             onTabChange={setPluginsSubTab}
             text={text}
           />
@@ -1504,28 +1676,19 @@ export function SettingsDialog(props: SettingsDialogProps) {
               "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
               active.id === "models" || active.id === "mobile"
                 ? "max-w-[1120px]"
-                : "max-w-[680px]"
+                : active.id === "plugins"
+                  ? "max-w-[760px]"
+                  : "max-w-[680px]"
             )}
           >
-            <header className="flex items-center justify-between gap-4">
-              <div>
-                <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
-                {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
-              </div>
-              <div className="flex h-8 shrink-0 items-center justify-end">
-                {active.id === "plugins" ? (
-                  pluginsSubTab === "skills" ? (
-                    <Button variant="ghost" size="icon" title={text.refresh} disabled={props.skillsLoading} onClick={props.onRefreshSkills}>
-                      <RefreshIcon />
-                    </Button>
-                  ) : (
-                    <Button variant="ghost" size="icon" title={text.refresh} disabled={props.runtimeChecking || Boolean(props.installingDep)} onClick={props.onRefreshRuntime}>
-                      <RefreshIcon />
-                    </Button>
-                  )
-                ) : null}
-              </div>
-            </header>
+            {active.title && !active.embedHeader ? (
+              <header className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
+                  {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
+                </div>
+              </header>
+            ) : null}
             <div className="flex flex-col gap-6">
               {active.content ? active.content : null}
               {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}

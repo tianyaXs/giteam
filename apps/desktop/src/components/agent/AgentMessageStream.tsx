@@ -1855,17 +1855,24 @@ export function AgentMessageStream({
   const locateStickyMountKeyRef = useRef<string | null>(null);
   const scrollerElRef = useRef<HTMLElement | null>(null);
   /**
-   * 用户「贴底跟随」意图：默认 true。wheel/touch 主动上滚置 false（区分「用户上滚」与
-   * 「内容增长导致离开底部」——后者 Virtuoso 同样报 atBottom=false，但不应取消跟随）；
-   * 原生滚动条拖拽/键盘上滚不触发 wheel/touch，由下方 rAF 钉底逐帧比对 scrollTop 发现后置 false。
-   * atBottom 回到 true（贴底/跳最新）或 stickResetSignal（发送）恢复 true。驱动持续 rAF 钉底。
+   * 用户「贴底跟随」意图：默认 true。
+   * 取消 stick 只认明确用户手势（wheel/touch 上滚、滚动条拖拽、键盘上滚）——
+   * 绝不能靠 scrollTop 下降推断：Virtuoso 在同 row 变高（工具事件）时会重测高度并
+   * 锚点补偿拉低 scrollTop，且常发生在 scrollHeight 已稳定的后续帧，会被误判成上滚。
+   * @see https://github.com/petyosi/react-virtuoso/issues/195 （followOutput 不管 item 变高）
+   * @see https://virtuoso.dev/react-virtuoso/api-reference/virtuoso/ （autoscrollToBottom）
    */
   const stickToBottomRef = useRef(true);
-  // 上一帧滚动位置基线：rAF 钉底逐帧比对用（识别原生滚动条拖拽把 scrollTop 拉低）。
-  const lastPinTopRef = useRef(-1);
+  /** 用户正在拖原生滚动条（pointer 落在 gutter/轨道上）；仅此时才允许因 scrollTop 下降取消 stick。 */
+  const scrollbarDraggingRef = useRef(false);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
+  /** 是否允许钉底（与 rAF / followOutput / totalListHeightChanged 共用）。 */
+  const canStickPin = () =>
+    stickToBottomRef.current
+    && !pendingLocateIdRef.current
+    && !locatedThisSessionRef.current;
   /**
    * DOM 实测校正：Virtuoso 对变高 item 用 defaultItemHeight(160) 估算累计偏移，超长消息（数千字
    * toolResult / 长 assistant 回复）估算严重偏小 → scrollToIndex 的 align:center 落到结尾、
@@ -2192,9 +2199,8 @@ export function AgentMessageStream({
     },
     [visibleRenderRows, adjustToMessage]
   );
-  // wheel/touch 主动上滚 = 用户想看历史 → 取消贴底跟随（这是区分「用户上滚」与「内容增长
-  // 离开底部」的唯一可靠信号——后者 Virtuoso 也报 atBottom=false，但不应取消跟随）。
-  // 用 ref 不用 state：高频事件不触发重渲染，stick 变化由下方 rAF 钉底读取。
+  // 取消 stick 只认用户手势；Virtuoso 重测/锚点补偿造成的 scrollTop 变化一律忽略。
+  // @see https://github.com/petyosi/react-virtuoso/issues/195
   const attachScrollerListeners = useCallback((el: HTMLElement) => {
     if (scrollerListenersRef.current?.el === el) return; // Virtuoso 可能多次回传同一 el
     scrollerListenersRef.current?.clean();
@@ -2210,20 +2216,45 @@ export function AgentMessageStream({
       if (lastTouchY != null && y != null && y < lastTouchY) stickToBottomRef.current = false;
       lastTouchY = y;
     };
+    // 原生滚动条拖拽：落点在 clientWidth 右侧 gutter（scrollbar-gutter:stable）才算。
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      if (e.offsetX >= el.clientWidth - 1) {
+        scrollbarDraggingRef.current = true;
+      }
+    };
+    const endScrollbarDrag = () => {
+      scrollbarDraggingRef.current = false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
+        stickToBottomRef.current = false;
+      }
+    };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
+    el.addEventListener("pointerup", endScrollbarDrag, { passive: true });
+    el.addEventListener("pointercancel", endScrollbarDrag, { passive: true });
+    window.addEventListener("pointerup", endScrollbarDrag, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
     scrollerListenersRef.current = {
       el,
       clean: () => {
         el.removeEventListener("wheel", onWheel);
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
+        el.removeEventListener("pointerdown", onPointerDown);
+        el.removeEventListener("pointerup", endScrollbarDrag);
+        el.removeEventListener("pointercancel", endScrollbarDrag);
+        window.removeEventListener("pointerup", endScrollbarDrag);
+        el.removeEventListener("keydown", onKeyDown);
       }
     };
   }, []);
 
-  // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂 wheel/touch。
+  // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂手势。
   const handleScrollerRef = useCallback(
     (node: HTMLElement | Window | null) => {
       const el = node instanceof HTMLElement ? node : null;
@@ -2234,38 +2265,30 @@ export function AgentMessageStream({
     [attachScrollerListeners, scrollerRef]
   );
 
-  // 持续 rAF 钉底：stick=true 时每帧把 scrollTop 钉到容器底（scrollHeight - clientHeight）。
-  // 物理即时、无高度估算，对「同 row 内容增长」（流式 token / 占位→内容 / 完成 reflow）统一贴底，
-  // 从根上替代 followOutput 的估算滚底——消除发送抖动（问题2）、占位拖离锚点（问题1）、
-  // 完成后被 Virtuoso 顶部锚点拉回发送位置（问题4）。stick=false（用户上滚）则完全不干预。
+  // 持续 rAF 钉底：同 row 变高（工具事件）时 followOutput 无效（官方 issue #195），
+  // 必须靠物理钉 scrollTop；取消 stick 只在「正在拖滚动条且离开底部」时发生。
   useEffect(() => {
     let raf = 0;
+    let lastTop = -1;
     const tick = () => {
       const sc = scrollerElRef.current;
       if (sc) {
         const max = sc.scrollHeight - sc.clientHeight;
         const top = sc.scrollTop;
-        // 钉底仅当：用户贴底跟随(stick) 且 未在搜索定位中/本会话未定位过（避让定位滚动）。
-        if (
-          stickToBottomRef.current &&
-          !pendingLocateIdRef.current &&
-          !locatedThisSessionRef.current &&
-          max >= 0
-        ) {
-          // 贴底期间 scrollTop 被外部拉低且确实离开底部 = 用户在向上拖拽原生滚动条/键盘上滚
-          //（原生滚动条拖拽不触发 wheel/touch，scroll 事件又会被同帧钉底回写合并掩盖，
-          // 只能在 rAF 里逐帧比对发现）→ 取消贴底跟随，否则每帧被钉回底部，
-          // 向上拖拽时反复闪回最新位置。
-          // 内容变矮的浏览器钳位 / Virtuoso 锚点补偿也会拉低 scrollTop，但补偿后 top==max
-          //（仍在底部），用 top < max - 2 排除，不误取消跟随。
-          if (lastPinTopRef.current >= 0 && top < lastPinTopRef.current - 2 && top < max - 2) {
+        if (canStickPin() && max >= 0) {
+          // 仅当用户正在拖滚动条、且明确离开底部时取消——Virtuoso 重测造成的 top 下降不取消。
+          if (
+            scrollbarDraggingRef.current
+            && lastTop >= 0
+            && top < lastTop - 2
+            && top < max - 2
+          ) {
             stickToBottomRef.current = false;
           } else if (top < max) {
             sc.scrollTop = max;
           }
         }
-        // 每帧跟踪（含 stick=false 期间），保证 stick 恢复时比对基线是新鲜值，不误判。
-        lastPinTopRef.current = sc.scrollTop;
+        lastTop = sc.scrollTop;
       }
       raf = requestAnimationFrame(tick);
     };
@@ -2280,6 +2303,22 @@ export function AgentMessageStream({
     prevStickResetRef.current = stickResetSignal;
     stickToBottomRef.current = true;
   }, [stickResetSignal]);
+
+  /** 列表总高度变化（含同 row 工具卡变高）：官方建议配合 followOutput 调 autoscrollToBottom。 */
+  const handleTotalListHeightChanged = useCallback((_height: number) => {
+    if (!canStickPin()) return;
+    virtuosoRef.current?.autoscrollToBottom();
+    const sc = scrollerElRef.current;
+    if (sc) {
+      const max = sc.scrollHeight - sc.clientHeight;
+      if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+    }
+  }, [virtuosoRef]);
+
+  /** followOutput：只对 item 数量变化生效；用 stick 意图覆盖 Virtuoso 自带的 isAtBottom 判断。 */
+  const handleFollowOutput = useCallback((_isAtBottom: boolean) => {
+    return canStickPin() ? ("auto" as const) : false;
+  }, []);
 
   const pendingLocateId = pendingScrollMessageId?.trim() || "";
   pendingLocateIdRef.current = pendingLocateId;
@@ -2536,17 +2575,13 @@ export function AgentMessageStream({
             ? { index: initialLocateIndex, align: "start" }
             : { index: "LAST", align: "end" }
         }
-        followOutput={() =>
-          // followOutput 只对 item 数量变化触发且依赖 defaultItemHeight 估算滚底——对同 row 内容增长
-          // （流式 token / 占位→内容 / 完成 reflow）是盲区。一律禁用，改由持续 rAF 物理钉底
-          // （stick ref 驱动）统一接管，消除发送估算抖动(问题2)、占位拖离锚点(问题1)、
-          // 完成后被顶部锚点拉回发送位置(问题4)。
-          false
-        }
-        atBottomThreshold={48}
+        followOutput={handleFollowOutput}
+        totalListHeightChanged={handleTotalListHeightChanged}
+        atBottomThreshold={80}
         atBottomStateChange={(atBottom) => {
-          if (atBottom) stickToBottomRef.current = true; // 贴底/跳最新 → 恢复跟随
-          onAtBottomChange(atBottom); // 透传 App 驱动「跳到最新」按钮（atBottom=false 时弹出）
+          // 仅贴底时恢复 stick；离开底部不再从这里清 stick（Virtuoso 在工具变高时也会报 false）
+          if (atBottom) stickToBottomRef.current = true;
+          onAtBottomChange(atBottom);
         }}
         startReached={onStartReached}
         rangeChanged={(range) => {

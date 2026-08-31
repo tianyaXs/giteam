@@ -1,5 +1,5 @@
-import { useState, type ReactNode, type Ref } from "react";
-import { ChevronDown, Search } from "lucide-react";
+import { useMemo, useState, type ReactNode, type Ref } from "react";
+import { Box, ChevronDown, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { RefreshIcon, StarIcon } from "../icons";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
@@ -257,51 +257,79 @@ type SettingsSkillsGridProps = {
   error: string;
   groups: AgentInstalledSkillGroup[];
   removingKey: string;
+  searchQuery?: string;
   onRemoveSkillGroup: (group: AgentInstalledSkillGroup) => void | Promise<void>;
 };
 
 export function AgentSettingsSkillsGrid(props: SettingsSkillsGridProps) {
-  const { error, groups, removingKey, onRemoveSkillGroup } = props;
+  const { error, groups, removingKey, onRemoveSkillGroup, searchQuery = "" } = props;
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return groups;
+    return groups.filter((group) => {
+      const hay = [group.name, group.description, ...group.items.map((item) => item.name)]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [groups, searchQuery]);
 
   return (
     <div className="flex flex-col gap-3">
       {error ? <ModuleEmpty danger>{error}</ModuleEmpty> : null}
-      <div className="grid gap-2">
-        {groups.length === 0 ? <ModuleEmpty>暂无已安装 Skills。</ModuleEmpty> : groups.map((group) => {
-          const removing = group.removableItems.some((skill) => removingKey === getSkillRemoveKey(skill));
-          return (
-            <Card key={group.name} className="rounded-lg shadow-none">
-              <CardContent className="flex items-center gap-2 p-2">
-                <div className="grid min-w-0 flex-1 gap-1 p-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <strong className="truncate text-base font-semibold">{group.name}</strong>
-                    <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">{group.items.length} 项</Badge>
-                  </div>
-                  <p className="m-0 truncate text-[14px] text-muted-foreground">{group.description}</p>
+      {groups.length === 0 ? (
+        <ModuleEmpty>暂无已安装 Skills。</ModuleEmpty>
+      ) : filtered.length === 0 ? (
+        <ModuleEmpty>无匹配技能。</ModuleEmpty>
+      ) : (
+        <ul className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-border/80 bg-card">
+          {filtered.map((group) => {
+            const removing = group.removableItems.some((skill) => removingKey === getSkillRemoveKey(skill));
+            const scopeLabel = group.items.some((item) => item.scope === "global") ? "个人" : "项目";
+            return (
+              <li key={group.name} className="flex items-center gap-3 px-4 py-3.5">
+                <span
+                  className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                  aria-hidden
+                >
+                  <Box className="size-4" strokeWidth={1.75} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm font-semibold text-foreground">{group.name}</strong>
+                  <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
+                    {group.description || `${group.items.length} 项`}
+                  </p>
                 </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label={`${group.name} actions`} title="Actions">
-                    <span aria-hidden="true">...</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      onClick={() => void onRemoveSkillGroup(group)}
-                      disabled={group.removableItems.length === 0 || removing}
-                      title={group.removableItems.length > 0 ? "Uninstall skill group" : "Source skills need to be removed from source config"}
+                <span className="shrink-0 text-[12px] text-muted-foreground">{scopeLabel}</span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 shrink-0 text-muted-foreground hover:text-foreground"
+                      aria-label={`${group.name} 更多操作`}
                     >
-                      {removing ? "Removing" : "Uninstall"}
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                      <MoreHorizontal />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuGroup>
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive data-[highlighted]:text-destructive"
+                        onClick={() => void onRemoveSkillGroup(group)}
+                        disabled={group.removableItems.length === 0 || removing}
+                      >
+                        <Trash2 />
+                        {removing ? "移除中…" : "卸载"}
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

@@ -439,6 +439,15 @@ export function AgentExecutionPartView({
         (editTool && !running && editToolPartsExpanded);
   const open = detailsOpen ?? detailDefaultOpen;
   const integratedCard = hasDetails && open && !suppressRunningEditDetails;
+  // 独立事件与批组条目：水平内边距必须稳定。独立事件还要始终走同一套 Collapsible
+  // 外壳（见下方），否则 hasDetails 从无到有时会在「裸 div」和「带 border 的 Collapsible」
+  // 之间换树，出现一帧行高/缩进抖动（MCP 工具首包尤甚）。
+  // @see https://www.radix-ui.com/primitives/docs/components/collapsible — 受控 open + 稳定 Root
+  const headlinePadding = listItem ? "px-0" : "px-3";
+  const headlinePy = listItem ? "py-1" : "py-2";
+  // 非批组、非探索类工具：首帧即使还没有 output，也挂 Collapsible Root（closed），
+  // 等详情到达只改 Content，不换外层组件树。
+  const useStableEventShell = !listItem && !contextTool && !suppressRunningEditDetails;
 
   useEffect(() => {
     if (listItem || !hasDetails || contextTool || suppressRunningEditDetails) return;
@@ -555,10 +564,15 @@ export function AgentExecutionPartView({
     />
   );
 
-  if (hasDetails && !contextTool && !suppressRunningEditDetails) {
+  // 可展开详情，或独立事件的稳定外壳（尚无详情时也挂 Collapsible，避免换树抖动）
+  if ((hasDetails && !contextTool && !suppressRunningEditDetails) || useStableEventShell) {
+    const canToggle = hasDetails && !suppressRunningEditDetails;
+    // 无详情时强制 closed：Root 仍在，Content 高度为 0（AnimatedCollapsibleContent + forceMount）
+    const shellOpen = canToggle ? open : false;
     return (
       <Collapsible
         className={cn(
+          // 始终占住 border 盒模型；折叠时透明，展开才显色——避免「无 border → 有 border」挤布局
           "min-w-0 max-w-full overflow-hidden border transition-[border-color,background-color] duration-200",
           listItem ? "rounded-md" : "rounded-xl",
           integratedCard
@@ -567,24 +581,35 @@ export function AgentExecutionPartView({
               : "border-border bg-card"
             : "border-transparent bg-transparent"
         )}
-        open={open}
-        onOpenChange={setDetailsOpen}
+        open={shellOpen}
+        onOpenChange={canToggle ? setDetailsOpen : undefined}
+        disabled={!canToggle}
       >
-        <CollapsibleTrigger asChild>
+        <CollapsibleTrigger asChild disabled={!canToggle}>
           <Button
             className={cn(
               "h-auto w-full justify-start hover:bg-transparent hover:text-foreground",
-              // 批组内条目与「探索」一致：左对齐；独立事件卡才用 px-3
-              listItem ? "rounded-md px-0 py-1" : "rounded-none px-3 py-2"
+              listItem ? "rounded-md" : "rounded-none",
+              headlinePy,
+              headlinePadding,
+              !canToggle && "cursor-default"
             )}
             variant="ghost"
+            tabIndex={canToggle ? undefined : -1}
           >
             {headline}
           </Button>
         </CollapsibleTrigger>
-        <AnimatedCollapsibleContent open={open}>
-          <Separator />
-          {detailsBody}
+        {/* Content 始终挂载（Radix forceMount）：无详情时 height=0，避免详情到达时再挂载子树闪一帧。
+            高度动画用 motion；Radix 官方亦可用 --radix-collapsible-content-height 做 CSS 动画。
+            @see https://www.radix-ui.com/primitives/docs/components/collapsible#animating-content-size */}
+        <AnimatedCollapsibleContent open={shellOpen}>
+          {canToggle ? (
+            <>
+              <Separator />
+              {detailsBody}
+            </>
+          ) : null}
         </AnimatedCollapsibleContent>
       </Collapsible>
     );
@@ -600,8 +625,9 @@ export function AgentExecutionPartView({
       {toolFileTarget ? (
         <Button
           className={cn(
-            "h-auto w-full justify-start rounded-md px-0 hover:bg-transparent hover:text-foreground",
-            listItem ? "py-1" : "py-1.5"
+            "h-auto w-full justify-start rounded-md hover:bg-transparent hover:text-foreground",
+            headlinePadding,
+            headlinePy
           )}
           onClick={() => onOpenToolFile(toolFileTarget)}
           title="在右侧打开文件"
@@ -610,7 +636,7 @@ export function AgentExecutionPartView({
           {headline}
         </Button>
       ) : (
-        <div className={cn("flex min-w-0 items-center px-0", listItem ? "py-1" : "py-1.5")}>{headline}</div>
+        <div className={cn("flex min-w-0 items-center", headlinePadding, headlinePy)}>{headline}</div>
       )}
     </div>
   );

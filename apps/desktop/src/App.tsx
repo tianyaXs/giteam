@@ -5112,9 +5112,14 @@ export function App() {
     }
   }
 
-  async function refreshRuntimeRequirements(): Promise<RuntimeRequirementsStatus> {
-    setRuntimeChecking(true);
-    setCheckingDeps({ git: true, entire: true, giteam: true });
+  async function refreshRuntimeRequirements(options?: {
+    silent?: boolean;
+  }): Promise<RuntimeRequirementsStatus> {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setRuntimeChecking(true);
+      setCheckingDeps({ git: true, entire: true, giteam: true });
+    }
     try {
       const deps: Array<"git" | "entire" | "giteam"> = ["git", "entire", "giteam"];
       await Promise.all(
@@ -5123,7 +5128,9 @@ export function App() {
             const result = await invoke<RuntimeDependencyStatus>("check_runtime_dependency", { name: dep });
             setRuntimeStatus((prev) => ({ ...prev, [dep]: result }));
           } finally {
-            setCheckingDeps((prev) => ({ ...prev, [dep]: false }));
+            if (!silent) {
+              setCheckingDeps((prev) => ({ ...prev, [dep]: false }));
+            }
           }
         })
       );
@@ -5133,17 +5140,27 @@ export function App() {
       if (final.git.installed && final.entire.installed) markRuntimeReady();
       return final;
     } finally {
-      setRuntimeChecking(false);
+      if (!silent) setRuntimeChecking(false);
     }
   }
 
 function runtimeJobFailureMessage(job: RuntimeActionJobStatus): string {
+  const explicit = (job.error || "").trim();
+  if (explicit) return explicit;
   const log = job.log || "";
   const lines = log.split("\n").filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i].replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (line.includes("NETWORK_ERROR:")) {
       return line.replace(/^.*NETWORK_ERROR:\s*/, "").trim();
+    }
+    if (
+      line.includes("桌面端无法卸载")
+      || line.includes("卸载未完成")
+      || line.includes("仍可检测到")
+      || line.includes("仍存在于")
+    ) {
+      return line;
     }
     if (/^curl:\s/.test(line)) {
       return `网络连接失败（${line}）`;
@@ -5152,7 +5169,8 @@ function runtimeJobFailureMessage(job: RuntimeActionJobStatus): string {
   if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
     return "运行环境准备失败";
   }
-  const actionText = job.action === "uninstall" ? "卸载" : "安装";
+  const actionText =
+    job.action === "uninstall" ? "卸载" : job.action === "update" ? "更新" : "安装";
   return `${job.name} ${actionText}失败`;
 }
 
@@ -5161,7 +5179,8 @@ function describeRuntimeJobResult(job: RuntimeActionJobStatus): string {
     if (job.name === MACOS_RUNTIME_BOOTSTRAP_NAME && job.action === "bootstrap") {
       return "运行环境已准备完成";
     }
-    const actionText = job.action === "uninstall" ? "卸载" : "安装";
+    const actionText =
+      job.action === "uninstall" ? "卸载" : job.action === "update" ? "更新" : "安装";
     return `${job.name} ${actionText}完成`;
   }
   return runtimeJobFailureMessage(job);
@@ -5174,9 +5193,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   async function runDependencyAction(
     name: RuntimeDepName,
-    action: "install" | "uninstall",
+    action: "install" | "uninstall" | "update",
     options?: { showRuntimePanel?: boolean }
   ) {
+    const actionLabel =
+      action === "uninstall" ? "卸载" : action === "update" ? "更新" : "安装";
     flushSync(() => {
       setShowEnvSetup(options?.showRuntimePanel ?? false);
       setInstallingDep(name);
@@ -5185,7 +5206,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       setRuntimeJob(null);
       setRuntimeJobId("");
       setError("");
-      setMessage(`${name} ${action === "uninstall" ? "卸载" : "安装"}中...`);
+      setMessage(`${name} ${actionLabel}中...`);
     });
     try {
       const jobId = await invoke<string>("start_runtime_dependency_action", { name, action });
@@ -5201,7 +5222,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     } catch (e) {
       setRuntimeInstallLog(String(e));
       setError(String(e));
-      setMessage(`${name} ${action === "uninstall" ? "卸载" : "安装"}启动失败`);
+      setMessage(`${name} ${actionLabel}启动失败`);
       setInstallingDep("");
       setInstallingElapsed(0);
       setRuntimeJobId("");
@@ -6180,6 +6201,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     /** 同一服务端 user id 只消费一次 pending，防止重复 completed 吃掉下一条连发乐观气泡。 */
     const completedUserMessageIds = new Set<string>();
     const pendingToolsBeforeMessage: AgentDetailedPart[] = [];
+    const queueToolBeforeMessage = (part: AgentDetailedPart) => {
+      const partIdOf = (item: AgentDetailedPart) =>
+        String(
+          (item as { id?: string }).id
+          || (item as { toolCallId?: string }).toolCallId
+          || ""
+        ).trim();
+      const pid = partIdOf(part);
+      if (!pid) return;
+      const hit = pendingToolsBeforeMessage.findIndex((item) => partIdOf(item) === pid);
+      if (hit < 0) {
+        pendingToolsBeforeMessage.push(part);
+        return;
+      }
+      const previous = pendingToolsBeforeMessage[hit] as any;
+      const merged = { ...previous, ...(part as any) };
+      const incomingToolName = String((part as any)?.toolName || "").trim();
+      if (!incomingToolName && String(previous?.toolName || "").trim()) {
+        merged.toolName = previous.toolName;
+      }
+      pendingToolsBeforeMessage[hit] = merged as AgentDetailedPart;
+    };
     let eventSubscription: { close: () => void } | null = null;
     let finalized = false;
     let finalizePromise: Promise<void> | null = null;
@@ -6706,17 +6749,26 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     };
 
     const cancelStreamBatch = () => {
+      // 中断/失败收口也会走这里：必须先落盘合帧缓冲，再清 timer。
+      // 否则已到前端、尚未 flush 的正文/思考会被直接丢掉，表现为「中断后回复空白」。
+      if (pendingTextStream.size > 0 || pendingReasoningStream.size > 0) {
+        flushStreamUpdates();
+        return;
+      }
       if (streamFlushTimer !== null) window.clearTimeout(streamFlushTimer);
       streamFlushTimer = null;
-      pendingTextStream.clear();
-      pendingReasoningStream.clear();
     };
 
     const updateToolPart = (messageId: string, part: AgentDetailedPart) => {
       // 禁止回退到 session 级孤儿桶：空 messageId 时工具无处归属，硬塞会在过程中虚增
       // 「已运行 N 条」，结束后 history 对账又对不上。等 message.started 建立 current 后再挂。
       let id = messageId.trim();
-      if (!id) return;
+      if (!id) {
+        // 某些运行时会先推 toolCall.started，再推 message.started。先缓存而不是丢弃，
+        // 否则 MCP 工具会在首帧缺少 part，后续补齐时被追加到错误的位置。
+        queueToolBeforeMessage(part);
+        return;
+      }
       if (frozenAssistantMessageIds.has(id)) {
         const pid = String(
           (part as { id?: string }).id
@@ -6747,11 +6799,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         if (current && current !== id && !frozenAssistantMessageIds.has(current)) {
           id = current;
         } else {
-          if (pid) {
-            const hit = pendingToolsBeforeMessage.findIndex((item) => partIdOf(item) === pid);
-            if (hit >= 0) pendingToolsBeforeMessage[hit] = { ...pendingToolsBeforeMessage[hit], ...part };
-            else pendingToolsBeforeMessage.push(part);
-          }
+          queueToolBeforeMessage(part);
           return;
         }
       }
@@ -6870,7 +6918,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               break;
             }
             // 已 finalize（含手动暂停）后不再按 history 重建 live，否则会冲掉已落盘的子卡/时间线。
-            replaceAssistantMessage(event.message, { rebuildLive: !finalized });
+            // 用户点停止后 busy 已先清掉：此时 history 往往还没带上半截流式正文，重建会把可见回复洗成空白。
+            replaceAssistantMessage(event.message, {
+              rebuildLive: !finalized && Boolean(agentRunBusyBySessionRef.current[sessionId])
+            });
             if (completedId) frozenAssistantMessageIds.add(completedId);
           }
           break;
@@ -6959,6 +7010,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               pending.inputRaw = `${pending.inputRaw || ""}${event.delta}`;
             } else if (targetId) {
               patchAgentLivePartDelta(targetId, deltaToolCallId, "inputRaw", event.delta);
+            } else {
+              const pending = pendingToolsBeforeMessage.find(
+                (item) => String((item as { id?: string }).id || "").trim() === deltaToolCallId
+              );
+              if (pending) {
+                pending.inputRaw = `${(pending as { inputRaw?: string }).inputRaw || ""}${event.delta}`;
+              } else {
+                const pendingPart = buildToolPart({
+                  toolCallId: deltaToolCallId,
+                  toolName: "",
+                  status: "running"
+                });
+                (pendingPart as { inputRaw?: string }).inputRaw = event.delta;
+                queueToolBeforeMessage(pendingPart);
+              }
             }
           }
           break;
@@ -7404,7 +7470,30 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const finalize = (failure?: string): Promise<void> => {
       if (finalizePromise) return finalizePromise;
       finalized = true;
+      // 先冲刷合帧缓冲（cancelStreamBatch 内部会 flush），再挂上 message.started 前缓存的工具。
       cancelStreamBatch();
+      if (pendingToolsBeforeMessage.length > 0) {
+        const target =
+          currentServerAssistantId.trim()
+          || currentLocalAssistantId.trim()
+          || (failure ? `retry-pending:${runId}` : "");
+        if (target) {
+          if (!currentServerAssistantId.trim() && currentLocalAssistantId.trim()) {
+            currentServerAssistantId = target;
+            localAssistantByMessageId.set(target, currentLocalAssistantId);
+            commitAgentServerMessageIdByLocalId((prev) => ({
+              ...prev,
+              [currentLocalAssistantId]: target
+            }));
+          } else if (!localAssistantByMessageId.has(target) && currentLocalAssistantId) {
+            localAssistantByMessageId.set(target, currentLocalAssistantId);
+          }
+          const queued = pendingToolsBeforeMessage.splice(0, pendingToolsBeforeMessage.length);
+          for (const part of queued) {
+            upsertAgentLivePart(target, part);
+          }
+        }
+      }
       finalizePromise = (async () => {
         // 有在飞的记忆抽取时延迟关订阅（终态事件在 run.completed 之后到达）；
         // 兜底计时对齐抽取超时（默认 120s）加余量，防事件丢失导致永不关闭。
@@ -8684,20 +8773,43 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           setInstallingDep("");
           setInstallingElapsed(0);
           setRuntimeJobId("");
-          void refreshRuntimeRequirements().then((final) => {
+
+          // 先按任务结果同步该项状态，避免开关卡在旧 installed；再静默复核，避免「检查中」刷列表
+          if (job.name === "git" || job.name === "entire" || job.name === "giteam") {
+            const depName = job.name as RuntimeDepName;
+            if (job.status === "succeeded") {
+              setRuntimeStatus((prev) => ({
+                ...prev,
+                [depName]: {
+                  ...prev[depName],
+                  installed: job.action !== "uninstall",
+                  ...(job.action === "uninstall" ? { version: undefined, path: undefined } : {})
+                }
+              }));
+            }
+          }
+
+          void refreshRuntimeRequirements({ silent: true }).then((final) => {
             const coreInstalled = final.git.installed && final.entire.installed;
-            if (job.status === "succeeded" || coreInstalled) {
-              setRuntimeJob(null);
+            setRuntimeJob(null);
+            if (job.status === "succeeded") {
               setError("");
-              setMessage("运行环境已准备完成");
-              if (coreInstalled) setShowEnvSetup(false);
-            } else {
-              setRuntimeJob(null);
-              setRuntimeInstallLog(job.log || "");
-              setMessage(describeRuntimeJobResult(job));
-              if (job.status === "failed") {
-                setError(runtimeJobFailureMessage(job));
+              if (job.action === "uninstall") {
+                setMessage(`${job.name} 已卸载`);
+              } else if (job.action === "update") {
+                setMessage(`${job.name} 已更新`);
+              } else if (coreInstalled) {
+                setMessage("运行环境已准备完成");
+                setShowEnvSetup(false);
+              } else {
+                setMessage(describeRuntimeJobResult(job));
               }
+              return;
+            }
+            setRuntimeInstallLog(job.log || "");
+            setMessage(describeRuntimeJobResult(job));
+            if (job.status === "failed") {
+              setError(runtimeJobFailureMessage(job));
             }
           });
         })
@@ -11961,6 +12073,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
             onRefreshRuntime={() => void refreshRuntimeRequirements()}
             skillsContent={settingsSkillsContent}
+            skillsCount={groupedAgentSkills.length}
             skillsLoading={agentSkillsLoading}
             onRefreshSkills={() => void refreshAgentSkills()}
             onSkillsVisible={() => {

@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.51"
+version = "0.2.52"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
