@@ -13,8 +13,72 @@ permissions:
   contents: write
 
 jobs:
+  # 先单独创建/复用 Release，避免 matrix 多平台同时 create 撞 already_exists
+  create-release:
+    name: Create release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.ensure.outputs.result }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+    steps:
+      - name: Resolve tag name
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag_name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_name=desktop-v${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure GitHub release
+        id: ensure
+        uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+        with:
+          github-token: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          result-encoding: string
+          script: |
+            const tag = process.env.TAG_NAME;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const name = `Giteam ${tag}`;
+            const body = `## 本版重点（0.2.52）
+
+            - 插件设置：Codex 式插件 / 技能 / MCP 管理，MCP 添加弹窗更精致
+            - 运行时依赖改为安装 / 更新（不再提供卸载开关）
+            - 会话贴底跟随与中断渲染更稳，工具事件行减少抖动
+
+            ## 说明
+
+            - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
+            - Windows 建议安装 Git for Windows
+            - 详细说明见 \`docs/releases/desktop-v0.2.52.md\``;
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.info(`Reusing existing release ${release.data.id} for ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+              core.info(`Created release ${release.data.id} for ${tag}`);
+            }
+            return String(release.data.id);
+
   publish:
     name: Build ${{ matrix.name }}
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -121,20 +185,9 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
-          releaseName: Giteam ${{ github.ref_type == 'tag' && github.ref_name || format('desktop-v{0}', github.run_number) }}
-          releaseBody: |
-            ## 本版重点（0.2.52）
-
-            - 插件设置：Codex 式插件 / 技能 / MCP 管理，MCP 添加弹窗更精致
-            - 运行时依赖改为安装 / 更新（不再提供卸载开关）
-            - 会话贴底跟随与中断渲染更稳，工具事件行减少抖动
-
-            ## 说明
-
-            - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
-            - Windows 建议安装 Git for Windows
-            - 详细说明见 `docs/releases/desktop-v0.2.52.md`
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ needs.create-release.outputs.tag_name }}
+          releaseName: Giteam ${{ needs.create-release.outputs.tag_name }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
