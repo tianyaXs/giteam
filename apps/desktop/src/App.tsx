@@ -11801,6 +11801,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         {showSettings ? (
           <SettingsDialog
             theme={theme}
+            repoPath={repoPath}
             initialSection={settingsInitialSection}
             runtimeStatus={runtimeStatus}
             onClose={() => void closeSettingsModal()}

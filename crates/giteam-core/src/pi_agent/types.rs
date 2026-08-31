@@ -49,7 +49,7 @@ impl RuntimeCapabilities {
             questions: true,
             skills: false,
             extensions: false,
-            mcp: false,
+            mcp: true,
         }
     }
 }

@@ -1,6 +1,9 @@
 // Windows 发行版用 WINDOWS 子系统，避免双击打开时多出一个会拖垮应用的 cmd 窗口；
 // debug 仍保留控制台，方便看日志。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// generate_handler 命令元组加深后，部分 async command 的布局计算超出默认
+// 查询深度（见 automation_run_now 报错），按编译器建议放宽。
+#![recursion_limit = "256"]
 
 mod commands;
 mod remote_repo;
@@ -441,6 +444,13 @@ fn main() {
             commands::pi_agent::fetch_agent_skill_audit_api,
             commands::pi_agent::fetch_skillsmp_skill_search,
             commands::pi_agent::fetch_skillsmp_ai_search,
+            commands::pi_agent_mcp::agent_mcp_list_services,
+            commands::pi_agent_mcp::agent_mcp_list_tools,
+            commands::pi_agent_mcp::agent_mcp_add_service,
+            commands::pi_agent_mcp::agent_mcp_remove_service,
+            commands::pi_agent_mcp::agent_mcp_connect_service,
+            commands::pi_agent_mcp::agent_mcp_disconnect_service,
+            commands::pi_agent_mcp::agent_mcp_authenticate_service,
             commands::db::db_save_review_record,
             commands::db::db_list_review_records,
             commands::db::db_save_review_action,

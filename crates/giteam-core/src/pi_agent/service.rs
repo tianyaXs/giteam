@@ -671,10 +671,21 @@ impl PiAgentService {
             })
             .await;
         }
+        // MCP 运行时（mcpstore）：会话创建的异步边界内加载并生成工具快照；
+        // 失败只记日志——MCP 是旁路能力，绝不阻塞会话创建（与 asset-graph 同策略）。
+        // 配置变化只对新会话生效，不做热插拔（见 docs mcpstore 集成设计）。
+        let mcp_runtime = match super::mcp::load_for_repo(&repo_path).await {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                eprintln!("[mcp] load for {} failed: {error}", repo_path.display());
+                None
+            }
+        };
         let mut handle = create_agent_session(sdk_options_with_factory(
             config,
             &hub,
             self.subagent_host_for(&session_kind),
+            mcp_runtime,
         ))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
@@ -2608,10 +2619,22 @@ impl PiAgentService {
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(record.repo_path.clone());
+        // 冷启动恢复同样在异步边界重建 MCP 运行时（只读快照，无副作用）。
+        let mcp_runtime = match super::mcp::load_for_repo(&record.repo_path).await {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                eprintln!(
+                    "[mcp] restore load for {} failed: {error}",
+                    record.repo_path.display()
+                );
+                None
+            }
+        };
         let mut handle = create_agent_session(sdk_options_with_factory(
             config,
             &hub,
             self.subagent_host_for(&record.session_kind),
+            mcp_runtime,
         ))
             .await
             .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
@@ -2969,6 +2992,7 @@ fn sdk_options_with_factory(
     config: PiSessionConfig,
     hub: &Arc<InteractionHub>,
     subagent_host: Option<Arc<dyn SubagentHost>>,
+    mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
 ) -> pi::sdk::SessionOptions {
     let background_log_dir = (!config.no_session).then(|| config.session_dir.clone());
     let browser_controller = config.browser_controller.clone();
@@ -2985,6 +3009,7 @@ fn sdk_options_with_factory(
         browser_controller,
         subagent_host,
         tool_budget,
+        mcp_runtime,
     );
     let mut options = config.into_sdk_options();
     options.tool_factory = Some(Arc::new(factory));

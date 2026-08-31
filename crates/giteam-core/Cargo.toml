@@ -32,6 +32,7 @@ uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 which = "6"
 html2text = "0.17.1"
+mcpstore = { version = "2.2.1", default-features = false, features = ["light"] }
 tar = "0.4"
 zstd = "0.13"
 regex = "1"

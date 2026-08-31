@@ -9,6 +9,7 @@ pub mod env;
 pub mod git;
 pub mod giteam_cli;
 pub mod pi_agent;
+pub mod pi_agent_mcp;
 pub mod release_notes;
 pub mod share;
 pub mod ui;
