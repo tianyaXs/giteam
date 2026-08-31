@@ -359,10 +359,11 @@ export function GitChangesPanel({
   const shouldUseDocumentPreview = shouldUseMarkdownPreview || (Boolean(selectedContent.dataBase64) && selectedContent.previewKind !== "text");
   // 优先级：有未提交文件（含未暂存/未跟踪）→ 提交状态；无未提交但有未推送/可拉取 → Sync 状态。
   // 提交弹窗会自动暂存未暂存文件（getCommitInput），所以只有未暂存更改时也能直接 Commit & Push。
+  // 按钮常显：两者都没有时置灰，避免「出现后消失」的布局跳动。
   const hasCommittableChanges = changeStats.total > 0;
   const syncable = syncAhead > 0 || syncBehind > 0;
   const showSyncState = !hasCommittableChanges && syncable;
-  const showPrimaryCommitAction = hasCommittableChanges || showSyncState || isGitBusy;
+  const idleDisabled = !hasCommittableChanges && !syncable;
   const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
   const directoryPaneLabel = directoryPaneOpen ? "收起目录区" : "展开目录区";
   const directoryTrackWidth = directoryPaneOpen ? "min(var(--changes-sidebar-width, 276px), 42%)" : "0px";
@@ -487,17 +488,18 @@ export function GitChangesPanel({
     };
   }, [patchStreamKey, standaloneFileView]);
 
-  const commitPrimaryContent = gitOperationLabel ? (
-    <span>{gitOperationLabel}</span>
-  ) : showSyncState ? (
+  // Sync 态进行中保持原内容、只把图标转起来——不切成 "Syncing..." 短文案，避免按钮变短跳动。
+  const commitPrimaryContent = showSyncState ? (
     <span className="inline-flex items-center gap-2">
-      <RefreshCwIcon data-icon="inline-start" />
+      <RefreshCwIcon data-icon="inline-start" className={isGitBusy ? "animate-spin" : undefined} />
       <span>Sync Changes</span>
       <span className="inline-flex items-center gap-1 tabular-nums opacity-85">
         {syncAhead > 0 ? `${syncAhead}↑` : ""}
         {syncBehind > 0 ? `${syncBehind}↓` : ""}
       </span>
     </span>
+  ) : gitOperationLabel ? (
+    <span>{gitOperationLabel}</span>
   ) : (
     <span className="inline-flex items-center gap-2">
       <CheckIcon data-icon="inline-start" />
@@ -667,32 +669,31 @@ export function GitChangesPanel({
           <div className="h-full bg-border/45" aria-hidden="true" />
           <div className="col-start-3 flex min-w-0 items-center justify-between gap-2 px-2" onClick={(event) => event.stopPropagation()}>
             {directoryPaneOpen ? <span className="min-w-0" /> : renderBranchLabel()}
-            {showPrimaryCommitAction ? (
-              <div className="inline-flex items-center rounded-md shadow-sm">
-                <Button
-                  variant="contrast"
-                  size="sm"
-                  className="rounded-r-none"
-                  onClick={showSyncState ? onSync : onCommitAndPush}
-                  disabled={showSyncState ? isGitBusy : !hasCommittableChanges}
-                  aria-busy={isGitBusy}
-                  title={showSyncState ? "拉取并推送本地提交" : !hasCommittableChanges ? "没有可提交的更改" : ""}
-                >
-                  {commitPrimaryContent}
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="contrast"
-                      size="icon"
-                      className="size-8 rounded-l-none border-l border-background/20 px-2"
-                      disabled={isGitBusy}
-                      title="更多提交操作"
-                      aria-label="更多提交操作"
-                    >
-                      <ChevronDownIcon data-icon="inline-start" />
-                    </Button>
-                  </DropdownMenuTrigger>
+            <div className="inline-flex items-center rounded-md shadow-sm">
+              <Button
+                variant="contrast"
+                size="sm"
+                className="rounded-r-none"
+                onClick={showSyncState ? onSync : onCommitAndPush}
+                disabled={isGitBusy || idleDisabled}
+                aria-busy={isGitBusy}
+                title={showSyncState ? "拉取并推送本地提交" : idleDisabled ? "没有可提交或同步的内容" : ""}
+              >
+                {commitPrimaryContent}
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="contrast"
+                    size="icon"
+                    className="size-8 rounded-l-none border-l border-background/20 px-2"
+                    disabled={isGitBusy || idleDisabled}
+                    title="更多提交操作"
+                    aria-label="更多提交操作"
+                  >
+                    <ChevronDownIcon data-icon="inline-start" />
+                  </Button>
+                </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuLabel>
                       提交操作
@@ -729,9 +730,8 @@ export function GitChangesPanel({
                       </DropdownMenuItem>
                     </DropdownMenuGroup>
                   </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ) : null}
+              </DropdownMenu>
+            </div>
           </div>
         </div>
         <div className={cn("grid min-w-0 items-center bg-muted/10", gridTransitionClass)} style={{ gridTemplateColumns: changesGridColumns }}>
