@@ -133,6 +133,10 @@ type GitWorkspaceControllerOptions = {
   setWorktreeToRemove: SetState<string>;
   setExpandedWorktreeDirs: SetState<string[]>;
   setBranchParentMap: SetState<Record<string, string>>;
+  /** 检出被未提交变更挡住时，待切换的目标分支：提交弹窗据此展示「提交后切换」，提交成功后自动重试切换。 */
+  pendingSwitchBranch: string | null;
+  setPendingSwitchBranch: SetState<string | null>;
+  setCommitDialogAction: SetState<"commit" | "commitPush" | "commitSync" | null>;
 };
 
 export function useGitWorkspaceController(options: GitWorkspaceControllerOptions) {
@@ -214,7 +218,10 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setWorktreeContextMenu,
     setWorktreeToRemove,
     setExpandedWorktreeDirs,
-    setBranchParentMap
+    setBranchParentMap,
+    pendingSwitchBranch,
+    setPendingSwitchBranch,
+    setCommitDialogAction
   } = options;
 
   function currentTopologyBaseBranch(): string {
@@ -442,8 +449,19 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
         setMessage(`已检出分支: ${branchName}`);
       }
     } catch (error) {
-      setError(String(error));
-      setMessage(`检出失败: ${branchName}`);
+      // 未提交变更挡住检出：引导先提交（复用提交弹窗），提交成功后自动重试切换。
+      // 不解析 git 报错文案（随 locale 变化），直接重新探测工作区脏状态。
+      const dirty = await getGitWorktreeOverview(repoPath)
+        .then((ov) => ov.entries.some((entry) => entry.staged || entry.unstaged || entry.untracked))
+        .catch(() => false);
+      if (dirty) {
+        setPendingSwitchBranch(branchName);
+        setCommitDialogAction("commit");
+        setMessage("有未提交的更改，提交后自动切换");
+      } else {
+        setError(String(error));
+        setMessage(`检出失败: ${branchName}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -826,7 +844,8 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
     setGitOperation("commit");
     setError("");
     try {
-      if (!input.staged) {
+      // 检出被挡引导来的提交：无论是否已有暂存都全量暂存，保证提交后工作区干净、切换能完成。
+      if (!input.staged || pendingSwitchBranch) {
         await stageUnstagedFiles(input.unstagedFiles);
       }
       const result = await gitCommit(repoPath, input.message);
@@ -834,7 +853,15 @@ export function useGitWorkspaceController(options: GitWorkspaceControllerOptions
       setMessage("提交成功");
       await refreshWorktreeData();
       appendAgentDebugLog(`git.commit ${result.trim()}`);
+      // 提交完成后自动重试被挡住的切换。
+      const pending = pendingSwitchBranch;
+      if (pending) {
+        setPendingSwitchBranch(null);
+        await checkoutBranchFromTopology(pending);
+      }
     } catch (error) {
+      // 提交失败则切换无法完成，清掉待切换状态，避免之后无关提交带出残留的「提交后切换」。
+      setPendingSwitchBranch(null);
       setError(String(error));
       setMessage("提交失败");
     } finally {

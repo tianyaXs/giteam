@@ -1074,6 +1074,8 @@ export function App() {
   const [commitMessage, setCommitMessage] = useState("");
   const [commitDialogAction, setCommitDialogAction] = useState<"commit" | "commitPush" | "commitSync" | null>(null);
   const [commitDialogSubmitting, setCommitDialogSubmitting] = useState(false);
+  // 检出被未提交变更挡住时的待切换分支：提交弹窗展示「提交后切换」，提交成功后自动完成切换。
+  const [pendingSwitchBranch, setPendingSwitchBranch] = useState<string | null>(null);
   const [gitOperation, setGitOperation] = useState<"commit" | "push" | "sync" | "commitPush" | "commitSync" | "cherryPick" | "revert" | null>(null);
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -5002,7 +5004,10 @@ export function App() {
     setWorktreeContextMenu,
     setWorktreeToRemove,
     setExpandedWorktreeDirs,
-    setBranchParentMap
+    setBranchParentMap,
+    pendingSwitchBranch,
+    setPendingSwitchBranch,
+    setCommitDialogAction
   });
 
   async function importRepository(pathFromPrompt: string): Promise<boolean> {
@@ -11420,6 +11425,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             if (!open && !committing && !pushing) {
               setCommitDialogSubmitting(false);
               setCommitDialogAction(null);
+              // 用户主动关闭（取消/Esc/点外）→ 放弃待切换，避免之后无关提交触发意外切换。
+              // 确认提交走的是下方 setTimeout 程序化关闭，不会触发这里。
+              setPendingSwitchBranch(null);
             }
           }}
         >
@@ -11489,6 +11497,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                     <span className="font-medium text-rose-600">-{worktreeOverview.deletedLines}</span>
                   </span>
                 </div>
+                {pendingSwitchBranch ? (
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="font-medium text-muted-foreground">提交后切换</span>
+                    <span className="min-w-0 truncate font-medium text-primary">{pendingSwitchBranch}</span>
+                  </div>
+                ) : null}
               </div>
               <div className="flex flex-col gap-3">
                 <Field className="gap-2">
@@ -11535,11 +11549,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 >
                   {commitDialogSubmitting || committing || pushing
                     ? "提交中..."
-                    : commitDialogAction === "commitPush"
-                      ? "Commit & Push"
-                      : commitDialogAction === "commitSync"
-                        ? "Commit & Create PR"
-                        : "Commit"}
+                    : pendingSwitchBranch && commitDialogAction === "commit"
+                      ? "提交并切换"
+                      : commitDialogAction === "commitPush"
+                        ? "Commit & Push"
+                        : commitDialogAction === "commitSync"
+                          ? "Commit & Create PR"
+                          : "Commit"}
                 </Button>
               </div>
             </motion.div>
