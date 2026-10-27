@@ -83,6 +83,34 @@ export type AgentMessagePageCacheEntry = {
 
 const AGENT_SESSION_TITLE_MAX = 42;
 
+/**
+ * 右侧会话面板是否应显示「加载会话中…」。
+ *
+ * 关键规则：草稿态（draft = 用户意图是「无选中的新对话」）下，残留的
+ * activeSessionId 不得把面板锁进 loading——典型场景是切到刚导入的空仓库：
+ * bootstrap 还没清掉上一仓库的 active id，而会话列表为空，此时
+ * 「active 不在列表」分支若不看 draft 会恒为真，页面永久停在加载态。
+ *
+ * @param hydratingActive     active 会话正在水合（getMessages 进行中）
+ * @param pendingSidebarSwitch 侧栏点击触发的切换尚未落到列表
+ * @param draft               当前是否处于新对话草稿态
+ * @param activeSessionId     当前选中的会话 id（可为空串）
+ * @param activeSession       在 agentSessions 列表中找到的会话对象（找不到为 null）
+ */
+export function isAgentSessionLoadingState(input: {
+  hydratingActive: boolean;
+  pendingSidebarSwitch: boolean;
+  draft: boolean;
+  activeSessionId: string;
+  activeSession: Pick<AgentChatSession, "loaded"> | null;
+}): boolean {
+  if (input.hydratingActive || input.pendingSidebarSwitch) return true;
+  const sid = input.activeSessionId.trim();
+  if (!sid) return false;
+  if (input.draft) return false;
+  return !input.activeSession || !input.activeSession.loaded;
+}
+
 function compactSessionTitleText(input?: string): string {
   return String(input || "").replace(/\s+/g, " ").trim();
 }

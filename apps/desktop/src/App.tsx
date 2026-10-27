@@ -299,6 +299,7 @@ import {
   clipAgentSessionTitle,
   compareAgentSessionActivity,
   filterActiveAgentSessionSummaries,
+  isAgentSessionLoadingState,
   isPrimaryAgentSessionSummary,
   agentSessionFromSummary,
   modelRefFromChatSession,
@@ -1327,7 +1328,7 @@ export function App() {
   const [sidebarAgentSessionHasMoreByRepo, setSidebarAgentSessionHasMoreByRepo] = useState<Record<string, boolean>>({});
   // 会话选择的单一意图入口（selectAgentSession）所用类型。reason 仅用于对账日志，不驱动分支副作用。
   type AgentSelectionReason =
-    | "click" | "new" | "restore" | "bootstrap" | "neighbor"
+    | "click" | "new" | "restore" | "bootstrap" | "bootstrap-empty" | "neighbor"
     | "delete-empty" | "child" | "draft-clear" | "unbind" | "rollback";
   type AgentSelectionIntent = {
     seq: number;
@@ -2058,11 +2059,13 @@ export function App() {
   }, [activeAgentSessionId, activeAgentSession?.provider, activeAgentSession?.model]);
 
   const agentMessages = activeAgentSession?.messages ?? [];
-  const agentSessionLoading = Boolean(
-    hydratingActiveAgentSession
-    || pendingSidebarSessionSwitch
-    || (activeAgentSessionId && (!activeAgentSession || !activeAgentSession.loaded))
-  );
+  const agentSessionLoading = isAgentSessionLoadingState({
+    hydratingActive: hydratingActiveAgentSession,
+    pendingSidebarSwitch: pendingSidebarSessionSwitch,
+    draft: draftAgentSession,
+    activeSessionId: activeAgentSessionId,
+    activeSession: activeAgentSession
+  });
   const agentShowEmptyState = !hydratingActiveAgentSession && !pendingSidebarSessionSwitch && !agentSessionLoading && agentMessages.length === 0;
   // 切会话后空态/消息态会 remount 输入框；等 loading 结束再补一次焦点，避免落在已卸载节点上。
   useEffect(() => {
@@ -5544,9 +5547,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 const target = bound && list.some((s) => s.id === bound) ? bound : (list[0]?.id ?? "");
                 if (target) {
                   selectAgentSession(target, bound === target ? "restore" : "bootstrap");
-                } else if (res.empty && isLastAttempt) {
-                  // 列表确实为空：进入草稿态，不写 active（保留空选中）。
-                  setDraftAgentSession(true);
+                } else if (res.empty && (isLastAttempt || repoSwitched)) {
+                  // 列表确实为空：进入草稿态。关键：必须同时清掉跨仓库残留的 active——
+                  // 否则新导入的空仓库会把上一仓库的会话 id 留在 active 上，
+                  // 「active 不在列表」令右侧永久停在「加载会话中…」。
+                  // repoSwitched 时提前收尾（首轮 list 成功且为空即可给干净空态，
+                  // 不必等末轮重试；若后续轮次真出现会话，!alreadyPicked 会放行重选）。
+                  selectAgentSession("", "bootstrap-empty", { draft: true });
                 }
               }
             }
