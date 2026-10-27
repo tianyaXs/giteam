@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   buildAgentAssistantRenderGroups,
@@ -6,6 +6,8 @@ import {
   collapseDuplicatedAgentContent,
   dedupeAgentDuplicateTextParts,
   dedupeAgentToolParts,
+  hasVisibleTimelineGroups,
+  isPauseFailureText,
   isAgentRenderablePart,
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
@@ -35,6 +37,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/colla
 import { Skeleton } from "../ui/skeleton";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
+import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
@@ -113,7 +116,7 @@ const COLLAPSE_CHAR_LIMIT = 420;
 
 type AgentDisplayTimelineGroup =
   | AgentAssistantRenderGroup
-  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall"; parts: AgentDetailedPart[] };
+  | { kind: "tool-batch"; key: string; batchKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "office"; parts: AgentDetailedPart[] };
 
 function formatContextCount(count: number, noun: string): string {
   return count > 0 ? `${count}次${noun}` : "";
@@ -223,7 +226,8 @@ function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   const hasTodos = (todoItems || []).length > 0;
   const label = hasTodos ? "执行中" : "思考中";
   const doneLabel = hasTodos ? "已执行" : "已思考";
-  // h-10 与 TimelineFoldGroup 收起态标签行对齐，避免「思考中」占位与推理组切换时高度跳变。
+  // 高度对齐首组首帧（h-10 = TimelineFoldGroup 折叠头行高；流式正文块经
+  // min-h-10 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
   return (
     <div className="flex h-10 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
       <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
@@ -282,6 +286,11 @@ function buildDisplayTimelineGroups(
   return mergeAdjacentContextGroups(out);
 }
 
+/** 模型在工具间隙常输出的无信息量占位叙述（…/.../·），不渲染成整行。 */
+function isBareEllipsisText(text: string): boolean {
+  return /^[.…·\s]*$/.test(String(text || "").trim());
+}
+
 function shouldCollapseMessage(text: string): boolean {
   const normalized = String(text || "").trim();
   if (!normalized) return false;
@@ -338,7 +347,7 @@ function getToolName(part: AgentDetailedPart): string {
   return String((part as any)?.toolName || "").trim();
 }
 
-function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "" {
+function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "office" | "" {
   if (group.kind !== "part") return "";
   const type = String((group.part as any)?.type || "");
   if (type === "runtime.memory") return "memory";
@@ -350,6 +359,8 @@ function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web
   if (tool === "web_fetch" || tool === "web_search") return "web";
   if (tool === "browser_use") return "browser";
   if (tool === "asset_context" || tool === "asset_search" || tool === "asset_precedents") return "recall";
+  // office 文件工具合并为「正在操作文件」卡（OfficeOperationCard 按类型渲染）。
+  if (/^(read|write|edit)_(xlsx|docx|pptx)$/.test(tool)) return "office";
   return "";
 }
 
@@ -380,7 +391,7 @@ function rowMatchesMessageId(row: AgentMessageRenderRow, messageId: string): boo
 
 function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentDisplayTimelineGroup[] {
   const out: AgentDisplayTimelineGroup[] = [];
-  let pendingKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "" = "";
+  let pendingKind: "shell" | "edit" | "web" | "browser" | "task" | "memory" | "recall" | "office" | "" = "";
   let pending: AgentAssistantRenderGroup[] = [];
 
   const flush = () => {
@@ -615,6 +626,22 @@ function ToolBatchGroup({
   // started——此时组标签必须以 part 相位为准显示「记录中」，否则「已记录」抢先出现。
   const running = !forceInactive || memoryHasRunning;
   const recall = group.batchKind === "recall";
+  // office 批组：合并渲染为「正在操作文件」卡（类型化微缩视觉），不走通用折叠列表。
+  if (group.batchKind === "office") {
+    const officeRunning =
+      !forceInactive
+      && group.parts.some((part) => {
+        const status = String((part as { status?: string }).status || "").toLowerCase();
+        return status === "running" || status === "pending" || status === "deciding";
+      });
+    return (
+      <OfficeOperationCard
+        parts={group.parts}
+        running={officeRunning}
+        onOpenFile={(path) => onOpenToolFile({ filePath: path })}
+      />
+    );
+  }
   // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
   const activeLabel = memory
     ? "记录中"
@@ -880,11 +907,88 @@ function ReasoningGroup({
       }
     >
       <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
-        <div className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]">
-          {renderMarkdown(text, active)}
-        </div>
+        <StreamingMarkdownBlock
+          text={text}
+          streaming={active}
+          renderMarkdown={renderMarkdown}
+          className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]"
+        />
       </div>
     </TimelineFoldGroup>
+  );
+}
+
+/**
+ * 流式 markdown 块 + 自绘光标。
+ *
+ * 为什么不用 Streamdown 自带 caret：它把光标渲染成最后一个 markdown 块之后的
+ * 独立块级元素——光标永远落在「文本末尾的下一行」，独占一行；工具卡到达使
+ * streaming 翻 false 时光标消失、那一行塌掉，下方内容整体上移（用户看到的
+ * 「光标消失→列表变短→上下反复」抖动即来源于此）。
+ *
+ * 本组件的光标是 absolute 定位的叠层：测量最后一个文本节点**最后一个字符**
+ * 的渲染矩形，把光标叠在它的右侧。它不参与文档流，出现/消失对布局的影响
+ * 恒为零——无论后面来的是工具卡还是新文本，列表高度都不会动。
+ */
+function StreamingMarkdownBlock({
+  text,
+  streaming,
+  renderMarkdown,
+  className
+}: {
+  text: string;
+  streaming: boolean;
+  renderMarkdown: RenderMarkdown;
+  className?: string;
+}) {
+  // 流式期间裁掉尾部空白：空尾段落会让"最后一个文本节点"落在空行上。
+  const trimmed = streaming ? text.replace(/\s+$/, "") : text;
+  // 刚创建的空 part 裁剪后为空：补一个空格保住首个文本节点（首帧上方无内容，无跳动）。
+  const displayText = streaming && !trimmed ? " " : trimmed;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [caretRect, setCaretRect] = useState<{ left: number; top: number; height: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!streaming) {
+      setCaretRect(null);
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) return;
+    // 最后一个非空白文本节点。
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let last: Text | null = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if ((node as Text).data.replace(/\s+/g, "").length > 0) last = node as Text;
+    }
+    if (!last || last.data.length === 0) {
+      setCaretRect({ left: 0, top: 0, height: 20 });
+      return;
+    }
+    // 测最后一个字符的矩形：右缘即光标落点，高度随行框。
+    const range = document.createRange();
+    range.setStart(last, Math.max(0, last.data.length - 1));
+    range.setEnd(last, last.data.length);
+    const rect = range.getBoundingClientRect();
+    const host = container.getBoundingClientRect();
+    if (rect.height > 0) {
+      setCaretRect({ left: rect.right - host.left, top: rect.top - host.top, height: rect.height });
+    } else {
+      setCaretRect({ left: 0, top: 0, height: 20 });
+    }
+  }, [displayText, streaming]);
+
+  return (
+    <div ref={containerRef} className={cn("relative", className)}>
+      {renderMarkdown(displayText, streaming)}
+      {streaming && caretRect ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inline-block w-[3px] animate-pulse rounded-[1px] bg-foreground/75"
+          style={{ left: caretRect.left, top: caretRect.top, height: caretRect.height }}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -898,14 +1002,18 @@ function AssistantTextBlock({
   renderMarkdown: RenderMarkdown;
 }) {
   return (
-    <div
+    <StreamingMarkdownBlock
+      text={text}
+      streaming={streaming}
+      renderMarkdown={renderMarkdown}
       className={cn(
         "min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]",
+        // 流式期间预留 h-10：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
+        // 不会出现「标签消失 → 列表上移 8px」。结束后释放（仅单行回复收 12px，一次性）。
+        streaming && "min-h-10",
         streaming && "agent-stream-fade"
       )}
-    >
-      {renderMarkdown(text, streaming)}
-    </div>
+    />
   );
 }
 
@@ -1083,6 +1191,8 @@ function AssistantTimeline({
             String((group.part as { text?: string }).text || "")
           );
           if (!text) return null;
+          // 模型在工具间隙常输出「…/...」占位叙述：无信息量，不渲染成整行。
+          if (/^[.…·\s]+$/.test(text)) return null;
           const last = index === displayTimelineGroups.length - 1;
           return (
             <AssistantTextBlock
@@ -1274,7 +1384,8 @@ function AssistantMessage({
     const type = String((part as { type?: string }).type || "");
     return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
   });
-  const showFallbackReply = Boolean(fallbackReply) && !timelineHasTextPart;
+  const showFallbackReply =
+    Boolean(fallbackReply) && !isBareEllipsisText(fallbackReply) && !timelineHasTextPart;
 
   return (
     <div className="grid min-w-0 gap-2">
@@ -1328,12 +1439,6 @@ function renderPartsHasFailure(parts: AgentDetailedPart[]): boolean {
   return parts.some((part) => String((part as { type?: string }).type || "") === "runtime.failure");
 }
 
-function isPauseFailureText(text: string): boolean {
-  const value = text.trim();
-  if (!value) return false;
-  return /^(已暂停|已中止|aborted)$/i.test(value) || /中止|暂停|已停止|abort/i.test(value);
-}
-
 function isFailureOnlyAssistantRow(row: AgentMessageRenderRow): boolean {
   if (!row.isAssistant) return false;
   if (row.fallbackReply.trim()) return false;
@@ -1366,7 +1471,7 @@ function collapseDuplicateFailureRows(
         buildAgentAssistantRenderGroups(target.renderParts),
         showReasoningSummaries
       );
-      target.hasTimeline = target.timelineGroups.length > 0;
+      target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
       target.fallbackReply = (
         buildAgentReplyMarkdownFromParts(target.renderParts) ||
         target.msg.content ||
@@ -1941,7 +2046,15 @@ export function AgentMessageStream({
       })
     );
     const renderParts = dedupeAgentDuplicateTextParts(
-      dedupeAgentToolParts(detailParts.filter(isAgentRenderablePart))
+      dedupeAgentToolParts(
+        detailParts
+          .filter(isAgentRenderablePart)
+          // 省略号占位叙述在 hasTimeline 计算前剔除：否则占位符被不可见组挤掉又塌回去
+          .filter((part) => {
+            const type = String((part as { type?: string }).type || "");
+            return type !== "text" || !isBareEllipsisText(String((part as { text?: string }).text || ""));
+          })
+      )
     );
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];
@@ -1968,7 +2081,7 @@ export function AgentMessageStream({
       liveParts,
       renderParts,
       timelineGroups,
-      hasTimeline: timelineGroups.length > 0,
+      hasTimeline: hasVisibleTimelineGroups(timelineGroups),
       fallbackReply,
       detailsLoading: detailsLoadingByMessageId[msg.id],
       detailsError: detailsErrorByMessageId[msg.id] || "",
@@ -1997,7 +2110,7 @@ export function AgentMessageStream({
           buildAgentAssistantRenderGroups(target.renderParts),
           showReasoningSummaries
         );
-        target.hasTimeline = target.timelineGroups.length > 0;
+        target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
         const hasTextPart = target.renderParts.some((part) => {
           const type = String((part as { type?: string }).type || "");
           return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());

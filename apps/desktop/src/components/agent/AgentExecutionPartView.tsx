@@ -334,6 +334,9 @@ export function AgentExecutionPartView({
   const status = String((part as any).status || "").trim().toLowerCase();
   const running = status === "running" || status === "pending" || status === "deciding";
   const isError = status === "error" || Boolean((part as any).isError);
+  // office 工具（read/write_xlsx）不渲染事件卡：右侧文件实时预览就是它们的 UI，
+  // 重复出卡是噪音。失败仍渲染——错误信息用户必须看得到。
+  if (/^(read|write|edit)_(xlsx|docx|pptx)$/.test(tool) && !isError) return null;
   const input = ((part as any).input || {}) as Record<string, unknown>;
   const details = (part as any).details as Record<string, unknown> | undefined;
   const outputText = redactSecrets(truncateRichText(normalizeText((part as any).output))) || toDisplayJson((part as any).output, 2200);
@@ -368,6 +371,16 @@ export function AgentExecutionPartView({
   // edit 首改行号（details.firstChangedLine）：headline 显示 L{n} 帮助定位代码位置。
   const editFirstLineRaw = details?.firstChangedLine;
   const editFirstLine = typeof editFirstLineRaw === "number" ? editFirstLineRaw : null;
+
+  // 流式进度：office 等工具在执行中经 tool.progress 写 details.{percent,stage,message}。
+  const progressPercent = (() => {
+    if (!running) return null;
+    const raw = details?.percent;
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+    return Math.max(0, Math.min(100, Math.round(raw)));
+  })();
+  const progressMessage =
+    running && typeof details?.message === "string" ? details.message.trim() : "";
 
   const toolFileTarget = (() => {
     if (tool === "read") {
@@ -527,6 +540,14 @@ export function AgentExecutionPartView({
           ) : null}
         </span>
       ) : null}
+      {progressPercent !== null ? (
+        <span
+          className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/80"
+          title={progressMessage || undefined}
+        >
+          {progressPercent}%
+        </span>
+      ) : null}
       {webTool && webUrl && onOpenBrowserUrl ? (
         <span
           role="button"
@@ -600,6 +621,18 @@ export function AgentExecutionPartView({
             {headline}
           </Button>
         </CollapsibleTrigger>
+        {/* 流式进度条：工具执行中按 details.percent 增长，完成后随 running=false 消失。 */}
+        {progressPercent !== null ? (
+          <div
+            className={cn("h-0.5 w-full overflow-hidden bg-transparent", headlinePadding)}
+            aria-hidden
+          >
+            <div
+              className="h-full rounded-full bg-primary/50 transition-[width] duration-300 ease-out"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        ) : null}
         {/* Content 始终挂载（Radix forceMount）：无详情时 height=0，避免详情到达时再挂载子树闪一帧。
             高度动画用 motion；Radix 官方亦可用 --radix-collapsible-content-height 做 CSS 动画。
             @see https://www.radix-ui.com/primitives/docs/components/collapsible#animating-content-size */}

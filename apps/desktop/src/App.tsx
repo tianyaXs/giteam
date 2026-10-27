@@ -264,6 +264,8 @@ import {
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
   dedupeAgentDuplicateTextParts,
+  hasVisibleTimelineGroups,
+  isPauseFailureText,
   readAgentTodosFromPart,
   toDisplayJson
 } from "./lib/agentParts";
@@ -572,6 +574,11 @@ function agentPartText(part: AgentPart): string {
  * input 保留 pi 原始参数名（path/oldText/newText/pattern/command），
  * output 提取为文本、details 保留 pi 原始结构，渲染层用 toolPresentation
  * 纯函数直接解析）。 */
+/** office 修改类工具（write/edit）：会改动文件 → 自动弹右侧实时预览；读取类不打扰用户。 */
+function isMutatingOfficeToolName(name: string | undefined): boolean {
+  return /^(write|edit)_(xlsx|docx|pptx)$/.test(String(name ?? "").trim());
+}
+
 function buildToolPart(options: {
   toolCallId: string;
   toolName: string;
@@ -1409,6 +1416,10 @@ export function App() {
   const agentPassiveSyncSeqRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const agentHydratingSessionIdRef = useRef("");
+  /** office 实时预览：toolCallId → 已打开路径与最后聚焦的表/选区/变更集（completed 回落用）。 */
+  const agentOfficePreviewCallsRef = useRef<
+    Map<string, { path: string; sheet?: string; range?: string; changes?: NonNullable<GitWorktreeFileContent["office"]>["changes"] }>
+  >(new Map());
   // 用户选中会话的意图 token：seq 单调递增，供后台数据通道异步对账（只读，不由此修改 active）。
   const agentSelectionIntentRef = useRef<AgentSelectionIntent | null>(null);
   // agentSessions 列表镜像，供 refresh 锚定排序与 bootstrap 首选读取，避免闭包读到旧列表。
@@ -3999,15 +4010,26 @@ export function App() {
           }
         }
       }
-      updateAgentSessionById(id, (session) => ({
-        ...session,
-        messages: mapped,
-        loaded: true,
-        nextCursor: undefined,
-        hasMore: false,
-        updatedAt: Date.now()
-      }));
-      appendAgentDebugLog(`agent.messages loaded ${id} count=${mapped.length}`);
+      updateAgentSessionById(id, (session) => {
+        // 暂停/中止的进行中消息：pi 未必持久化半截运行，但用户亲眼看到过这些
+        // 工具卡与正文——历史缺失时保留本地行，避免暂停瞬间整块内容消失。
+        const mappedIds = new Set(mapped.map((msg) => msg.id));
+        const preserved = session.messages.filter(
+          (msg) => !mappedIds.has(msg.id) && msg.role === "assistant" && isPauseFailureText(msg.error || "")
+        );
+        return {
+          ...session,
+          messages: [...mapped, ...preserved],
+          loaded: true,
+          nextCursor: undefined,
+          hasMore: false,
+          updatedAt: Date.now()
+        };
+      });
+      appendAgentDebugLog(
+        `agent.messages loaded ${id} count=${mapped.length}` +
+        (mapped.length === 0 ? "" : "")
+      );
     } catch (e) {
       appendAgentDebugLog(`session.messages load ${id} failed: ${e}`);
       updateAgentSessionById(id, (session) => {
@@ -7217,6 +7239,37 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               output: event.output
             }));
           }
+          // office 工具实时预览：progress details 带 path/sheet/range，首个进度
+          // 打开右侧面板，其后每个检查点静默重读文件并跟随正在写的表/选区。
+          if (isMutatingOfficeToolName(event.toolName)) {
+            const progressDetails = extractToolDetails(event.output);
+            const previewPath = String(progressDetails?.path || "").trim();
+            if (toolProgressId && previewPath) {
+              const known = agentOfficePreviewCallsRef.current.has(toolProgressId);
+              const changes = Array.isArray(progressDetails?.changes) ? progressDetails?.changes : null;
+              // edit_docx 且预览已打开：段落级 DOM patch（不重读文件、不整树重渲染）。
+              if (known && event.toolName === "edit_docx" && changes) {
+                setSelectedWorktreeContent((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        office: {
+                          ...prev.office,
+                          changes: changes as NonNullable<GitWorktreeFileContent["office"]>["changes"]
+                        }
+                      }
+                    : prev
+                );
+              } else {
+                void refreshAgentOfficePreview(toolProgressId, previewPath, {
+                  open: !known,
+                  sheet: typeof progressDetails?.sheet === "string" ? progressDetails.sheet : undefined,
+                  range: typeof progressDetails?.range === "string" ? progressDetails.range : undefined,
+                  changes: changes as NonNullable<GitWorktreeFileContent["office"]>["changes"] | undefined
+                });
+              }
+            }
+          }
           break;
         }
         case "tool.completed": {
@@ -7229,6 +7282,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               output: event.output
             });
             updateToolPart(currentServerAssistantId, completedPart);
+            // office 工具收尾：成功时以最终文件刷新一次预览（hint 沿用最后聚焦）。
+            if (isMutatingOfficeToolName(event.toolName) && !event.isError) {
+              const completedDetails = extractToolDetails(event.output);
+              const known = agentOfficePreviewCallsRef.current.get(toolCompletedId);
+              const previewPath = String(completedDetails?.path || known?.path || "").trim();
+              if (previewPath) {
+                const first = !agentOfficePreviewCallsRef.current.has(toolCompletedId);
+                void refreshAgentOfficePreview(toolCompletedId, previewPath, {
+                  open: first,
+                  sheet: typeof completedDetails?.sheet === "string" ? completedDetails.sheet : undefined,
+                  range: typeof completedDetails?.range === "string" ? completedDetails.range : undefined,
+                  changes: Array.isArray(completedDetails?.changes)
+                    ? (completedDetails?.changes as NonNullable<GitWorktreeFileContent["office"]>["changes"])
+                    : undefined
+                });
+              }
+            }
             const toolName = String(
               event.toolName
               || (completedPart as { toolName?: string }).toolName
@@ -8620,6 +8690,76 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     } catch {
       // 浮层用的是已有分支快照，刷新失败静默忽略
     }
+  }
+
+  /**
+   * office 工具实时预览：write_xlsx 每写完一个工作表就落盘检查点并随
+   * tool.progress 通知；本函数把目标文件解析到工作区、打开右侧面板并刷新
+   * 内容——用户能看着工作表逐个出现（DocumentPreviewViewer 按 dataBase64
+   * 重渲染）。首个进度 open=true（切面板），后续只静默刷新内容。
+   * hint（sheet/range）驱动预览跟随正在操作的工作表并高亮选区。
+   */
+  async function refreshAgentOfficePreview(
+    toolCallId: string,
+    rawPath: string,
+    opts?: {
+      open?: boolean;
+      sheet?: string;
+      range?: string;
+      changes?: NonNullable<GitWorktreeFileContent["office"]>["changes"];
+    }
+  ) {
+    const target = resolveToolFileTarget(rawPath, {
+      preferredRepoRoot: agentWorkspaceRoot,
+      workspaceFileCandidates: agentWorkspaceFileCandidates
+    });
+    // 主路径：解析到工作区后按仓库根读取；兜底：文件在工作区外（或尚未能解析）
+    // 时按绝对路径直接读——自动弹出必须"改了就能看到"，不能静默失败。
+    let local = target
+      ? await readWorkspaceRelativeLocalPreview(target.relativePath, target.repoRoot).catch(() => null)
+      : null;
+    let displayPath = target?.relativePath || "";
+    let absolutePath = local?.absolutePath || "";
+    if (!local) {
+      const candidate = rawPath.trim();
+      if (candidate) {
+        const preview = await readLocalAttachmentPreview(candidate).catch(() => null);
+        if (preview && !isEmptyPreviewContent(preview)) {
+          local = {
+            repoRoot: "",
+            absolutePath: candidate,
+            content: attachmentPreviewToWorktreeContent(preview)
+          };
+          displayPath = candidate.split(/[\\/]/).filter(Boolean).pop() || candidate;
+          absolutePath = candidate;
+        }
+      }
+    }
+    if (!local) return;
+    const previous = agentOfficePreviewCallsRef.current.get(toolCallId);
+    const hint: NonNullable<GitWorktreeFileContent["office"]> = {
+      sheet: opts?.sheet || previous?.sheet,
+      range: opts?.range || previous?.range,
+      changes: opts?.changes || previous?.changes
+    };
+    agentOfficePreviewCallsRef.current.set(toolCallId, {
+      path: displayPath || rawPath,
+      sheet: hint.sheet,
+      range: hint.range,
+      changes: hint.changes
+    });
+    if (opts?.open) {
+      setSelectedAttachmentPreviewPath(absolutePath);
+      openRightPane("changes");
+      setSelectedWorktreeViewMode("editor");
+    }
+    setSelectedWorktreeFile(displayPath || rawPath);
+    setSelectedWorktreeContent({
+      ...local.content,
+      office: hint.sheet || hint.range ? hint : local.content.office
+    });
+    setSelectedWorktreePatch("文件正由 agent 生成/读取（实时预览）");
+    // 不设 line：用户可能正盯着某一节，绝不重置文本锚点。
   }
 
   async function openToolFileInRightPane(input: {

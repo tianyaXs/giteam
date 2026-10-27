@@ -32,3 +32,85 @@
     animation: none;
   }
 }
+
+/* office 实时预览：变更单元格黄色闪现渐隐（L2 人性化高亮）。 */
+@keyframes office-cell-flash {
+  0% {
+    background-color: rgb(250 204 21 / 0.55);
+  }
+  60% {
+    background-color: rgb(250 204 21 / 0.28);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.office-cell-flash {
+  animation: office-cell-flash 1.6s ease-out both;
+}
+
+/* 选区跟随：agent 正在操作的区域统一细环 + 淡底（对齐选区高亮视觉）。 */
+.office-selection-cell {
+  box-shadow: inset 0 0 0 1px rgb(59 130 246 / 0.65);
+  background-color: rgb(59 130 246 / 0.07);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .office-cell-flash {
+    animation: none;
+    background-color: rgb(250 204 21 / 0.18);
+  }
+}
+
+/* office 操作卡：网格"操作光标"呼吸 + 文档打字光标。 */
+@keyframes office-grid-cursor-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 2px rgb(16 185 129 / 0.9);
+    background-color: rgb(16 185 129 / 0.14);
+  }
+  50% {
+    box-shadow: inset 0 0 0 2px rgb(16 185 129 / 0.3);
+    background-color: rgb(16 185 129 / 0.04);
+  }
+}
+
+.office-grid-cursor {
+  animation: office-grid-cursor-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes office-caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+}
+
+.office-caret {
+  animation: office-caret-blink 1.1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .office-grid-cursor {
+    animation: none;
+    box-shadow: inset 0 0 0 2px rgb(16 185 129 / 0.6);
+  }
+  .office-caret {
+    animation: none;
+  }
+}
+
+/* office 修改标记（M365 Copilot 风格持久色块）：变更处持久翠绿 wash，悬停可见原值。 */
+.office-cell-mark {
+  background-color: rgb(16 185 129 / 0.12) !important;
+}
+
+.office-para-mark {
+  background-color: rgb(16 185 129 / 0.1);
+  box-shadow: inset 3px 0 0 0 rgb(16 185 129 / 0.85);
+}

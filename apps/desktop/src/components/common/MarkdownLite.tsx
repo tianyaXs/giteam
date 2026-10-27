@@ -829,7 +829,9 @@ export function MarkdownLite(props: MarkdownLiteProps) {
   return (
     <div className="markdown-lite min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
       <Streamdown
-        caret={props.streaming ? "block" : undefined}
+        // 不用 Streamdown 自带 caret：它把光标渲染成最后块之后的独立块级元素
+        // （独占一行、消失时塌行）。流式光标由调用侧的 StreamingMarkdownBlock
+        // 以 absolute 叠层绘制（零布局影响）。
         controls={STREAMDOWN_CONTROLS}
         dir="auto"
         isAnimating={Boolean(props.streaming)}

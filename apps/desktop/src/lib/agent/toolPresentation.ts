@@ -30,6 +30,15 @@ export function toolDisplayName(tool: string): string {
   if (tool === "asset_context") return "上下文";
   if (tool === "asset_search") return "检索";
   if (tool === "asset_precedents") return "先例";
+  if (tool === "read_xlsx") return "读表格";
+  if (tool === "write_xlsx") return "写表格";
+  if (tool === "edit_xlsx") return "改表格";
+  if (tool === "read_docx") return "读文档";
+  if (tool === "write_docx") return "写文档";
+  if (tool === "edit_docx") return "改文档";
+  if (tool === "read_pptx") return "读幻灯片";
+  if (tool === "write_pptx") return "写幻灯片";
+  if (tool === "edit_pptx") return "改幻灯片";
   return tool || "tool";
 }
 
@@ -44,6 +53,8 @@ export function toolMode(tool: string): string {
   if (tool === "web_fetch" || tool === "web_search") return "查询";
   if (tool === "browser_use") return "浏览";
   if (tool === "question") return "等待";
+  if (tool === "read_xlsx" || tool === "read_docx" || tool === "read_pptx") return "读取";
+  if (tool.startsWith("write_") || tool.startsWith("edit_")) return "编辑";
   return "";
 }
 
@@ -101,6 +112,28 @@ export function extractToolDetails(output: unknown): Record<string, unknown> | u
   if (!output || typeof output !== "object") return undefined;
   const details = (output as { details?: unknown }).details;
   return details && typeof details === "object" ? (details as Record<string, unknown>) : undefined;
+}
+
+export type OfficeSelectionBounds = { r1: number; c1: number; r2: number; c2: number };
+
+/** 解析 "A1:C4" 选区（1 基）→ 0 基边界；非法返回 null。office 实时预览/操作卡共用。 */
+export function parseSelectionRange(range: unknown): OfficeSelectionBounds | null {
+  if (typeof range !== "string") return null;
+  const match = range.trim().match(/^([A-Za-z]{1,3})(\d+):([A-Za-z]{1,3})(\d+)$/);
+  if (!match) return null;
+  const columnToIndex = (letters: string): number => {
+    let index = 0;
+    for (const ch of letters.toUpperCase()) {
+      index = index * 26 + (ch.charCodeAt(0) - 64);
+    }
+    return index - 1;
+  };
+  const r1 = Number(match[2]) - 1;
+  const c1 = columnToIndex(match[1]);
+  const r2 = Number(match[4]) - 1;
+  const c2 = columnToIndex(match[3]);
+  if ([r1, c1, r2, c2].some((v) => !Number.isFinite(v) || v < 0)) return null;
+  return { r1, c1, r2: Math.max(r1, r2), c2: Math.max(c1, c2) };
 }
 
 /** browser_use headline：navigate→动作+域名，click/type/read_dom→动作+选择器，screenshot→screenshot。 */

@@ -590,11 +590,12 @@ pub fn read_local_attachment_preview(path: &str) -> Result<UiAttachmentPreview, 
     let data_base64 = Some(BASE64_STANDARD.encode(&bytes));
     if matches!(
         ext.as_str(),
-        "pdf" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "csv" | "docx" | "xlsx" | "xls"
+        "pdf" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "csv" | "docx" | "xlsx" | "xls" | "pptx"
     ) {
         let preview_kind = match ext.as_str() {
             "docx" => "docx",
             "xlsx" | "xls" | "csv" => "spreadsheet",
+            "pptx" => "slides",
             "pdf" => "pdf",
             "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
             _ => "document",

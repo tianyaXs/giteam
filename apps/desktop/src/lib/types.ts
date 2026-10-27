@@ -90,9 +90,16 @@ export type GitWorktreeFileContent = {
   modified: string;
   previewSupported?: boolean;
   previewReason?: string;
-  previewKind?: "text" | "markdown" | "document" | "docx" | "spreadsheet" | "pdf" | "image";
+  previewKind?: "text" | "markdown" | "document" | "docx" | "spreadsheet" | "slides" | "pdf" | "image";
   mime?: string;
   dataBase64?: string;
+  /** office 实时预览提示：agent 正在操作的工作表与选区（write/read_xlsx 进度下发）。 */
+  office?: {
+    sheet?: string;
+    range?: string;
+    /** edit_* 工具的变更集：docx 段落级 DOM patch 用（index 1 基）。 */
+    changes?: Array<{ paragraph?: number; cell?: string; text?: string }>;
+  };
 };
 
 export type RepositoryEntry = {

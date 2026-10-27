@@ -1963,6 +1963,49 @@ pub fn run_git_worktree_file_content(
 
     let repo_root = normalize_repo_key(repo_path)?;
     let full_path = PathBuf::from(repo_root).join(rel_path);
+    // 二进制文档（office/pdf/图片）不走文本读取：返回 base64 + 预览类型，
+    // 前端 DocumentPreviewViewer 才能渲染表格/文档/PDF（与 read_local_attachment_preview 同规）。
+    {
+        let ext = full_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let office_kind = match ext.as_str() {
+            "docx" => Some("docx"),
+            "xlsx" | "xls" | "csv" => Some("spreadsheet"),
+            "pptx" => Some("slides"),
+            "pdf" => Some("pdf"),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" => Some("image"),
+            _ => None,
+        };
+        if let Some(preview_kind) = office_kind {
+            if full_path.is_file() {
+                if let Ok(bytes) = fs::read(&full_path) {
+                    use base64::Engine as _;
+                    let mime = match preview_kind {
+                        "spreadsheet" => match ext.as_str() {
+                            "csv" => "text/csv",
+                            _ => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        },
+                        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "pdf" => "application/pdf",
+                        _ => "application/octet-stream",
+                    };
+                    return Ok(GitWorktreeFileContent {
+                        original: String::new(),
+                        modified: String::new(),
+                        preview_supported: true,
+                        preview_reason: None,
+                        preview_kind: Some(preview_kind.to_string()),
+                        mime: Some(mime.to_string()),
+                        data_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                    });
+                }
+            }
+        }
+    }
     let original = match read_git_blob_bytes(repo_path, &format!("HEAD:{path}")) {
         Ok(bytes) => match decode_preview_text(bytes) {
             Ok(text) => text,

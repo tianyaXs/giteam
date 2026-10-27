@@ -484,6 +484,20 @@ export function buildAgentReplyMarkdownFromParts(parts: AgentDetailedPart[] | un
   return collapseDuplicatedAgentContent(stripGiteamDiagnosticNoise(out.join("\n\n")));
 }
 
+/**
+ * 可见时间线判定：boundary 是「隐藏推理摘要」时插入的不可见分隔（渲染为 null）。
+ * 「有组但全不可见」不得挤掉「思考中」占位——否则占位消失、行塌到 0、正文到达再弹回
+ * （发送后几秒标签消失 → 列表下移的根因）。
+ */
+/** 暂停/中止类错误标记（App 与消息流共用判定）。 */
+export function isPauseFailureText(text: string): boolean {
+  return /^(已暂停|已中止|aborted)$/i.test(String(text || "").trim());
+}
+
+export function hasVisibleTimelineGroups(groups: AgentAssistantRenderGroup[]): boolean {
+  return groups.some((group) => group.kind !== "boundary");
+}
+
 export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | undefined | null): AgentAssistantRenderGroup[] {
   const rows = liftAgentProcessPartsBeforeText(parts);
   const out: AgentAssistantRenderGroup[] = [];
