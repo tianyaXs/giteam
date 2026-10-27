@@ -62,7 +62,9 @@ impl InteractionRisk {
             "read" | "grep" | "find" | "ls" | "bash_output" | "task" | "todowrite"
             | "question"
             // 资产图谱三件套：只读 SQLite，无副作用。
-            | "asset_context" | "asset_search" | "asset_precedents" => Self::Read,
+            | "asset_context" | "asset_search" | "asset_precedents"
+            // read_xlsx/read_docx/read_pptx：只读文档，无副作用（write_* 落 Write 走审批）。
+            | "read_xlsx" | "read_docx" | "read_pptx" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
             "web_fetch" | "web_search" | "browser_use" => Self::Network,
             _ => Self::Write,

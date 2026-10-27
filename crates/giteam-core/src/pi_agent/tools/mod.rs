@@ -12,6 +12,7 @@ mod command_safety;
 mod shell_resolver;
 mod edit_guard;
 mod mcp;
+mod office;
 mod question;
 mod task;
 mod todo;
@@ -32,6 +33,10 @@ pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, Kil
 pub use browser_use::BrowserUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use mcp::McpTool;
+pub use office::{
+    EditDocxTool, EditPptxTool, EditXlsxTool, ReadDocxTool, ReadPptxTool, ReadXlsxTool,
+    WriteDocxTool, WritePptxTool, WriteXlsxTool,
+};
 pub use question::QuestionTool;
 pub use task::TaskTool;
 pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool};
@@ -67,6 +72,9 @@ pub struct GiteamToolFactory {
     /// 资产图谱工具（asset_context 等）：enabled_tools 未显式指定（默认全量）
     /// 或显式包含 "asset_context" 时为 true。子 agent 同样可用（只读）。
     asset_graph_enabled: bool,
+    /// Office 文档工具（read_xlsx / write_xlsx）：默认全量或显式包含同名项。
+    /// 子 agent 白名单默认不含；显式 enabled 时才注册。
+    office_enabled: bool,
     /// 仓库级 MCP 运行时：快照工具全部注册（enabled 只控制服务层）。
     /// 经 wrap 链：ToolBudget + Approval（mcp__* 归 Write，fail-closed）。
     /// 配置变化只对新会话生效（load_for_repo 在 create_session 异步边界）。
@@ -98,8 +106,18 @@ impl GiteamToolFactory {
             .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
         let asset_graph_enabled = enabled_tools
             .is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
+        let office_enabled = enabled_tools.is_none_or(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.as_str(),
+                    "read_xlsx" | "write_xlsx" | "read_docx" | "write_docx" | "read_pptx"
+                        | "write_pptx" | "edit_xlsx" | "edit_docx" | "edit_pptx"
+                )
+            })
+        });
         Self {
             asset_graph_enabled,
+            office_enabled,
             hub,
             question_enabled,
             todo_enabled,
@@ -127,6 +145,13 @@ impl ToolFactory for GiteamToolFactory {
         let wants_web_search = enabled.contains(&"web_search");
         let wants_browser_use = enabled.contains(&"browser_use");
         let wants_task = enabled.contains(&"task");
+        let wants_office = enabled.iter().any(|name| {
+        matches!(
+            *name,
+            "read_xlsx" | "write_xlsx" | "read_docx" | "write_docx" | "read_pptx" | "write_pptx"
+                | "edit_xlsx" | "edit_docx" | "edit_pptx"
+        )
+    });
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
@@ -135,6 +160,9 @@ impl ToolFactory for GiteamToolFactory {
                     *name,
                     "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
                         | "web_fetch" | "web_search" | "browser_use" | "task"
+                        | "read_xlsx" | "write_xlsx"
+                        | "read_docx" | "write_docx" | "read_pptx" | "write_pptx"
+                        | "edit_xlsx" | "edit_docx" | "edit_pptx"
                 )
             })
             .collect();
@@ -199,6 +227,20 @@ impl ToolFactory for GiteamToolFactory {
         }
         if self.web_search_enabled || wants_web_search {
             registry.push(wrap(Box::new(WebSearchTool::new())));
+        }
+        // Office 工具经 wrap：read_xlsx 归 Read 免审批；write_xlsx 归 Write
+        // → 自动套 ToolBudget + ApprovalTool（覆盖工作区外的任意路径写入）。
+        if self.office_enabled || wants_office {
+            let cwd = cwd.to_path_buf();
+            registry.push(wrap(Box::new(ReadXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WriteXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(ReadDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WriteDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(ReadPptxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WritePptxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditPptxTool::new(cwd))));
         }
         // browser_use 经 wrap：InteractionRisk::for_tool 归 Network → 自动套 ApprovalTool。
         if self.browser_use_enabled || wants_browser_use {
@@ -319,6 +361,37 @@ mod tests {
         assert!(!names.contains(&"bash".to_string()));
         assert!(!names.contains(&"bash_output".to_string()));
         assert!(!names.contains(&"kill_shell".to_string()));
+    }
+
+    #[test]
+    fn factory_registers_office_suite_with_risk_split() {
+        // 默认全量：read_xlsx/write_xlsx 随主会话注册。
+        let factory = make_factory(None);
+        let enabled: Vec<&str> = super::super::prompt::ALL_BUILTIN_TOOLS.to_vec();
+        let cwd = std::env::temp_dir();
+        let registry = factory.create_tool_registry(&enabled, &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(names.contains(&"read_xlsx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_xlsx".to_string()), "{names:?}");
+        assert!(names.contains(&"read_docx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_docx".to_string()), "{names:?}");
+        assert!(names.contains(&"read_pptx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_pptx".to_string()), "{names:?}");
+        // 风险分型：读免审批、写走 Approval（Write fail-closed）。
+        assert!(!InteractionRisk::for_tool("read_xlsx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_xlsx").requires_approval());
+        assert!(!InteractionRisk::for_tool("read_docx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_docx").requires_approval());
+        assert!(!InteractionRisk::for_tool("read_pptx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_pptx").requires_approval());
+
+        // 显式排除：enabled_tools 不含 office 项则不注册。
+        let without_office = vec!["read".to_string(), "grep".to_string()];
+        let factory = make_factory(Some(&without_office));
+        let registry = factory.create_tool_registry(&["read", "grep"], &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"read_xlsx".to_string()), "{names:?}");
+        assert!(!names.contains(&"write_xlsx".to_string()), "{names:?}");
     }
 
     #[test]
