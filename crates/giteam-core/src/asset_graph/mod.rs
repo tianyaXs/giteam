@@ -16,6 +16,7 @@
 pub mod entity;
 pub mod extract;
 pub mod extraction;
+pub mod layout;
 pub mod query;
 pub mod replay;
 pub mod semantic;

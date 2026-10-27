@@ -132,6 +132,12 @@ pub struct SubgraphNode {
     /// 原始 props JSON 字符串（前端按需解析 intent 等字段）。
     pub props: String,
     pub last_seen_ms: i64,
+    /// 预布局坐标：总览路径（compact/raw 全图）由 [`super::layout`] 附带，
+    /// 前端直接作初始布局（大图免「随机云收敛」）；下钻 subgraph 不填。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
 }
 
 /// 同语义会话聚合点 id 前缀（`session_group:<label-hash>`；compact 总览把
@@ -1078,6 +1084,8 @@ impl<'a> GraphQuery<'a> {
                         label: row.get(2)?,
                         props: row.get(3)?,
                         last_seen_ms: row.get(4)?,
+                        x: None,
+                        y: None,
                     })
                 },
             ) {
@@ -1175,6 +1183,8 @@ impl<'a> GraphQuery<'a> {
                     label: row.get(2)?,
                     props: row.get(3)?,
                     last_seen_ms: row.get(4)?,
+                    x: None,
+                    y: None,
                 })
             }) {
                 sessions.extend(rows.filter_map(std::result::Result::ok));
@@ -1274,6 +1284,8 @@ impl<'a> GraphQuery<'a> {
                         label: row.get(2)?,
                         props: row.get(3)?,
                         last_seen_ms: row.get(4)?,
+                        x: None,
+                        y: None,
                     })
                 }) {
                     nodes.extend(rows.filter_map(std::result::Result::ok));
@@ -1304,6 +1316,8 @@ impl<'a> GraphQuery<'a> {
                 })
                 .to_string(),
                 last_seen_ms: latest,
+                x: None,
+                y: None,
             },
         );
         let _ = limit; // 成员通常远小于限幅；资产补齐已按组内实际计算。
@@ -1452,6 +1466,8 @@ impl<'a> GraphQuery<'a> {
                     label: row.get(2)?,
                     props: row.get(3)?,
                     last_seen_ms: row.get(4)?,
+                    x: None,
+                    y: None,
                 })
             }) {
                 nodes.extend(rows.filter_map(std::result::Result::ok));
@@ -1627,6 +1643,8 @@ impl<'a> GraphQuery<'a> {
                             label: row.get(2)?,
                             props: row.get(3)?,
                             last_seen_ms: row.get(4)?,
+                            x: None,
+                            y: None,
                         })
                     }) {
                         for node in rows.flatten() {
@@ -1716,6 +1734,8 @@ impl<'a> GraphQuery<'a> {
                 })
                 .to_string(),
                 last_seen_ms: last_seen,
+                x: None,
+                y: None,
             });
         }
         if !grouped_ids.is_empty() {
@@ -1754,6 +1774,8 @@ impl<'a> GraphQuery<'a> {
             final_ids.contains(e.src_id.as_str()) && final_ids.contains(e.dst_id.as_str())
         });
         edges.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        // 预布局坐标（指纹缓存）：拓扑不变时零重算；前端大图免随机云收敛。
+        super::layout::attach_overview_positions(&mut nodes, &edges);
         SubgraphView {
             center: String::new(),
             nodes,
@@ -1779,6 +1801,8 @@ impl<'a> GraphQuery<'a> {
                     label: row.get(2)?,
                     props: row.get(3)?,
                     last_seen_ms: row.get(4)?,
+                    x: None,
+                    y: None,
                 })
             }) {
                 nodes.extend(rows.filter_map(std::result::Result::ok));
@@ -1827,6 +1851,8 @@ impl<'a> GraphQuery<'a> {
             }
         }
         edges.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        // 完整模式总览同样附带预布局坐标（前端 compact:false 时用）。
+        super::layout::attach_overview_positions(&mut nodes, &edges);
         SubgraphView {
             center: String::new(),
             nodes,

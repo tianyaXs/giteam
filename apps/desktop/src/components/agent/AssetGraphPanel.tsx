@@ -18,7 +18,6 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import Graph from "graphology";
-import random from "graphology-layout/random";
 import {
   forceCollide,
   forceLink,
@@ -53,6 +52,8 @@ type NodeHit = { nodeId: string; nodeType: string; label: string; lastSeenMs: nu
 
 type SubgraphNode = {
   nodeId: string; nodeType: string; label: string; props: string; lastSeenMs: number;
+  /** 内核预布局坐标（总览聚合视图附带；下钻视图可能缺省）。缺省时前端随机播种。 */
+  x?: number; y?: number;
 };
 
 type SubgraphEdge = { srcId: string; dstId: string; edgeType: string; timestampMs: number };
@@ -460,15 +461,23 @@ function buildSigmaScene(options: {
   const resolvedInitialFocus = resolveFocusId(focusRef.current);
   const isFocus = (id: string) => !!resolvedInitialFocus && id === resolvedInitialFocus;
 
-  // random 播种；随后由 d3-force 从随机云收敛出舒展布局（见 startSim）
+  // 播种：优先用内核预布局坐标（asset_graph layout 模块，全局已收敛），
+  // 缺省时随机播种、由 d3-force 从随机云收敛出舒展布局（见 startSim）。
+  let seededCount = 0;
+  // 初值云略紧：过大初始散布会让收敛后 bbox 偏松，fit 后节点更小。
+  const randomScale = Math.max(28, Math.sqrt(Math.max(count, 1)) * 5.5);
   for (const node of view.nodes) {
     const ringed = isCenter(node.nodeId) || isFocus(node.nodeId);
     const members = groupMemberCount(node.nodeId);
     const tier = visualTierOf(node.nodeType);
     const isEntity = tier === "entity";
+    const seedX = Number(node.x);
+    const seedY = Number(node.y);
+    const seeded = Number.isFinite(seedX) && Number.isFinite(seedY);
+    if (seeded) seededCount += 1;
     graph.addNode(node.nodeId, {
-      x: 0,
-      y: 0,
+      x: seeded ? seedX : (Math.random() - 0.5) * randomScale,
+      y: seeded ? seedY : (Math.random() - 0.5) * randomScale,
       size: NODE_SIZE,
       color: tierColor(tier, theme),
       // 外层只显示语义标题；防御性剥掉历史 ×N / xN 后缀（旧版二进制曾写入）。
@@ -481,13 +490,15 @@ function buildSigmaScene(options: {
       isEntity,
       visualTier: tier,
       memberCount: members,
+      // zIndex 静态分层（entity 主层）：烘焙进属性让 nodeReducer 常态零拷贝
+      zIndex: isEntity ? 2 : 0,
       borderColor: ringed ? theme.nodeFocusRing : theme.nodeOutline,
       borderSize: ringed ? 1.6 : 0,
       lastSeenMs: node.lastSeenMs,
     });
   }
-  // 初值云略紧：过大初始散布会让收敛后 bbox 偏松，fit 后节点更小。
-  random.assign(graph, { scale: Math.max(28, Math.sqrt(Math.max(count, 1)) * 5.5) });
+  /** 内核坐标全覆盖时，d3-force 只需低热微调即可收敛（见 startSim）。 */
+  const fullySeeded = seededCount === count && count > 1;
   for (const edge of view.edges) {
     if (!graph.hasNode(edge.srcId) || !graph.hasNode(edge.dstId)) continue;
     if (graph.hasEdge(edge.srcId, edge.dstId)) continue;
@@ -543,7 +554,9 @@ function buildSigmaScene(options: {
   };
 
   const sigma = new Sigma(graph, container, {
-    renderLabels: true,
+    // 布局收敛前不画任何标签（Canvas 文字是最大绘制开销）；
+    // d3 tick 首次判定 settled 时再打开（见下方 startSim）。
+    renderLabels: count <= 1,
     // attribute 模式：标签色走每个节点的 labelColor 属性（无属性时回退 color），
     // 这样聚焦时不相关节点的标签可以单独淡化而不是直接消失。
     labelColor: { attribute: "labelColor", color: theme.label },
@@ -677,28 +690,21 @@ function buildSigmaScene(options: {
 
   sigma.setSetting("nodeReducer", (node, data) => {
     const { focus, hoverNode, neighborSet, hoverFade: fade, selected } = reducerState;
-    const tier = (data.visualTier as VisualTier | undefined) ?? visualTierOf(String(data.nodeType || ""));
-    const baseColor = String(data.color || tierColor(tier, theme));
-    const base = {
-      ...data,
-      size: NODE_SIZE,
-      color: baseColor,
-    };
+    // 常态快路径：零拷贝返回原属性。焦点描边由 setFocus 直写属性、
+    // entity 的 zIndex 分层已在 addNode 时烘焙——每帧省掉全图节点对象分配。
     if (!focus) {
       if (focusRef.current === node) {
         return {
-          ...base,
+          ...data,
           forceLabel: true,
           zIndex: 3,
           borderColor: theme.nodeFocusRing,
           borderSize: 1.6,
         };
       }
-      if (tier === "entity") {
-        return { ...base, zIndex: 2 };
-      }
-      return base;
+      return data;
     }
+    const baseColor = String(data.color || "");
     if (node === focus) {
       const t =
         hoverNode === node
@@ -707,7 +713,7 @@ function buildSigmaScene(options: {
             ? 1
             : fade;
       return {
-        ...base,
+        ...data,
         zIndex: 4,
         highlighted: true,
         forceLabel: true,
@@ -717,12 +723,12 @@ function buildSigmaScene(options: {
       };
     }
     if (neighborSet?.has(node)) {
-      return { ...base, zIndex: 2, color: lerpHex(baseColor, theme.nodeHover, 0.25) };
+      return { ...data, zIndex: 2, color: lerpHex(baseColor, theme.nodeHover, 0.25) };
     }
     // 不相关节点：淡出淡化（实心低对比点 + 淡化标签），不要换成空圆。
     // borderColor 保持常态描边色——置 undefined 会让 NodeBorderProgram 回落到默认黑边，才出现「空圆」。
     return {
-      ...base,
+      ...data,
       zIndex: 0,
       color: theme.nodeFaded,
       labelColor: theme.labelFaded,
@@ -745,6 +751,19 @@ function buildSigmaScene(options: {
       window.clearTimeout(fitTimer);
       fitTimer = null;
     }
+  };
+
+  /**
+   * tick 刷新 rAF 节流：d3 tick 可能密集于渲染帧（拖拽/合并/保温叠加时），
+   * 每 tick 全量重绘是大图卡顿主因之一。同一帧内多次请求合并为一次绘制。
+   */
+  let tickRefreshRaf = 0;
+  const scheduleTickRefresh = () => {
+    if (tickRefreshRaf) return;
+    tickRefreshRaf = window.requestAnimationFrame(() => {
+      tickRefreshRaf = 0;
+      if (!syncDisposed) sigma.refresh({ skipIndexation: true });
+    });
   };
 
   // ---------- d3-force 常驻模拟（冷启动 + 保温一体） ----------
@@ -807,7 +826,9 @@ function buildSigmaScene(options: {
       .force("collide", forceCollide<SimNode>().radius((d) => (d.size || NODE_SIZE) + 5))
       .force("x", forceX<SimNode>(0).strength(0.08))
       .force("y", forceY<SimNode>(0).strength(0.08))
-      .alpha(1)
+      // 内核坐标全覆盖时布局已近似收敛：低热起步只做局部微调，
+      // 避免从随机云重算（大图上等于把已完成的布局工作扔掉重跑一遍）。
+      .alpha(fullySeeded ? 0.15 : 1)
       .alphaMin(0.0015)
       .alphaDecay(0.025)
       .velocityDecay(0.42)
@@ -817,13 +838,15 @@ function buildSigmaScene(options: {
           graph.setNodeAttribute(n.id, "x", n.x as number);
           graph.setNodeAttribute(n.id, "y", n.y as number);
         }
-        sigma.refresh({ skipIndexation: true });
+        scheduleTickRefresh();
         // 收敛后只标记 settled，不再自动 fit。
         // sigma 默认 autoRescale 会在布局过程中保持图在视口内；
         // 结束时再 animate 相机会叠成「展开快完又缩放一次」。
         if (!fittedOnConverge && simInst.alpha() < 0.06) {
           fittedOnConverge = true;
           layoutSettled = true;
+          // 布局期一直关着标签（Canvas 文字是最大绘制开销），收敛即开。
+          if (!sigma.getSetting("renderLabels")) sigma.setSetting("renderLabels", true);
         }
       });
     sim = simInst;
@@ -1018,7 +1041,13 @@ function buildSigmaScene(options: {
         if (existingSim) existingSim.size = NODE_SIZE;
         continue;
       }
-      const pos = placeNear(neighborHints.get(node.nodeId) || []);
+      // 内核聚合视图带预布局坐标：新节点直接落位，避免把孤立点扔给力导重算
+      const seedX = Number(node.x);
+      const seedY = Number(node.y);
+      const pos =
+        Number.isFinite(seedX) && Number.isFinite(seedY)
+          ? { x: seedX, y: seedY }
+          : placeNear(neighborHints.get(node.nodeId) || []);
       graph.addNode(node.nodeId, {
         x: pos.x,
         y: pos.y,
@@ -1032,6 +1061,7 @@ function buildSigmaScene(options: {
         isEntity,
         visualTier: tier,
         memberCount: members,
+        zIndex: isEntity ? 2 : 0,
         borderColor: ringed ? theme.nodeFocusRing : theme.nodeOutline,
         borderSize: ringed ? 1.6 : 0,
         lastSeenMs: node.lastSeenMs,
@@ -1194,6 +1224,10 @@ function buildSigmaScene(options: {
     if (hoverFadeRaf) {
       window.cancelAnimationFrame(hoverFadeRaf);
       hoverFadeRaf = 0;
+    }
+    if (tickRefreshRaf) {
+      window.cancelAnimationFrame(tickRefreshRaf);
+      tickRefreshRaf = 0;
     }
     clearFit();
     killSim();
