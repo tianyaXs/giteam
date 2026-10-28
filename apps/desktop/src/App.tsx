@@ -29,6 +29,7 @@ import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentC
 import { AutomationView } from "./components/automation/AutomationView";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
+import type { TurnManifestEntry, TurnModifiedFile } from "./components/agent/TurnDiffViewer";
 import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { AssetGraphPanel } from "./components/agent/AssetGraphPanel";
 import {
@@ -200,7 +201,7 @@ import {
   sendRepoTerminalInput,
   startGitWorktreeWatcher,
   startRepoTerminalSession,
-  stopGitWorktreeWatcher
+  stopGitWorktreeWatcher,
 } from "./lib/gitAdapter";
 import {
   AGENT_ATTACHMENT_INPUT_ACCEPT,
@@ -1416,6 +1417,19 @@ export function App() {
   const agentPassiveSyncSeqRef = useRef(0);
   const pendingSidebarSessionSelectionRef = useRef<{ repoId: string; sessionId: string } | null>(null);
   const agentHydratingSessionIdRef = useRef("");
+  /** office 可回退版本数（后端实际栈深，按钮显隐以此为准）。 */
+  const [officeRestoreCount, setOfficeRestoreCount] = useState(0);
+  /** 回合级 git 变更文件（bash 间接写入也覆盖），按会话暂存，完成时展示在消息末尾。 */
+  /** 右侧栏改动查看器数据：点击会话里的回合汇总卡片头部时设置（label 区分轮次，如「第 3 轮改动」）。 */
+  const [turnDiffPanel, setTurnDiffPanel] = useState<{ files: TurnModifiedFile[]; label: string; initialPath?: string } | null>(null);
+  /** run manifest 结果按「轮次序号」持久关联：每轮的完整快照 diff 不随新一轮覆盖——
+   * 该轮发送时的基线快照 → 该轮结束时的快照，历史轮也能展示全文件对比。 */
+  const [turnManifestBySession, setTurnManifestBySession] = useState<
+    Record<string, Record<number, TurnManifestEntry>>
+  >({});
+  const runManifestMetaRef = useRef<Record<string, { token: string; seq: number }>>({});
+  /** 回合 manifest 令牌：发送时写入，结束时用于定位基线清单。 */
+  const runManifestTokenRef = useRef<Record<string, string>>({});
   /** office 实时预览：toolCallId → 已打开路径与最后聚焦的表/选区/变更集（completed 回落用）。 */
   const agentOfficePreviewCallsRef = useRef<
     Map<string, { path: string; sheet?: string; range?: string; changes?: NonNullable<GitWorktreeFileContent["office"]>["changes"] }>
@@ -1860,12 +1874,13 @@ export function App() {
     [worktreePatchStreamEntries]
   );
   const standaloneRightFileTab = useMemo(() => {
+    if (turnDiffPanel && rightPaneTab === "changes") return { label: turnDiffPanel.label, ext: "DIFF" };
     if (rightPaneTab !== "changes" || selectedWorktreeViewMode === "auto" || !selectedWorktreeFile) return null;
     const parts = selectedWorktreeFile.split("/").filter(Boolean);
     const label = parts[parts.length - 1] || selectedWorktreeFile;
     const ext = label.includes(".") ? (label.split(".").pop() || "").toUpperCase() : "FILE";
     return { label, ext };
-  }, [rightPaneTab, selectedWorktreeFile, selectedWorktreeViewMode]);
+  }, [rightPaneTab, selectedWorktreeFile, selectedWorktreeViewMode, turnDiffPanel]);
   const discardAllCount = useMemo(
     () => getDiscardableWorktreeEntryCount(worktreeOverview.entries),
     [worktreeOverview.entries]
@@ -2608,6 +2623,8 @@ export function App() {
 
   function appendAgentDebugLog(text: string) {
     const stamp = new Date().toLocaleTimeString();
+    // 同步落盘到 ~/.giteam/ui-debug.log，便于离线排查会话事件链路。
+    void invoke("append_ui_debug_log", { line: `[${stamp}] ${text}` }).catch(() => {});
     setAgentDebugLogs((prev) => {
       const next = [...prev, `[${stamp}] ${text}`];
       if (next.length > 400) return next.slice(next.length - 400);
@@ -6176,6 +6193,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
     agentMessageCache.invalidate(repoPath, sessionId);
     setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
+    // 回合基线：发送时写工作区 manifest（路径 + sha256），结束时差集 = 本轮修改的文件。
+    const manifestRepo = selectedRepo?.path || repoPath;
+    if (manifestRepo) {
+      // 轮次序号 = 本会话第几个 user 消息（与渲染层按用户行计数的口径严格一致，
+      // 含历史消息与运行时注入的 user 行）——diff 结果按此序号归档到对应轮。
+      const priorUserMessages = agentSessions
+        .find((session) => session.id === sessionId)
+        ?.messages.filter((message) => message.role === "user").length || 0;
+      const seq = priorUserMessages + 1;
+      const runToken = `${sessionId}-${Date.now()}`;
+      runManifestTokenRef.current[sessionId] = runToken;
+      runManifestMetaRef.current[sessionId] = { token: runToken, seq };
+      void invoke<number>("office_run_manifest_begin", { repoPath: manifestRepo, runToken })
+        .then((count) => appendAgentDebugLog(`turnFiles.begin ok files=${count} repo=${manifestRepo}`))
+        .catch((error) => {
+          runManifestTokenRef.current[sessionId] = "";
+          appendAgentDebugLog(`turnFiles.begin FAIL repo=${manifestRepo} ${String(error)}`);
+        });
+    }
     if (isQueueFlush) popQueuedFollowUp(sessionId, prompt);
 
     const scrollToBottom = (options?: { force?: boolean }) => {
@@ -7802,6 +7838,36 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         setAgentRunBusyBySession((prev) => ({ ...prev, [sessionId]: false }));
         setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: "" }));
 
+        // 回合结束：当前工作区 vs 基线 manifest 逐文件比较（含 bash 间接写入，不依赖 git）。
+        const statRepo = selectedRepo?.path || repoPath;
+        const meta = runManifestMetaRef.current[sessionId];
+        const runToken = meta?.token || "";
+        if (statRepo && runToken) {
+          void invoke<{
+            changed: string[];
+            added: string[];
+            deleted: string[];
+            fileDiffs: Array<{ path: string; before: string; after: string }>;
+          }>("office_run_manifest_diff", { repoPath: statRepo, runToken, sessionId, turnSeq: meta?.seq || 0 })
+            .then((diff) => {
+              appendAgentDebugLog(
+                `turnFiles.diff ok changed=${diff.changed.length} fileDiffs=${diff.fileDiffs.length} seq=${meta?.seq} session=${sessionId}`
+              );
+              if (!meta) return;
+              // 按轮次序号归档：该轮的完整快照归属该轮，不被后续轮覆盖。
+              setTurnManifestBySession((prev) => ({
+                ...prev,
+                [sessionId]: {
+                  ...(prev[sessionId] || {}),
+                  [meta.seq]: { changed: diff.changed, fileDiffs: diff.fileDiffs }
+                }
+              }));
+            })
+            .catch((error) => {
+              appendAgentDebugLog(`turnFiles.diff FAIL session=${sessionId} ${String(error)}`);
+            });
+        }
+
         // 仅就地修补必要字段，不替换整份 messages（保留本地 id / 合并行 stableKey）。
         updateAgentSessionById(sessionId, (session) => {
           const messages = [...session.messages];
@@ -8760,6 +8826,98 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     });
     setSelectedWorktreePatch("文件正由 agent 生成/读取（实时预览）");
     // 不设 line：用户可能正盯着某一节，绝不重置文本锚点。
+    // 回退按钮显隐以后端实际版本栈深为准（内存栈重启即空，不能只看路径）。
+    if (absolutePath) {
+      void invoke<number>("office_previous_version_count", { path: absolutePath })
+        .then((count) => setOfficeRestoreCount(Number(count) || 0))
+        .catch(() => setOfficeRestoreCount(0));
+    }
+  }
+
+  /** 恢复 office 文件的上一版（版本栈交换语义），并刷新右侧预览。 */
+  async function restoreOfficePreviousVersion(absolutePath: string) {
+    try {
+      const restored = await invoke<boolean>("office_restore_previous_version", { path: absolutePath });
+      if (!restored) {
+        setMessage("没有可恢复的历史版本");
+        return;
+      }
+      const remaining = await invoke<number>("office_previous_version_count", { path: absolutePath }).catch(() => 0);
+      setOfficeRestoreCount(Number(remaining) || 0);
+      const preview = await readLocalAttachmentPreview(absolutePath).catch(() => null);
+      if (preview) {
+        const base = attachmentPreviewToWorktreeContent(preview);
+        // 恢复后旧标记失效：清掉变更集，保留其余预览状态。
+        setSelectedWorktreeContent((prev) => {
+          const next = base;
+          return prev ? { ...next, office: prev.office ? { sheet: prev.office.sheet } : undefined } : next;
+        });
+      }
+      setMessage("已恢复上一版");
+    } catch (error) {
+      setError(String(error));
+    }
+  }
+
+  /** 会话激活时从磁盘水合轮次快照（DSH 检查点式持久化：重启后历史轮仍全文件对比）。 */
+  useEffect(() => {
+    if (!activeAgentSessionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const metas = await invoke<Array<{ turnSeq: number }>>("office_turn_snapshots_list", {
+          sessionId: activeAgentSessionId
+        });
+        if (cancelled || metas.length === 0) return;
+        const entries: Record<number, { changed: string[]; fileDiffs: Array<{ path: string; before: string; after: string }> }> = {};
+        for (const meta of metas) {
+          const snap = await invoke<{ changed: string[]; fileDiffs: Array<{ path: string; before: string; after: string }> } | null>(
+            "office_turn_snapshots_read",
+            { sessionId: activeAgentSessionId, turnSeq: meta.turnSeq }
+          );
+          if (cancelled) return;
+          if (snap) entries[meta.turnSeq] = { changed: snap.changed, fileDiffs: snap.fileDiffs };
+        }
+        if (!cancelled && Object.keys(entries).length > 0) {
+          appendAgentDebugLog(`turnSnapshots.hydrate session=${activeAgentSessionId} turns=${Object.keys(entries).length}`);
+          setTurnManifestBySession((prev) => ({
+            ...prev,
+            [activeAgentSessionId]: { ...(prev[activeAgentSessionId] || {}), ...entries }
+          }));
+        }
+      } catch {
+        /* 水合失败静默：回落片段模式 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgentSessionId]);
+
+  /** 启动自愈 GC（DSH recoverOrphaned 同款）：级联删已删会话 + TTL + 有界保留 + 预算 LRU。
+   * 必须等会话列表加载完成（非空）才触发——空列表会把所有快照误判为孤儿删光。 */
+  const agentSessionsLoaded = agentSessions.length > 0;
+  useEffect(() => {
+    if (!agentSessionsLoaded) return;
+    const timer = window.setTimeout(() => {
+      const validIds = agentSessions.map((session) => session.id);
+      if (validIds.length === 0) return;
+      void invoke<{ removedFiles: number; freedBytes: number }>("office_turn_snapshots_gc", { validSessionIds: validIds })
+        .then((result) => appendAgentDebugLog(`turnSnapshots.gc removed=${result.removedFiles} freed=${result.freedBytes}`))
+        .catch(() => {});
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [agentSessionsLoaded, agentSessions]);
+
+  /** 点击回合汇总卡片头部：复用现有右侧栏打开完整改动查看器（「本轮改动」页签）。 */
+  function openTurnDiff(files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) {
+    setTurnDiffPanel({
+      files,
+      label: turnIndex ? `第 ${turnIndex} 轮改动` : "本轮改动",
+      initialPath
+    });
+    setSelectedWorktreeViewMode("auto");
+    openRightPane("changes");
   }
 
   async function openToolFileInRightPane(input: {
@@ -10678,6 +10836,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               messages={agentMessages}
               renderedMessages={agentRenderedMessages}
               activeStreamingAssistantId={activeAgentStreamingAssistantId}
+              turnManifest={turnManifestBySession[activeAgentSessionId] || {}}
+              onOpenTurnDiff={openTurnDiff}
               activeSessionBusy={activeAgentSessionBusy}
               serverMessageIdByLocalId={agentServerMessageIdByLocalId}
               detailsByMessageId={agentDetailsByMessageId}
@@ -11124,7 +11284,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           selectedFile={selectedWorktreeFile}
           selectedEntry={selectedWorktreeEntry}
           selectedContent={selectedWorktreeContent}
-          selectedLine={selectedWorktreeLine}
+          turnDiffFiles={turnDiffPanel?.files || null}
+          turnDiffTitle={turnDiffPanel?.label}
+          turnDiffInitialPath={turnDiffPanel?.initialPath}
+          canRestoreOfficeVersion={officeRestoreCount > 0 && Boolean(selectedAttachmentPreviewPath)}
+          onRestoreOfficeVersion={() => void restoreOfficePreviousVersion(selectedAttachmentPreviewPath)}
           viewMode={selectedWorktreeViewMode}
           committing={committing}
           pushing={pushing}
@@ -11279,7 +11443,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       closeTabLabel={appText.close}
       onSelectTab={selectRightPaneTab}
       onCloseTab={closeRightPaneTab}
-      onCloseFileTab={closeRightFileView}
+      onCloseFileTab={() => {
+        if (turnDiffPanel) setTurnDiffPanel(null);
+        else closeRightFileView();
+      }}
     >
       {rightPane}
     </RightSidebar>

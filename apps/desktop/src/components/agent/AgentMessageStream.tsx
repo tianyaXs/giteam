@@ -1,4 +1,11 @@
-import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { FilePen } from "lucide-react";
+import { Badge } from "../ui/badge";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
+import { ScrollArea } from "../ui/scroll-area";
+import { Separator } from "../ui/separator";
+import { buildHunks, diffLines } from "../../lib/turnDiff";
+import { DiffLineRows, StatsBadgeText, collectTurnModifiedFiles, compressEdits, deriveTurnStats, type TurnManifestEntry, type TurnModifiedFile } from "./TurnDiffViewer";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   buildAgentAssistantRenderGroups,
@@ -109,6 +116,10 @@ type AgentMessageRenderRow = {
   errorMessage: string;
   contextOnly: boolean;
   todoItems: AgentTodoItem[];
+  /** 回合修改文件汇总（列表层按用户行边界聚合后写入）：汇总是回合的属性，挂在回合最后一行。 */
+  turnSummary?: TurnModifiedFile[];
+  /** 该回合的序号（按用户行计数，1 起）：「第 N 轮改动」标注。 */
+  turnIndex?: number;
 };
 
 const COLLAPSE_LINE_LIMIT = 8;
@@ -437,6 +448,11 @@ type AgentMessageStreamProps = {
   messages: AgentChatMessage[];
   renderedMessages: AgentChatMessage[];
   activeStreamingAssistantId: string;
+  /** run manifest 结果按轮次序号归档：每轮的完整快照 diff（基线→结束态）归属该轮，
+   * 不被后续轮覆盖——历史轮也能全文件对比。 */
+  turnManifest: Record<number, TurnManifestEntry>;
+  /** 点击回合汇总卡片头部：在右侧栏打开完整改动查看器。 */
+  onOpenTurnDiff?: (files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) => void;
   activeSessionBusy: boolean;
   serverMessageIdByLocalId: Record<string, string>;
   detailsByMessageId: Record<string, AgentDetailedMessage | null>;
@@ -955,27 +971,48 @@ function StreamingMarkdownBlock({
     }
     const container = containerRef.current;
     if (!container) return;
-    // 最后一个非空白文本节点。
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    let last: Text | null = null;
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if ((node as Text).data.replace(/\s+/g, "").length > 0) last = node as Text;
-    }
-    if (!last || last.data.length === 0) {
-      setCaretRect({ left: 0, top: 0, height: 20 });
-      return;
-    }
-    // 测最后一个字符的矩形：右缘即光标落点，高度随行框。
-    const range = document.createRange();
-    range.setStart(last, Math.max(0, last.data.length - 1));
-    range.setEnd(last, last.data.length);
-    const rect = range.getBoundingClientRect();
-    const host = container.getBoundingClientRect();
-    if (rect.height > 0) {
-      setCaretRect({ left: rect.right - host.left, top: rect.top - host.top, height: rect.height });
-    } else {
-      setCaretRect({ left: 0, top: 0, height: 20 });
-    }
+
+    const measure = () => {
+      // 最后一个非空白文本节点。
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      let last: Text | null = null;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.replace(/\s+/g, "").length > 0) last = node as Text;
+      }
+      if (!last || last.data.length === 0) {
+        setCaretRect({ left: 0, top: 0, height: 20 });
+        return;
+      }
+      // 测最后一个字符的矩形：右缘即光标落点，高度随行框。
+      const range = document.createRange();
+      range.setStart(last, Math.max(0, last.data.length - 1));
+      range.setEnd(last, last.data.length);
+      const rect = range.getBoundingClientRect();
+      const host = container.getBoundingClientRect();
+      if (rect.height > 0) {
+        setCaretRect({ left: rect.right - host.left, top: rect.top - host.top, height: rect.height });
+      } else {
+        setCaretRect({ left: 0, top: 0, height: 20 });
+      }
+    };
+
+    // Streamdown 用 startTransition 延迟提交块：effect 时点的 DOM 还是上一帧，
+    // 只测一次会让光标滞留在旧文本中间（表现为"文字里莫名多个符号"）。
+    // 改为观察 DOM 实际变化后重测——光标永远贴住真实文本尾。
+    measure();
+    let raf = 0;
+    const rafMeasure = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(measure);
+    };
+    const observer = new MutationObserver(rafMeasure);
+    observer.observe(container, { childList: true, characterData: true, subtree: true });
+    window.addEventListener("resize", rafMeasure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", rafMeasure);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [displayText, streaming]);
 
   return (
@@ -1344,6 +1381,113 @@ function UserMessage({
   );
 }
 
+/** 悬浮预览：HoverCard（shadcn）内 hunk 级 diff，零自定义 CSS。 */
+function TurnModifiedFileHover({ file }: { file: TurnModifiedFile }) {
+  // 悬浮预览：净变化单块的 hunk（与右侧栏查看器同一份 diff 的快捷版）。
+  const net = compressEdits(file.edits);
+  const hunks = net ? buildHunks(diffLines(net.before, net.after), 2) : [];
+  return (
+    <HoverCardContent side="top" align="start" sideOffset={8} className="w-[min(620px,86vw)] overflow-hidden p-0">
+      <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
+        <FilePen className="size-3.5 shrink-0 text-blue-600 dark:text-blue-400" strokeWidth={1.9} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
+        {file.added != null ? (
+          <Badge variant="outline" className="shrink-0 gap-1 border-transparent px-1.5 font-mono text-[10px] tabular-nums">
+            <StatsBadgeText added={file.added} removed={file.removed} />
+          </Badge>
+        ) : null}
+      </div>
+      {hunks.length > 0 ? (
+        <ScrollArea className="max-h-[320px]">
+          <div className="py-1.5 font-mono text-[11px] leading-5">
+            {hunks.map((hunk, index) => (
+              <div key={index}>
+                <div className="bg-muted/60 px-2 py-0.5 text-[10px] text-muted-foreground">{hunk.header}</div>
+                <DiffLineRows lines={hunk.lines} />
+              </div>
+            ))}
+          </div>
+        </ScrollArea>
+      ) : (
+        <div className="px-3.5 py-3 text-[11px] leading-5 text-muted-foreground">
+          该文件的修改未经 write/edit 工具（bash 间接写入或 office 工具），无逐行 diff 可预览。
+          <span className="mt-1 block text-muted-foreground/70">点击行可在右侧面板打开完整预览。</span>
+        </div>
+      )}
+    </HoverCardContent>
+  );
+}
+
+/** DSH 风格：卡片头（图标 + 计数 + 总 +/-）+ 文件行（路径 + 行级统计），
+ *  悬浮行显示 diff 预览（HoverCard），点击开右侧完整预览。 */
+function TurnModifiedFilesRow({
+  files,
+  turnIndex,
+  onOpenToolFile,
+  onOpenTurnDiff
+}: {
+  files: TurnModifiedFile[];
+  turnIndex?: number;
+  onOpenToolFile: (target: AgentToolFileTarget) => void;
+  /** 点击卡片头部：在右侧栏打开完整改动查看器（复用应用现有侧边栏）。 */
+  onOpenTurnDiff?: (files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) => void;
+}) {
+  const hasStats = files.some((file) => file.added != null);
+  const totalAdded = files.reduce((sum, file) => sum + (file.added || 0), 0);
+  const totalRemoved = files.reduce((sum, file) => sum + (file.removed || 0), 0);
+  return (
+    <div className="mt-1 overflow-hidden rounded-xl border border-border bg-card">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-accent/30"
+        onClick={() => onOpenTurnDiff?.(files, turnIndex)}
+        title="在右侧栏查看本轮全部改动"
+      >
+        <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-blue-500/12 text-blue-600 dark:text-blue-400">
+          <FilePen className="size-4" strokeWidth={1.9} />
+        </span>
+        <span className="text-sm font-medium text-foreground">
+          {turnIndex ? `第 ${turnIndex} 轮改动` : "本轮改动"} · {files.length} 个文件
+        </span>
+        {hasStats ? (
+          <Badge variant="outline" className="ml-auto shrink-0 gap-1.5 border-transparent font-mono text-[11px] tabular-nums">
+            <StatsBadgeText added={totalAdded} removed={totalRemoved} />
+          </Badge>
+        ) : null}
+      </button>
+      <Separator />
+      <div>
+        {files.map((file) => (
+          <HoverCard key={file.path} openDelay={250} closeDelay={180}>
+            <HoverCardTrigger asChild>
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 border-b border-border/60 px-4 py-2.5 text-left transition-colors last:border-b-0 hover:bg-accent/40"
+                onClick={() => {
+                  // 有 diff 源：进入对比模式并定位到该文件（与点头部同视图）；
+                  // 无 diff 源（office/bash）：打开文件预览。
+                  if (file.edits?.length) onOpenTurnDiff?.(files, turnIndex, file.path);
+                  else onOpenToolFile({ filePath: file.path });
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/90">{file.path}</span>
+                {file.added != null ? (
+                  <span className="shrink-0 font-mono text-xs tabular-nums">
+                    <StatsBadgeText added={file.added} removed={file.removed} />
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-[10px] text-muted-foreground/60">预览</span>
+                )}
+              </button>
+            </HoverCardTrigger>
+            <TurnModifiedFileHover file={file} />
+          </HoverCard>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AssistantMessage({
   row,
   timelineOpenState,
@@ -1354,9 +1498,11 @@ function AssistantMessage({
   onOpenTaskSession,
   onOpenToolFile,
   onOpenBrowserUrl,
-  renderMarkdown
+  renderMarkdown,
+  onOpenTurnDiff
 }: {
   row: AgentMessageRenderRow;
+  onOpenTurnDiff?: (files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) => void;
   timelineOpenState: Record<string, boolean>;
   setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
   showReasoningSummaries: boolean;
@@ -1366,6 +1512,7 @@ function AssistantMessage({
   onOpenToolFile: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
   renderMarkdown: RenderMarkdown;
+  turnGitFiles?: string[];
 }) {
   const {
     stableKey,
@@ -1386,6 +1533,9 @@ function AssistantMessage({
   });
   const showFallbackReply =
     Boolean(fallbackReply) && !isBareEllipsisText(fallbackReply) && !timelineHasTextPart;
+  // 回合修改文件汇总由列表层按用户行边界聚合（row.turnSummary）：
+  // 汇总是「回合」的属性，挂在回合最后一行；这里只在回合结束后渲染（流式中隐藏）。
+  const turnSummary = row.turnSummary;
 
   return (
     <div className="grid min-w-0 gap-2">
@@ -1403,6 +1553,16 @@ function AssistantMessage({
           onOpenToolFile={onOpenToolFile}
           onOpenBrowserUrl={onOpenBrowserUrl}
           renderMarkdown={renderMarkdown}
+        />
+      ) : null}
+      {/* 回合修改文件汇总（DSH 模式）：按用户行边界聚合，挂在回合最后一行。
+          流式进行中隐藏——数据齐了整个回合也结束了。 */}
+      {!isStreaming && turnSummary && turnSummary.length > 0 ? (
+        <TurnModifiedFilesRow
+          files={turnSummary}
+          turnIndex={row.turnIndex}
+          onOpenToolFile={onOpenToolFile}
+          onOpenTurnDiff={onOpenTurnDiff}
         />
       ) : null}
       {/* 插话多回合后常见：live 只剩 tool、「已查询」在时间线，正文只在 msg.content。
@@ -1909,6 +2069,8 @@ export function AgentMessageStream({
   messages,
   renderedMessages,
   activeStreamingAssistantId,
+  turnManifest,
+  onOpenTurnDiff,
   activeSessionBusy,
   serverMessageIdByLocalId,
   detailsByMessageId,
@@ -2254,6 +2416,107 @@ export function AgentMessageStream({
     role: row.isSystem ? "system" : row.isAssistant ? "assistant" : "user",
     preview: navigatorFirstLine(row.isAssistant ? row.fallbackReply || row.msg.content : row.msg.content)
   }));
+  // 回合修改文件汇总：按「用户行边界」切回合（DSH 模式——汇总是回合的属性，不是某条
+  // assistant 消息的内部零件）。每个回合从其所有 assistant 行的工具 parts 聚合，
+  // 挂在回合最后一行；run manifest 差集（bash 写入）并入未闭合的当前回合。
+  // 行结构无论怎么合并/分裂都不影响：只依赖 user/assistant 边界，稳定可预期。
+  const rowsWithTurnSummary = useMemo(() => {
+    const result = visibleRenderRows.map((row) => ({ ...row, turnSummary: undefined as TurnModifiedFile[] | undefined }));
+    const mergeFile = (list: TurnModifiedFile[], incoming: TurnModifiedFile) => {
+      const hit = list.find((file) => file.path === incoming.path);
+      if (hit) {
+        // 编辑块跨行合并（工具轮拆行时同文件多次编辑不丢块），统计统一从合并后的块推导。
+        // 与单行采集同一规则：连续相同块 = 模型重试，去重防双计。
+        if (incoming.edits?.length) {
+          hit.edits = hit.edits || [];
+          for (const edit of incoming.edits) {
+            const last = hit.edits[hit.edits.length - 1];
+            if (last && last.before === edit.before && last.after === edit.after) continue;
+            if (hit.edits.length >= 10) break;
+            hit.edits.push(edit);
+          }
+          const stats = deriveTurnStats(hit.edits);
+          hit.added = stats.added;
+          hit.removed = stats.removed;
+        }
+      } else {
+        list.push({ ...incoming });
+      }
+    };
+    let turnFiles: TurnModifiedFile[] = [];
+    let lastAssistantIndex = -1;
+    let turnCounter = 0;
+    const closedTurns: Array<{ index: number; turn: number }> = [];
+    const flush = () => {
+      if (lastAssistantIndex >= 0 && turnFiles.length > 0) {
+        result[lastAssistantIndex].turnSummary = turnFiles;
+        closedTurns.push({ index: lastAssistantIndex, turn: Math.max(1, turnCounter) });
+      }
+      turnFiles = [];
+      lastAssistantIndex = -1;
+    };
+    for (let index = 0; index < result.length; index += 1) {
+      const row = result[index];
+      if (!row.isAssistant) {
+        // 用户行 = 回合边界：收尾上一回合，轮次 +1。
+        flush();
+        turnCounter += 1;
+        continue;
+      }
+      lastAssistantIndex = index;
+      for (const file of collectTurnModifiedFiles(row.renderParts)) mergeFile(turnFiles, file);
+    }
+    flush();
+    // 轮次标注：除最后一轮外都标「第 N 轮」，最后一轮是「本轮改动」（用户语义）。
+    closedTurns.forEach((entry, position) => {
+      if (position < closedTurns.length - 1) result[entry.index].turnIndex = entry.turn;
+    });
+    // manifest 差集按轮次归属（bash 间接写入无工具记录，靠磁盘快照兜底）：
+    // 每个闭合轮 + 开回合都按自己的轮次序号取快照——历史轮的快照不被后续轮覆盖。
+    // 有真实 before/after 时替换工具流条目（净变化语义），并标记 snapshot（整文件可渲染）。
+    const applyManifest = (rowIndex: number, turnNumber: number) => {
+      const manifest = turnManifest[turnNumber];
+      if (!manifest || manifest.changed.length === 0) return;
+      const open = result[rowIndex].turnSummary || (result[rowIndex].turnSummary = []);
+      const realDiffByPath = new Map(manifest.fileDiffs.map((diff) => [diff.path, diff]));
+      for (const path of manifest.changed) {
+        const real = realDiffByPath.get(path);
+        if (real) {
+          const entry: TurnModifiedFile = {
+            path: real.path,
+            edits: [{ before: real.before, after: real.after }],
+            snapshot: true
+          };
+          const stats = deriveTurnStats(entry.edits);
+          entry.added = stats.added;
+          entry.removed = stats.removed;
+          const at = open.findIndex((file) => file.path === real.path);
+          if (at >= 0) open[at] = entry;
+          else open.push(entry);
+        } else {
+          mergeFile(open, { path });
+        }
+      }
+    };
+    for (const entry of closedTurns) applyManifest(entry.index, entry.turn);
+    // 开回合（列表末尾、尚无后续用户行）的序号 = 已计数 +1。
+    {
+      let boundary = 0;
+      for (let index = result.length - 1; index >= 0; index -= 1) {
+        if (!result[index].isAssistant) {
+          boundary = index + 1;
+          break;
+        }
+      }
+      for (let index = result.length - 1; index >= boundary; index -= 1) {
+        if (result[index].isAssistant) {
+          applyManifest(index, turnCounter + 1);
+          break;
+        }
+      }
+    }
+    return result;
+  }, [visibleRenderRows, turnManifest]);
   // scope=sent 只保留「我发送」的 user 消息；originalIndex 仍指向 visibleRenderRows 真实下标，跳转/active 匹配正确。
   const navigatorMarkers: NavigatorMarker[] =
     navigatorScope === "sent" ? allNavigatorMarkers.filter((m) => m.role === "user") : allNavigatorMarkers;
@@ -2679,7 +2942,7 @@ export function AgentMessageStream({
       <Virtuoso
         key={virtuosoMountKey}
         ref={virtuosoRef}
-        data={visibleRenderRows}
+        data={rowsWithTurnSummary}
         computeItemKey={(_index, row) => row.stableKey}
         scrollerRef={handleScrollerRef}
         className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
@@ -2724,6 +2987,7 @@ export function AgentMessageStream({
                 {row.isAssistant ? (
                   <AssistantMessage
                     row={row}
+
                     timelineOpenState={timelineOpenState}
                     setTimelineOpenState={setTimelineOpenState}
                     showReasoningSummaries={showReasoningSummaries}
@@ -2733,6 +2997,7 @@ export function AgentMessageStream({
                     onOpenToolFile={onOpenToolFile}
                     onOpenBrowserUrl={onOpenBrowserUrl}
                     renderMarkdown={renderMarkdown}
+                    onOpenTurnDiff={onOpenTurnDiff}
                   />
                 ) : (
                   <UserMessage
