@@ -105,6 +105,12 @@ impl Tool for WriteDocxTool {
                 blocks.len()
             )));
         }
+        // 历史版本快照：覆盖既有文件时先备份。
+        if target.is_file() {
+            if let Ok(previous) = std::fs::read(&target) {
+                super::push_version(&target, &previous);
+            }
+        }
         if let Some(parent) = target.parent() {
             if !parent.as_os_str().is_empty() {
                 let _ = std::fs::create_dir_all(parent);

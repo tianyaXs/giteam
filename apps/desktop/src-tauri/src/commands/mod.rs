@@ -12,6 +12,7 @@ pub mod pi_agent;
 pub mod pi_agent_mcp;
 pub mod release_notes;
 pub mod share;
+pub mod office;
 pub mod ui;
 pub mod watch;
 

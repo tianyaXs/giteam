@@ -16,9 +16,12 @@
 mod docx;
 mod pptx;
 mod xlsx;
+mod versions;
 
 pub use docx::{EditDocxTool, ReadDocxTool, WriteDocxTool};
 pub use pptx::{EditPptxTool, ReadPptxTool, WritePptxTool};
+pub use versions::{previous_version_count, restore_previous_version};
+pub(crate) use versions::push_version;
 pub use xlsx::{EditXlsxTool, ReadXlsxTool, WriteXlsxTool};
 
 use pi::sdk::{ContentBlock, TextContent, ToolOutput, ToolUpdate};

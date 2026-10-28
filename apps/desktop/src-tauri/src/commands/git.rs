@@ -1467,6 +1467,58 @@ pub fn run_git_commit_file_patch(
     )
 }
 
+#[derive(Debug, Serialize)]
+pub struct GitStatusStatEntry {
+    pub path: String,
+    pub status: String,
+    pub mtime_ms: u64,
+    pub size: u64,
+}
+
+/// 工作区变更清单（porcelain + mtime/size）：回合级"本轮修改了哪些文件"追踪用——
+/// 基线与结束时各取一次，差集即本轮实际落盘的文件（覆盖 bash 间接写入）。
+#[tauri::command]
+pub fn run_git_worktree_status_stat(repo_path: &str) -> Result<Vec<GitStatusStatEntry>, String> {
+    let raw = run_git(
+        &["-c", "core.quotepath=false", "status", "--short"],
+        repo_path,
+    )?;
+    let root = PathBuf::from(normalize_repo_key(repo_path)?);
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let status = line[..2].trim().to_string();
+        let mut path = line[3..].trim().to_string();
+        // 重命名/复制取新侧：'R  old -> new'
+        if let Some(arrow) = path.find(" -> ") {
+            path = path[arrow + 4..].to_string();
+        }
+        if path.starts_with('"') && path.ends_with('"') && path.len() >= 2 {
+            path = path[1..path.len() - 1].to_string();
+        }
+        if path.is_empty() {
+            continue;
+        }
+        let full = root.join(&path);
+        let (mtime_ms, size) = match std::fs::metadata(&full) {
+            Ok(meta) => (
+                meta.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                meta.len(),
+            ),
+            // 运行中删除的文件：无 meta 仍列出（size 0），前端按需过滤。
+            Err(_) => (0, 0),
+        };
+        out.push(GitStatusStatEntry { path, status, mtime_ms, size });
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview, String> {
     let raw = run_git(&["status", "--short", "--branch"], repo_path)?;

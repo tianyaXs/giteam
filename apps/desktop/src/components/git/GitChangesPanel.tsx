@@ -11,6 +11,8 @@ import {
   RotateCcwIcon
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TurnDiffViewer } from "../agent/TurnDiffViewer";
+import type { TurnModifiedFile } from "../agent/TurnDiffViewer";
 import type { DesktopTheme } from "../../lib/desktopPreferences";
 import type { GitWorktreeEntry, GitWorktreeFileContent } from "../../lib/types";
 import {
@@ -55,6 +57,12 @@ type WorktreeChangeStats = {
 };
 
 type GitChangesPanelProps = {
+  /** 「本轮改动」查看器数据：设置时面板切换为回合 diff 视图（右侧栏页签体系）。 */
+  turnDiffFiles?: TurnModifiedFile[] | null;
+  /** 查看器标题（区分轮次，如「第 3 轮改动」）。 */
+  turnDiffTitle?: string;
+  /** 初始选中文件（点卡片某文件行进入时定位到它）。 */
+  turnDiffInitialPath?: string;
   branchName: string;
   changesSidebarWidth: number;
   isResizing: boolean;
@@ -68,6 +76,8 @@ type GitChangesPanelProps = {
   selectedFile: string;
   selectedEntry: GitWorktreeEntry | null;
   selectedContent: GitWorktreeFileContent;
+  canRestoreOfficeVersion?: boolean;
+  onRestoreOfficeVersion?: () => void;
   selectedLine?: number;
   viewMode?: "auto" | "editor" | "diff";
   committing: boolean;
@@ -303,6 +313,9 @@ const DiffFileContent = memo(function DiffFileContent({ model }: { model: DiffFi
 });
 
 export function GitChangesPanel({
+  turnDiffFiles,
+  turnDiffTitle,
+  turnDiffInitialPath,
   branchName,
   changesSidebarWidth,
   isResizing,
@@ -316,6 +329,8 @@ export function GitChangesPanel({
   selectedFile,
   selectedEntry,
   selectedContent,
+  canRestoreOfficeVersion,
+  onRestoreOfficeVersion,
   selectedLine,
   viewMode = "auto",
   committing,
@@ -568,7 +583,12 @@ export function GitChangesPanel({
               <EmptyDescription>Loading document preview...</EmptyDescription>
             </Empty>
           )}>
-            <DocumentPreviewViewer filePath={selectedFile} content={selectedContent} />
+            <DocumentPreviewViewer
+              filePath={selectedFile}
+              content={selectedContent}
+              canRestorePreviousVersion={canRestoreOfficeVersion}
+              onRestorePreviousVersion={() => onRestoreOfficeVersion?.()}
+            />
           </Suspense>
         </div>
       );
@@ -645,6 +665,20 @@ export function GitChangesPanel({
     return (
       <div className="flex h-full min-h-0 flex-col">
         {renderPreviewContent("gt-monaco-diff-shell h-full rounded-none border-0")}
+      </div>
+    );
+  }
+
+  // 「本轮改动」页签：数据在时整面板切换为回合 diff 视图（复用右侧栏容器与页签体系）。
+  if (turnDiffFiles && turnDiffFiles.length > 0) {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-background">
+        <TurnDiffViewer
+          key={turnDiffInitialPath || "__default__"}
+          files={turnDiffFiles}
+          title={turnDiffTitle}
+          initialPath={turnDiffInitialPath}
+        />
       </div>
     );
   }

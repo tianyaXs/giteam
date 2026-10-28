@@ -161,6 +161,12 @@ impl Tool for WriteXlsxTool {
             )));
         }
 
+        // 历史版本快照：覆盖既有文件时先备份（恢复入口见 versions）。
+        if target.is_file() {
+            if let Ok(previous) = std::fs::read(&target) {
+                super::push_version(&target, &previous);
+            }
+        }
         // 前置建父目录：首个检查点落盘前必须就绪。
         if let Some(parent) = target.parent() {
             if !parent.as_os_str().is_empty() {
@@ -980,6 +986,9 @@ impl Tool for EditXlsxTool {
         None,
         );
 
+        if let Ok(previous) = std::fs::read(&target) {
+            super::push_version(&target, &previous);
+        }
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
             Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),

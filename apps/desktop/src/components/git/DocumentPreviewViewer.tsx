@@ -15,6 +15,9 @@ import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 type DocumentPreviewViewerProps = {
   filePath: string;
   content: GitWorktreeFileContent;
+  /** office 文件可恢复历史版本时提供：点击按钮回退到修改前内容。 */
+  onRestorePreviousVersion?: () => void;
+  canRestorePreviousVersion?: boolean;
 };
 
 function fileNameFromPath(path: string): string {
@@ -124,7 +127,7 @@ function PreviewShell({ children, className }: { children: ReactNode; className?
   );
 }
 
-export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewViewerProps) {
+export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVersion, canRestorePreviousVersion }: DocumentPreviewViewerProps) {
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
   const [blobUrl, setBlobUrl] = useState("");
   const [docxError, setDocxError] = useState("");
@@ -178,6 +181,11 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
       docxMarkedRef.current = [];
     }
     docxPrevPathRef.current = filePath;
+    // 恢复/无变更集：旧标记作废（App 侧恢复后 office.changes 会被清掉）。
+    if (!content.office?.changes) {
+      docxLastChangesRef.current = null;
+      docxMarkedRef.current = [];
+    }
     const blob = blobFromBase64(content.dataBase64, content.mime);
     const scroller = container.parentElement;
     // 双缓冲：离屏渲染完成后一次性替换 DOM——不做 innerHTML="" 清空，
@@ -457,6 +465,18 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
     [isSpreadsheet, isDocx, content.office?.changes]
   );
 
+  const RestoreButton =
+    canRestorePreviousVersion && onRestorePreviousVersion && (isDocx || isSpreadsheet || isSlides) ? (
+      <button
+        type="button"
+        className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-full border border-border bg-card/90 px-2.5 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur hover:border-foreground/25 hover:text-foreground"
+        onClick={() => onRestorePreviousVersion()}
+        title="回退到 agent 修改前的内容"
+      >
+        ⟲ 上一版
+      </button>
+    ) : null;
+
   const ChangeNavChip = changeNav ? (
     <div
       className="absolute right-4 top-3 z-10 flex items-center gap-1 rounded-full border border-border bg-card/90 px-2 py-1 text-[11px] shadow-sm backdrop-blur"
@@ -538,6 +558,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
       <PreviewShell>
         <div className="relative h-full min-h-0">
           {ChangeNavChip}
+          {RestoreButton}
           {docxError ? (
             <PreviewEmpty title="DOCX 预览失败" description={docxError} />
           ) : (
@@ -578,7 +599,9 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
     }
     return (
       <PreviewShell>
-        <div ref={slidesContainerRef} className="h-full min-h-0 overflow-y-auto bg-background p-4">
+        <div className="relative h-full min-h-0">
+          {RestoreButton}
+          <div ref={slidesContainerRef} className="h-full min-h-0 overflow-y-auto bg-background p-4">
           <div className="mx-auto flex max-w-2xl flex-col gap-4">
             {slidesData.map((slide) => (
               <div
@@ -625,6 +648,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
             ))}
           </div>
         </div>
+        </div>
       </PreviewShell>
     );
   }
@@ -648,6 +672,7 @@ export function DocumentPreviewViewer({ filePath, content }: DocumentPreviewView
       <PreviewShell>
         <div className="relative h-full min-h-0">
           {ChangeNavChip}
+          {RestoreButton}
           <div ref={spreadsheetScrollRef} className="h-full min-h-0 overflow-auto bg-background p-4">
             <div className="inline-block min-w-full align-top">
             {xlsxWorkbook.SheetNames.length > 1 && (

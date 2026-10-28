@@ -12,7 +12,7 @@ mod command_safety;
 mod shell_resolver;
 mod edit_guard;
 mod mcp;
-mod office;
+pub mod office;
 mod question;
 mod task;
 mod todo;

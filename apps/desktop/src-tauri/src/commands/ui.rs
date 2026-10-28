@@ -636,6 +636,50 @@ pub fn read_local_attachment_preview(path: &str) -> Result<UiAttachmentPreview, 
     }
 }
 
+/// UI debug 日志落盘（前端 appendAgentDebugLog 同步写入，便于离线排查）。
+#[tauri::command]
+pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(base) = giteam_core::pi_agent::giteam_data_dir() else {
+            return Ok(());
+        };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let text = format!("{stamp} {line}\n");
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(base.join("ui-debug.log")) {
+            let _ = file.write_all(text.as_bytes());
+        }
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("写日志失败：{e}")))
+}
+
+/// 恢复 office 文件的上一版（写/改工具自动快照；交换语义，可再恢复回来）。
+#[tauri::command]
+pub async fn office_restore_previous_version(path: String) -> Result<bool, String> {
+    let target = std::path::PathBuf::from(path.trim());
+    tauri::async_runtime::spawn_blocking(move || {
+        giteam_core::pi_agent::restore_office_previous_version(&target)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("恢复任务失败：{e}")))
+}
+
+/// office 文件剩余可回退版本数。
+#[tauri::command]
+pub async fn office_previous_version_count(path: String) -> Result<usize, String> {
+    let target = std::path::PathBuf::from(path.trim());
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(giteam_core::pi_agent::office_previous_version_count(&target))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("查询版本数失败：{e}")))
+}
+
 #[tauri::command]
 pub fn open_local_path(path: String) -> Result<(), String> {
     let trimmed = path.trim();

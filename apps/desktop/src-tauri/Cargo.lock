@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "giteam-desktop"
-version = "0.2.52"
+version = "0.2.53"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2974,6 +2974,7 @@ dependencies = [
  "fastrand",
  "futures",
  "giteam-core",
+ "hex",
  "libc",
  "notify",
  "objc2",
@@ -2984,6 +2985,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -2991,6 +2993,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "url",

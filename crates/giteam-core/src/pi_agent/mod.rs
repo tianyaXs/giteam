@@ -16,6 +16,22 @@ mod service;
 mod skills;
 mod subagents;
 mod tools;
+
+/// giteam 数据根目录（~/.giteam 或 $GITEAM_HOME）：桌面端日志落盘等用。
+pub fn giteam_data_dir() -> Option<std::path::PathBuf> {
+    secrets::default_data_dir()
+}
+
+/// office 文件历史版本恢复（写/改工具自动快照；桌面端 Tauri 命令入口）。
+pub fn restore_office_previous_version(path: &std::path::Path) -> Result<bool, String> {
+    tools::office::restore_previous_version(path)
+}
+
+/// office 文件剩余可回退版本数。
+pub fn office_previous_version_count(path: &std::path::Path) -> usize {
+    tools::office::previous_version_count(path)
+}
+
 mod types;
 
 pub use browser_controller::{BrowserAction, BrowserActionResult, BrowserController};

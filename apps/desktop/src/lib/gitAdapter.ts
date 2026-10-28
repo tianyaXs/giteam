@@ -73,6 +73,18 @@ export async function getGitWorktreeOverview(repoPath: string): Promise<GitWorkt
   return invoke<GitWorktreeOverview>("run_git_worktree_overview", { repoPath });
 }
 
+export type GitStatusStatEntry = {
+  path: string;
+  status: string;
+  mtimeMs: number;
+  size: number;
+};
+
+/** 工作区变更清单（porcelain + mtime/size）：回合级修改文件追踪用。 */
+export async function getWorktreeStatusStats(repoPath: string): Promise<GitStatusStatEntry[]> {
+  return invoke<GitStatusStatEntry[]>("run_git_worktree_status_stat", { repoPath });
+}
+
 export async function getGitWorktreeList(repoPath: string): Promise<GitLinkedWorktree[]> {
   return invoke<GitLinkedWorktree[]>("run_git_worktree_list", { repoPath });
 }
