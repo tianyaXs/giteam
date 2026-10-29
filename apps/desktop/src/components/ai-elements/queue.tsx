@@ -1,14 +1,23 @@
 "use client";
 
+// Migrated from AI SDK Elements to the shadcn/ui Trace composition, per
+// https://ui.shadcn.com/docs/ai-elements/aria/queue
+// Every export keeps its name and props; only the rendering changed.
+// Sections/labels/items are now Trace pieces; attachments and actions kept.
+
 import { Button } from "@/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { ScrollArea } from "@/components/ui/scroll-area";
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, PaperclipIcon } from "lucide-react";
+import { CircleCheckIcon, CircleIcon, ListChecksIcon, ListTodoIcon, PaperclipIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 
 export interface QueueMessagePart {
@@ -31,19 +40,16 @@ export interface QueueTodo {
   status?: "pending" | "completed";
 }
 
-export type QueueItemProps = ComponentProps<"li">;
+export type QueueItemProps = ComponentProps<typeof TraceLine>;
 
 export const QueueItem = ({ className, ...props }: QueueItemProps) => (
-  <li
-    className={cn(
-      "group flex flex-col gap-1 rounded-md px-3 py-1 text-sm transition-colors hover:bg-muted",
-      className
-    )}
+  <TraceLine
+    className={cn("rounded-md px-3 py-1 transition-colors hover:bg-muted", className)}
     {...props}
   />
 );
 
-export type QueueItemIndicatorProps = ComponentProps<"span"> & {
+export type QueueItemIndicatorProps = ComponentProps<typeof TraceIcon> & {
   completed?: boolean;
 };
 
@@ -52,19 +58,12 @@ export const QueueItemIndicator = ({
   className,
   ...props
 }: QueueItemIndicatorProps) => (
-  <span
-    className={cn(
-      "mt-0.5 inline-block size-2.5 rounded-full border",
-      completed
-        ? "border-muted-foreground/20 bg-muted-foreground/10"
-        : "border-muted-foreground/50",
-      className
-    )}
-    {...props}
-  />
+  <TraceIcon className={className} {...props}>
+    {completed ? <CircleCheckIcon /> : <CircleIcon />}
+  </TraceIcon>
 );
 
-export type QueueItemContentProps = ComponentProps<"span"> & {
+export type QueueItemContentProps = ComponentProps<typeof TraceTitle> & {
   completed?: boolean;
 };
 
@@ -73,7 +72,7 @@ export const QueueItemContent = ({
   className,
   ...props
 }: QueueItemContentProps) => (
-  <span
+  <TraceTitle
     className={cn(
       "line-clamp-1 grow break-words",
       completed
@@ -85,7 +84,9 @@ export const QueueItemContent = ({
   />
 );
 
-export type QueueItemDescriptionProps = ComponentProps<"div"> & {
+export type QueueItemDescriptionProps = ComponentProps<
+  typeof TraceDescription
+> & {
   completed?: boolean;
 };
 
@@ -94,12 +95,9 @@ export const QueueItemDescription = ({
   className,
   ...props
 }: QueueItemDescriptionProps) => (
-  <div
+  <TraceDescription
     className={cn(
-      "ml-6 text-xs",
-      completed
-        ? "text-muted-foreground/40 line-through"
-        : "text-muted-foreground",
+      completed ? "text-muted-foreground/50 line-through" : "",
       className
     )}
     {...props}
@@ -179,96 +177,63 @@ export const QueueItemFile = ({
   </span>
 );
 
-export type QueueListProps = ComponentProps<typeof ScrollArea>;
+export type QueueListProps = ComponentProps<typeof Trace>;
 
-export const QueueList = ({
-  children,
-  className,
-  ...props
-}: QueueListProps) => (
-  <ScrollArea className={cn("mt-2 -mb-1", className)} {...props}>
-    <div className="max-h-40 pr-4">
-      <ul>{children}</ul>
-    </div>
-  </ScrollArea>
+export const QueueList = ({ children, className, ...props }: QueueListProps) => (
+  <Trace className={cn("mt-2 -mb-1", className)} {...props}>
+    {children}
+  </Trace>
 );
 
-// QueueSection - collapsible section container
-export type QueueSectionProps = ComponentProps<typeof Collapsible>;
+export type QueueSectionProps = ComponentProps<typeof TraceCollapsible>;
 
-export const QueueSection = ({
-  className,
-  defaultOpen = true,
-  ...props
-}: QueueSectionProps) => (
-  <Collapsible className={cn(className)} defaultOpen={defaultOpen} {...props} />
+export const QueueSection = (props: QueueSectionProps) => (
+  <TraceCollapsible {...props} />
 );
 
-// QueueSectionTrigger - section header/trigger
-export type QueueSectionTriggerProps = ComponentProps<"button">;
+export type QueueSectionTriggerProps = ComponentProps<
+  typeof TraceCollapsibleTrigger
+>;
 
-export const QueueSectionTrigger = ({
-  children,
-  className,
-  ...props
-}: QueueSectionTriggerProps) => (
-  <CollapsibleTrigger asChild>
-    <button
-      className={cn(
-        "group flex w-full items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-left font-medium text-muted-foreground text-sm transition-colors hover:bg-muted",
-        className
-      )}
-      type="button"
-      {...props}
-    >
-      {children}
-    </button>
-  </CollapsibleTrigger>
-);
+export const QueueSectionTrigger = (
+  props: QueueSectionTriggerProps
+) => <TraceCollapsibleTrigger {...props} />;
 
-// QueueSectionLabel - label content with icon and count
-export type QueueSectionLabelProps = ComponentProps<"span"> & {
+export type QueueSectionLabelProps = ComponentProps<typeof TraceLine> & {
   count?: number;
   label: string;
   icon?: React.ReactNode;
+  completed?: boolean;
 };
 
 export const QueueSectionLabel = ({
   count,
   label,
   icon,
-  className,
+  completed = false,
   ...props
 }: QueueSectionLabelProps) => (
-  <span className={cn("flex items-center gap-2", className)} {...props}>
-    <ChevronDownIcon className="size-4 transition-transform group-data-[state=closed]:-rotate-90" />
-    {icon}
-    <span>
-      {count} {label}
-    </span>
-  </span>
+  <TraceLine {...props}>
+    <TraceIcon>
+      {icon ?? (completed ? <ListChecksIcon /> : <ListTodoIcon />)}
+    </TraceIcon>
+    <TraceTitle>
+      {typeof count === "number" ? `${count} ` : ""}
+      {label}
+    </TraceTitle>
+  </TraceLine>
 );
 
-// QueueSectionContent - collapsible content area
 export type QueueSectionContentProps = ComponentProps<
-  typeof CollapsibleContent
+  typeof TraceCollapsibleContent
 >;
 
-export const QueueSectionContent = ({
-  className,
-  ...props
-}: QueueSectionContentProps) => (
-  <CollapsibleContent className={cn(className)} {...props} />
+export const QueueSectionContent = (props: QueueSectionContentProps) => (
+  <TraceCollapsibleContent {...props} />
 );
 
-export type QueueProps = ComponentProps<"div">;
+export type QueueProps = ComponentProps<typeof Trace>;
 
 export const Queue = ({ className, ...props }: QueueProps) => (
-  <div
-    className={cn(
-      "flex flex-col gap-2 rounded-xl border border-border bg-background px-3 pt-2 pb-2 shadow-xs",
-      className
-    )}
-    {...props}
-  />
+  <Trace className={cn(className)} {...props} />
 );
