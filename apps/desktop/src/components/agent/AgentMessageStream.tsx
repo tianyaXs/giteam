@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { FilePen } from "lucide-react";
+import { FilePen, BrainIcon, ChevronDownIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -48,7 +48,7 @@ import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { MatrixLoader } from "../transitions/MatrixLoader";
 import { ShimmerText } from "../transitions/ShimmerText";
-import { Reasoning, ReasoningTrigger } from "../ai-elements/reasoning";
+import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -893,6 +893,13 @@ function ContextGroup({
   );
 }
 
+/** 思考耗时（vendored Reasoning 根组件在流式结束后计算秒数）。 */
+function ReasoningDuration() {
+  const { isStreaming, duration } = useReasoning();
+  if (isStreaming || !duration) return null;
+  return <span className="shrink-0 text-xs tabular-nums text-muted-foreground/70">· {duration}s</span>;
+}
+
 function ReasoningGroup({
   group,
   active,
@@ -929,11 +936,17 @@ function ReasoningGroup({
       defaultOpen={false}
       className="mb-0"
     >
-      <ReasoningTrigger className="h-10 appearance-none justify-start border-0 bg-transparent px-0 text-left hover:bg-transparent">
-        <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 text-sm" />
+      <ReasoningTrigger className="h-10 appearance-none justify-start gap-2 border-0 bg-transparent px-0 text-left hover:bg-transparent">
+        <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="text-sm" />
+        <ReasoningDuration />
         {open ? null : (
           <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
         )}
+        <ChevronDownIcon
+          className={cn("size-4 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-180")}
+          aria-hidden
+        />
       </ReasoningTrigger>
       <CollapsibleContent className="min-w-0 max-w-full pb-2 pl-3 text-sm text-muted-foreground">
         <StreamingMarkdownBlock
