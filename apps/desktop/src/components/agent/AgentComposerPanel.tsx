@@ -23,6 +23,7 @@ import { describePermissionInteraction, type AgentPermissionReply, type Permissi
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
 import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
+import { QueueItem, QueueItemContent } from "../ai-elements/queue";
 import { SendIcon } from "../common/AppChromeIcons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -866,14 +867,14 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               {activeSessionBusy ? "将在当前回复结束后继续" : "未发送的跟进"}
             </div>
             {queuedFollowUps.map((item) => (
-              <div
+              <QueueItem
                 key={item.id}
-                className="flex min-w-0 items-start gap-2 rounded-lg bg-muted/45 px-2.5 py-1.5 text-sm text-foreground"
+                className="flex-row items-start gap-2 bg-muted/45 px-2.5 py-1.5 hover:bg-muted/45"
               >
                 <span className="shrink-0 text-muted-foreground">↳</span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-muted-foreground">
+                <QueueItemContent className="line-clamp-none whitespace-pre-wrap break-words text-sm text-foreground/90">
                   {item.content}
-                </span>
+                </QueueItemContent>
                 {onRemoveQueuedFollowUp ? (
                   <Button
                     type="button"
@@ -886,7 +887,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     <CloseIcon width={12} height={12} />
                   </Button>
                 ) : null}
-              </div>
+              </QueueItem>
             ))}
           </div>
         ) : null}
