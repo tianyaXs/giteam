@@ -1585,7 +1585,7 @@ function AssistantMessage({
   const turnSummary = row.turnSummary;
 
   return (
-    <div className="grid min-w-0 gap-2">
+    <div className="group/row grid min-w-0 gap-2">
       {hasTimeline ? (
         <AssistantTimeline
           stableKey={stableKey}
@@ -1638,9 +1638,10 @@ function AssistantMessage({
       ) : null}
       {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
       {errorMessage && !renderPartsHasFailure(row.renderParts) ? <AgentErrorMessage message={errorMessage} /> : null}
-      {/* 回复结束后的操作行(ai-elements MessageActions):复制全文。 */}
-      {!isStreaming && !errorMessage && (hasTimeline || Boolean(fallbackReply?.trim())) ? (
-        <MessageActions className="justify-end text-muted-foreground">
+      {/* 回复结束后的操作行(ai-elements MessageActions,官方 chat 交互:
+          hover 该条消息才浮现,左对齐跟随内容;仅当确有正文可复制时渲染)。 */}
+      {!isStreaming && !errorMessage && (timelineHasTextPart || Boolean(fallbackReply?.trim())) ? (
+        <MessageActions className="justify-start opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-within:opacity-100">
           <CopyReplyAction
             text={
               timelineHasTextPart
