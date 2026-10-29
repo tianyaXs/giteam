@@ -1,25 +1,38 @@
 "use client";
 
+// Migrated from AI SDK Elements to the shadcn/ui Trace + Code Block
+// composition, per https://ui.shadcn.com/docs/ai-elements/aria/terminal
+// Every export keeps its name and props; only the rendering changed.
+// ansi-to-react is gone — output renders as a plain mono block.
+
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import Ansi from "ansi-to-react";
-import { CheckIcon, CopyIcon, TerminalIcon, Trash2Icon } from "lucide-react";
-import type { ComponentProps, HTMLAttributes } from "react";
+import { LoaderCircleIcon, TerminalIcon } from "lucide-react";
+import type { ComponentProps, HTMLAttributes, ReactNode } from "react";
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 
 interface TerminalContextType {
-  output: string;
-  isStreaming: boolean;
   autoScroll: boolean;
+  isStreaming: boolean;
   onClear?: () => void;
+  output: string;
 }
 
 const TerminalContext = createContext<TerminalContextType>({
@@ -28,59 +41,38 @@ const TerminalContext = createContext<TerminalContextType>({
   output: "",
 });
 
-export type TerminalHeaderProps = HTMLAttributes<HTMLDivElement>;
+const useTerminal = () => useContext(TerminalContext);
+
+export type TerminalHeaderProps = ComponentProps<typeof TraceCollapsibleTrigger>;
 
 export const TerminalHeader = ({
   className,
-  children,
   ...props
 }: TerminalHeaderProps) => (
-  <div
-    className={cn(
-      "flex items-center justify-between border-zinc-800 border-b px-4 py-2",
-      className
-    )}
-    {...props}
-  >
-    {children}
-  </div>
+  <TraceCollapsibleTrigger className={cn("min-w-0 max-w-full", className)} {...props} />
 );
 
-export type TerminalTitleProps = HTMLAttributes<HTMLDivElement>;
+export type TerminalTitleProps = ComponentProps<"div">;
 
-export const TerminalTitle = ({
-  className,
-  children,
-  ...props
-}: TerminalTitleProps) => (
-  <div
-    className={cn("flex items-center gap-2 text-sm text-zinc-400", className)}
-    {...props}
-  >
-    <TerminalIcon className="size-4" />
-    {children ?? "Terminal"}
-  </div>
+export const TerminalTitle = ({ className, ...props }: TerminalTitleProps) => (
+  <div className={cn("flex min-w-0 items-center gap-2", className)} {...props} />
 );
 
 export type TerminalStatusProps = HTMLAttributes<HTMLDivElement>;
 
 export const TerminalStatus = ({
   className,
-  children,
   ...props
 }: TerminalStatusProps) => {
-  const { isStreaming } = useContext(TerminalContext);
-
-  if (!isStreaming) {
-    return null;
-  }
-
+  const { isStreaming } = useTerminal();
+  if (!isStreaming) return null;
   return (
     <div
-      className={cn("flex items-center gap-2 text-xs text-zinc-400", className)}
+      className={cn("flex shrink-0 items-center gap-1", className)}
       {...props}
     >
-      {children}
+      <LoaderCircleIcon className="size-3.5 animate-spin text-muted-foreground" />
+      <span className="text-muted-foreground text-xs">Running</span>
     </div>
   );
 };
@@ -89,140 +81,90 @@ export type TerminalActionsProps = HTMLAttributes<HTMLDivElement>;
 
 export const TerminalActions = ({
   className,
-  children,
   ...props
 }: TerminalActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} {...props}>
-    {children}
-  </div>
+  <div
+    className={cn("ml-auto flex shrink-0 items-center gap-1", className)}
+    {...props}
+  />
 );
 
-export type TerminalCopyButtonProps = ComponentProps<typeof Button> & {
-  onCopy?: () => void;
-  onError?: (error: Error) => void;
-  timeout?: number;
-};
+export type TerminalCopyButtonProps = ComponentProps<typeof Button>;
 
 export const TerminalCopyButton = ({
-  onCopy,
-  onError,
-  timeout = 2000,
-  children,
   className,
   ...props
 }: TerminalCopyButtonProps) => {
-  const [isCopied, setIsCopied] = useState(false);
-  const timeoutRef = useRef<number>(0);
-  const { output } = useContext(TerminalContext);
-
-  const copyToClipboard = useCallback(async () => {
-    if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
-      onError?.(new Error("Clipboard API not available"));
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(output);
-      setIsCopied(true);
-      onCopy?.();
-      timeoutRef.current = window.setTimeout(() => setIsCopied(false), timeout);
-    } catch (error) {
-      onError?.(error as Error);
-    }
-  }, [output, onCopy, onError, timeout]);
-
-  useEffect(
-    () => () => {
-      window.clearTimeout(timeoutRef.current);
-    },
-    []
-  );
-
-  const Icon = isCopied ? CheckIcon : CopyIcon;
-
+  const { output } = useTerminal();
   return (
     <Button
-      className={cn(
-        "size-7 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
-        className
-      )}
-      onClick={copyToClipboard}
+      className={cn("size-6 text-muted-foreground", className)}
+      onClick={() => {
+        void navigator.clipboard?.writeText(output);
+      }}
       size="icon"
+      type="button"
       variant="ghost"
       {...props}
-    >
-      {children ?? <Icon size={14} />}
-    </Button>
+    />
   );
 };
 
 export type TerminalClearButtonProps = ComponentProps<typeof Button>;
 
 export const TerminalClearButton = ({
-  children,
   className,
   ...props
 }: TerminalClearButtonProps) => {
-  const { onClear } = useContext(TerminalContext);
-
-  if (!onClear) {
-    return null;
-  }
-
+  const { onClear } = useTerminal();
+  if (!onClear) return null;
   return (
     <Button
-      className={cn(
-        "size-7 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
-        className
-      )}
+      className={cn("size-6 text-muted-foreground", className)}
       onClick={onClear}
       size="icon"
+      type="button"
       variant="ghost"
       {...props}
-    >
-      {children ?? <Trash2Icon size={14} />}
-    </Button>
+    />
   );
 };
 
-export type TerminalContentProps = HTMLAttributes<HTMLDivElement>;
+export type TerminalContentProps = ComponentProps<"pre">;
 
 export const TerminalContent = ({
   className,
-  children,
+  children: _children,
   ...props
 }: TerminalContentProps) => {
-  const { output, isStreaming, autoScroll } = useContext(TerminalContext);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { autoScroll, output } = useTerminal();
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [output, autoScroll]);
+    if (!autoScroll) return;
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [autoScroll, output]);
 
+  // Official uses CodeBlock size=sm; our vendored CodeBlock is a shiki
+  // highlighter (code+language) — wrong tool for arbitrary terminal text.
+  // A styled pre keeps the official visual (mono, wrap, capped height).
   return (
-    <div
-      className={cn(
-        "max-h-96 overflow-auto p-4 font-mono text-sm leading-relaxed",
-        className
-      )}
-      ref={containerRef}
-      {...props}
-    >
-      {children ?? (
-        <pre className="whitespace-pre-wrap break-words">
-          <Ansi>{output}</Ansi>
-          {isStreaming && (
-            <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-zinc-100" />
-          )}
-        </pre>
-      )}
+    <div className="min-w-0 px-1 pb-1">
+      <pre
+        className={cn(
+          "max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs leading-relaxed",
+          className
+        )}
+        {...props}
+      >
+        {output}
+        <div ref={bottomRef} />
+      </pre>
     </div>
   );
 };
 
-export type TerminalProps = HTMLAttributes<HTMLDivElement> & {
+export type TerminalProps = ComponentProps<typeof Trace> & {
   output: string;
   isStreaming?: boolean;
   autoScroll?: boolean;
@@ -245,29 +187,27 @@ export const Terminal = ({
 
   return (
     <TerminalContext.Provider value={contextValue}>
-      <div
-        className={cn(
-          "flex flex-col overflow-hidden rounded-lg border bg-zinc-950 text-zinc-100",
-          className
-        )}
-        {...props}
-      >
+      <Trace className={cn("overflow-hidden rounded-lg border bg-zinc-950 text-zinc-100", className)} {...props}>
         {children ?? (
-          <>
-            <TerminalHeader>
-              <TerminalTitle />
-              <div className="flex items-center gap-1">
+          <TraceCollapsible defaultOpen>
+            <div className="flex w-full items-center gap-2 px-2 py-1.5">
+              <TerminalHeader>
+                <TerminalTitle>
+                  <TraceIcon>
+                    <TerminalIcon />
+                  </TraceIcon>
+                </TerminalTitle>
                 <TerminalStatus />
                 <TerminalActions>
-                  <TerminalCopyButton />
-                  {onClear && <TerminalClearButton />}
+                  <TerminalCopyButton aria-label="复制输出" />
+                  <TerminalClearButton aria-label="清空输出" />
                 </TerminalActions>
-              </div>
-            </TerminalHeader>
+              </TerminalHeader>
+            </div>
             <TerminalContent />
-          </>
+          </TraceCollapsible>
         )}
-      </div>
+      </Trace>
     </TerminalContext.Provider>
   );
 };
