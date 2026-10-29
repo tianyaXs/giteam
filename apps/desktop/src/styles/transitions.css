@@ -162,3 +162,21 @@
   .t-matrix i { animation: none !important; }
   .shimmer { animation: none !important; background-image: none; color: var(--muted); -webkit-text-fill-color: currentColor; }
 }
+
+/* ── suggestion row utilities (official aria suggestion) ─────── */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scroll-fade-x {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 12px,
+    black calc(100% - 12px),
+    transparent 100%
+  );
+}
