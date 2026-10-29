@@ -219,33 +219,6 @@ function ActivityStatus({
 }
 
 /** 时间线折叠标签共用外壳：固定行高 + 收起不挂载，保证「已探索 / 已回忆」行距一致。 */
-function TimelineFoldGroup({
-  open,
-  onOpenChange,
-  label,
-  children
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  label: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="min-w-0 max-w-full">
-      <button
-        type="button"
-        aria-expanded={open}
-        className="flex h-10 w-full min-w-0 appearance-none items-center overflow-hidden border-0 bg-transparent px-0 text-left hover:bg-transparent"
-        onClick={() => onOpenChange(!open)}
-      >
-        {label}
-      </button>
-      {open ? <div className="min-w-0">{children}</div> : null}
-    </div>
-  );
-}
-
-
 function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   // todowrite 只驱动右侧进度卡、不进主时间线；有进度时主区不应继续写「思考中」，
   // 否则用户会以为卡住，而右侧已在推进。
