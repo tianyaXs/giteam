@@ -384,6 +384,24 @@ export const usePromptInputAttachments = () => {
   return context;
 };
 
+// giteam patch: PromptInputTextarea is also used standalone (our composer
+// manages attachments itself via props), where no attachments context
+// exists — give it a no-op context instead of throwing.
+const NOOP_ATTACHMENTS: AttachmentsContext = {
+  files: [],
+  add: () => {},
+  remove: () => {},
+  clear: () => {},
+  openFileDialog: () => {},
+  fileInputRef: { current: null },
+};
+
+export const useOptionalPromptInputAttachments = () => {
+  const provider = useOptionalProviderAttachments();
+  const local = useContext(LocalAttachmentsContext);
+  return local ?? provider ?? NOOP_ATTACHMENTS;
+};
+
 // ============================================================================
 // Referenced Sources (Local to PromptInput)
 // ============================================================================
@@ -961,7 +979,7 @@ export const PromptInputTextarea = ({
   ...props
 }: PromptInputTextareaProps) => {
   const controller = useOptionalPromptInputController();
-  const attachments = usePromptInputAttachments();
+  const attachments = useOptionalPromptInputAttachments();
   const [isComposing, setIsComposing] = useState(false);
 
   const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = useCallback(
