@@ -2,17 +2,21 @@
 
 import { Badge } from "@/components/ui/badge";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "@/components/ui/trace";
 import { cn } from "@/lib/utils";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import {
   CheckCircleIcon,
-  ChevronDownIcon,
   CircleIcon,
   ClockIcon,
+  LoaderCircleIcon,
   WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
@@ -21,13 +25,20 @@ import { isValidElement } from "react";
 
 import { CodeBlock } from "./code-block";
 
-export type ToolProps = ComponentProps<typeof Collapsible>;
+export type ToolProps = Omit<
+  ComponentProps<typeof TraceCollapsible>,
+  "onOpenChange"
+> & {
+  onOpenChange?: (open: boolean) => void;
+};
 
 export const Tool = ({ className, ...props }: ToolProps) => (
-  <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
-    {...props}
-  />
+  <Trace>
+    <TraceCollapsible
+      className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+      {...(props as ComponentProps<typeof TraceCollapsible>)}
+    />
+  </Trace>
 );
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
@@ -82,28 +93,50 @@ export const ToolHeader = ({
   const derivedName =
     type === "dynamic-tool" ? toolName : type.split("-").slice(1).join("-");
 
+  const running =
+    state === "input-streaming" || state === "input-available";
+  const failed = state === "output-error";
+  const denied = state === "output-denied";
+
   return (
-    <CollapsibleTrigger
+    <TraceCollapsibleTrigger
       className={cn(
         "flex w-full items-center justify-between gap-4 p-3",
         className
       )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="font-medium text-sm">{title ?? derivedName}</span>
-        {getStatusBadge(state)}
-      </div>
-      <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-    </CollapsibleTrigger>
+      <TraceLine
+        status={failed || denied ? "error" : running ? "running" : undefined}
+      >
+        <TraceIcon>
+          {failed || denied ? (
+            <XCircleIcon />
+          ) : running ? (
+            <LoaderCircleIcon className="animate-spin" />
+          ) : (
+            <WrenchIcon />
+          )}
+        </TraceIcon>
+        <TraceTitle className="font-medium text-sm">
+          {title ??
+            (failed
+              ? `Failed to run ${derivedName}`
+              : denied
+                ? `Denied ${derivedName}`
+                : running
+                  ? `Running ${derivedName}`
+                  : `Ran ${derivedName}`)}
+        </TraceTitle>
+      </TraceLine>
+    </TraceCollapsibleTrigger>
   );
 };
 
-export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
+export type ToolContentProps = ComponentProps<typeof TraceCollapsibleContent>;
 
 export const ToolContent = ({ className, ...props }: ToolContentProps) => (
-  <CollapsibleContent
+  <TraceCollapsibleContent
     className={cn(
       "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 space-y-4 p-4 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
       className
