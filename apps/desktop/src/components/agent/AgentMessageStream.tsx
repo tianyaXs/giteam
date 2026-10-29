@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide } from "lucide-react";
+import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -51,6 +51,16 @@ import { ShimmerText } from "../transitions/ShimmerText";
 import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
 import { MessageAction, MessageActions } from "../ai-elements/message";
 import { Bubble, BubbleContent } from "../ai-elements/bubble";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "../ui/trace";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -245,10 +255,10 @@ function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   const hasTodos = (todoItems || []).length > 0;
   const label = hasTodos ? "执行中" : "思考中";
   const doneLabel = hasTodos ? "已执行" : "已思考";
-  // 高度对齐首组首帧（h-10 = TimelineFoldGroup 折叠头行高；流式正文块经
-  // min-h-10 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
+  // 高度对齐首组首帧（h-6 = Trace 折叠头行高；流式正文块经
+  // min-h-6 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
   return (
-    <div className="flex h-10 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
+    <div className="flex h-6 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
       <MatrixLoader variant="twinkle" className="shrink-0" />
       <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
       {activeTodo ? (
@@ -785,52 +795,58 @@ function ToolBatchGroup({
     return short;
   })();
 
+  // Chain of Thought 官方形状:摘要行(running=spinner+shimmer,done=绿勾,
+  // 失败=红叹号)+ 官方左缩进步骤区;开放状态仍由 timelineOpenState 托管
   return (
-    <TimelineFoldGroup
-      open={resolvedOpen}
-      onOpenChange={onOpenChange}
-      label={
-        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-          <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
-          {!memory || memoryWrote ? (
-            <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
-          ) : null}
-          {taskDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
-          ) : null}
-          {!taskDetail && memoryDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {memoryDetail}</span>
-          ) : null}
-          {!taskDetail && !memoryDetail && recallDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {recallDetail}</span>
-          ) : null}
-        </span>
-      }
-    >
-      {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
-      <div className={cn("pb-1.5 pl-3", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
-        <div className="flex flex-col gap-0.5">
-          {visibleTaskParts.map((part, partIndex) => {
-            const timelineKeyItem = `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`;
-            if (memory || String((part as { type?: string }).type || "") === "runtime.memory") {
-              return <MemoryExtractionPart key={timelineKeyItem} part={part} listItem />;
-            }
-            return renderTimelineToolPart({
-              timelineKey: timelineKeyItem,
-              part,
-              listItem: true,
-              siblingParts: group.parts,
-              settled: forceInactive,
-              shellToolPartsExpanded,
-              editToolPartsExpanded,
-              onOpenTaskSession,
-              onOpenToolFile,
-              onOpenBrowserUrl
-            });
-          })}
-        </div>
-      </div>
-    </TimelineFoldGroup>
+    <Trace>
+      <TraceCollapsible open={resolvedOpen} onOpenChange={onOpenChange}>
+        <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+          <TraceLine status={memoryFailed && !memoryWrote ? "error" : running ? "running" : undefined}>
+            <TraceIcon>
+              {memoryFailed && !memoryWrote ? (
+                <CircleAlertIcon />
+              ) : running ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <CircleCheckIcon />
+              )}
+            </TraceIcon>
+            <TraceTitle className="text-sm">
+              {running ? activeLabel : doneLabel}
+              {!memory || memoryWrote ? ` ${countLabel}` : ""}
+            </TraceTitle>
+            {taskDetail || memoryDetail || recallDetail ? (
+              <TraceDescription className="max-w-[240px] shrink truncate">
+                {taskDetail || memoryDetail || recallDetail}
+              </TraceDescription>
+            ) : null}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
+          <div className={cn("flex flex-col gap-0.5 pb-1.5", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
+            {visibleTaskParts.map((part, partIndex) => {
+              const timelineKeyItem = `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`;
+              if (memory || String((part as { type?: string }).type || "") === "runtime.memory") {
+                return <MemoryExtractionPart key={timelineKeyItem} part={part} listItem />;
+              }
+              return renderTimelineToolPart({
+                timelineKey: timelineKeyItem,
+                part,
+                listItem: true,
+                siblingParts: group.parts,
+                settled: forceInactive,
+                shellToolPartsExpanded,
+                editToolPartsExpanded,
+                onOpenTaskSession,
+                onOpenToolFile,
+                onOpenBrowserUrl
+              });
+            })}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }
 
@@ -870,36 +886,47 @@ function ContextGroup({
   if (progress.detail) lastDetailRef.current = progress.detail;
   const detail = active ? progress.detail || lastDetailRef.current : "";
 
+  // Chain of Thought 形状(同 ToolBatchGroup):探索中 spinner+shimmer,
+  // 已探索绿勾;detail 经 lastDetailRef 在工具切换空窗间保持连续。
   return (
-    <TimelineFoldGroup
-      open={open}
-      onOpenChange={onOpenChange}
-      label={
-        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-          <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
-          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
-            {summary || "已收集上下文"}
-          </span>
-          {detail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {detail}</span>
-          ) : null}
-        </span>
-      }
-    >
-      <div className="flex flex-col gap-0.5 pb-1.5 pl-3">
-        {group.parts.map((part, partIndex) => (
-          renderTimelineToolPart({
-            timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
-            part,
-            listItem: true,
-            shellToolPartsExpanded,
-            editToolPartsExpanded,
-            onOpenTaskSession,
-            onOpenToolFile
-          })
-        ))}
-      </div>
-    </TimelineFoldGroup>
+    <Trace>
+      <TraceCollapsible open={open} onOpenChange={onOpenChange}>
+        <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+          <TraceLine status={active ? "running" : undefined}>
+            <TraceIcon>
+              {active ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <CircleCheckIcon />
+              )}
+            </TraceIcon>
+            <TraceTitle className="text-sm">
+              {active ? "探索中" : "已探索"} {summary || "已收集上下文"}
+            </TraceTitle>
+            {detail ? (
+              <TraceDescription className="max-w-[240px] shrink truncate">
+                {detail}
+              </TraceDescription>
+            ) : null}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <div className="flex flex-col gap-0.5 pb-1.5">
+            {group.parts.map((part, partIndex) => (
+              renderTimelineToolPart({
+                timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
+                part,
+                listItem: true,
+                shellToolPartsExpanded,
+                editToolPartsExpanded,
+                onOpenTaskSession,
+                onOpenToolFile
+              })
+            ))}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }
 
@@ -966,7 +993,7 @@ function ReasoningGroup({
       defaultOpen={false}
       className="mb-0"
     >
-      <ReasoningTrigger className="h-10 appearance-none justify-start gap-2 border-0 bg-transparent px-0 text-left hover:bg-transparent">
+      <ReasoningTrigger className="h-6 appearance-none justify-start gap-2 border-0 bg-transparent px-0 text-left hover:bg-transparent">
         <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="text-sm" />
         <ReasoningDuration />
@@ -1101,9 +1128,9 @@ function AssistantTextBlock({
       renderMarkdown={renderMarkdown}
       className={cn(
         "min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]",
-        // 流式期间预留 h-10：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
-        // 不会出现「标签消失 → 列表上移 8px」。结束后释放（仅单行回复收 12px，一次性）。
-        streaming && "min-h-10",
+        // 流式期间预留 h-6：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
+        // 不会出现「标签消失 → 列表上移」。结束后释放（仅单行回复收一次）。
+        streaming && "min-h-6",
         streaming && "agent-stream-fade"
       )}
     />
