@@ -13,6 +13,7 @@ import { toolDisplayName } from "../../lib/agent/toolPresentation";
 import { cn } from "../../lib/utils";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
+import { Task, TaskTrigger } from "../ai-elements/task";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
@@ -280,7 +281,7 @@ export function SubagentRunCard({
   const taskLabel = isError || interrupted ? "任务失败" : "任务";
 
   return (
-    <Collapsible
+    <Task
       open={open}
       onOpenChange={setOpen}
       className={cn(
@@ -288,14 +289,17 @@ export function SubagentRunCard({
         listItem ? "py-0.5" : "py-1"
       )}
     >
-      <CollapsibleTrigger asChild>
+      <TaskTrigger
+        title={description}
+        asChild
+        className={cn(
+          "h-auto min-h-[28px] w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
+          listItem ? "py-1" : "py-1.5"
+        )}
+      >
         <Button
           type="button"
           variant="ghost"
-          className={cn(
-            "h-auto min-h-[28px] w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
-            listItem ? "py-1" : "py-1.5"
-          )}
         >
           <span className="flex min-w-0 items-center gap-2 overflow-hidden">
             <span
@@ -337,7 +341,7 @@ export function SubagentRunCard({
             </span>
           </span>
         </Button>
-      </CollapsibleTrigger>
+      </TaskTrigger>
 
       <AnimatedCollapsibleContent open={open}>
         <CollapsibleContent forceMount>
@@ -422,6 +426,6 @@ export function SubagentRunCard({
           </div>
         </CollapsibleContent>
       </AnimatedCollapsibleContent>
-    </Collapsible>
+    </Task>
   );
 }
