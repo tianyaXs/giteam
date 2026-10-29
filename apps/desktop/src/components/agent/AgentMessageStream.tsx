@@ -50,6 +50,7 @@ import { MatrixLoader } from "../transitions/MatrixLoader";
 import { ShimmerText } from "../transitions/ShimmerText";
 import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
 import { MessageAction, MessageActions } from "../ai-elements/message";
+import { Bubble, BubbleContent } from "../ai-elements/bubble";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -594,12 +595,20 @@ function MessageShell({
           "relative min-w-0 max-w-full",
           isAssistant
             ? "w-full"
-            : userHasAttachments
-              ? "max-w-[min(74%,620px)]"
-              : "max-w-[min(74%,620px)] rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground"
+            : "max-w-[min(74%,620px)]"
         )}
       >
-        {children}
+        {/* 用户文本消息用官方 Bubble(muted 气泡,rounded-3xl);带附件时保持
+            旧容器(宫格附件 + 气泡混排会双圆角)。 */}
+        {!isAssistant && !userHasAttachments ? (
+          <Bubble align="end" variant="muted" className="max-w-full">
+            <BubbleContent className="text-[15px] font-medium leading-6 text-foreground">
+              {children}
+            </BubbleContent>
+          </Bubble>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );
