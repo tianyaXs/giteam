@@ -1,10 +1,21 @@
 "use client";
 
+// Migrated from AI SDK Elements to the shadcn/ui Message + Bubble + Tooltip
+// composition (https://ui.shadcn.com/docs/ai-elements/aria/message).
+// This file also exports Message/MessageContent, so the shadcn primitives
+// are imported under other names (MessageRoot / MessageBody).
+
 import { Button } from "@/components/ui/button";
 import {
   ButtonGroup,
   ButtonGroupText,
 } from "@/components/ui/button-group";
+import { Bubble, BubbleContent } from "./bubble";
+import {
+  Message as MessageRoot,
+  MessageContent as MessageBody,
+  MessageFooter,
+} from "@/components/ui/message";
 import {
   Tooltip,
   TooltipContent,
@@ -18,31 +29,20 @@ import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
-import {
-  createContext,
-  memo,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import * as React from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, type ComponentProps, type HTMLAttributes, type ReactElement } from "react";
 import { Streamdown } from "streamdown";
+
+const MessageFromContext = React.createContext<UIMessage["role"] | null>(null);
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
 };
 
 export const Message = ({ className, from, ...props }: MessageProps) => (
-  <div
-    className={cn(
-      "group flex w-full max-w-[95%] flex-col gap-2",
-      from === "user" ? "is-user ml-auto justify-end" : "is-assistant",
-      className
-    )}
-    {...props}
-  />
+  <MessageFromContext.Provider value={from}>
+    <MessageRoot align={from === "user" ? "end" : "start"} className={className} {...props} />
+  </MessageFromContext.Provider>
 );
 
 export type MessageContentProps = HTMLAttributes<HTMLDivElement>;
@@ -51,30 +51,31 @@ export const MessageContent = ({
   children,
   className,
   ...props
-}: MessageContentProps) => (
-  <div
-    className={cn(
-      "is-user:dark flex w-fit min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm",
-      "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
-      "group-[.is-assistant]:text-foreground",
-      className
-    )}
-    {...props}
-  >
-    {children}
-  </div>
-);
+}: MessageContentProps) => {
+  const from = React.useContext(MessageFromContext);
+  return (
+    <MessageBody className={className} {...props}>
+      {from === "user" ? (
+        <Bubble align="end" variant="muted" className="max-w-full">
+          <BubbleContent>{children}</BubbleContent>
+        </Bubble>
+      ) : (
+        children
+      )}
+    </MessageBody>
+  );
+};
 
-export type MessageActionsProps = ComponentProps<"div">;
+export type MessageActionsProps = ComponentProps<typeof MessageFooter>;
 
 export const MessageActions = ({
   className,
   children,
   ...props
 }: MessageActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} {...props}>
+  <MessageFooter className={cn("gap-1 px-0", className)} {...props}>
     {children}
-  </div>
+  </MessageFooter>
 );
 
 export type MessageActionProps = ComponentProps<typeof Button> & {
@@ -97,20 +98,18 @@ export const MessageAction = ({
     </Button>
   );
 
-  if (tooltip) {
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>{button}</TooltipTrigger>
-          <TooltipContent>
-            <p>{tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  }
+  const withTooltip = tooltip ? (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent>
+        <p>{tooltip}</p>
+      </TooltipContent>
+    </Tooltip>
+  ) : (
+    button
+  );
 
-  return button;
+  return <TooltipProvider>{withTooltip}</TooltipProvider>;
 };
 
 interface MessageBranchContextType {
