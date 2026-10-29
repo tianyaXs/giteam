@@ -1,5 +1,6 @@
 import {
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEventHandler,
@@ -24,6 +25,26 @@ import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
 import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { QueueItem, QueueItemContent } from "../ai-elements/queue";
+import {
+  ModelSelector,
+  ModelSelectorContent,
+  ModelSelectorEmpty,
+  ModelSelectorGroup,
+  ModelSelectorInput,
+  ModelSelectorItem,
+  ModelSelectorList,
+  ModelSelectorLogo,
+  ModelSelectorName,
+  ModelSelectorTrigger
+} from "../ai-elements/model-selector";
+import {
+  PromptInputActionMenu,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuItem,
+  PromptInputActionMenuTrigger,
+  PromptInputSubmit,
+  PromptInputTextarea
+} from "../ai-elements/prompt-input";
 import { SendIcon } from "../common/AppChromeIcons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -32,21 +53,16 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 import { cn } from "../../lib/utils";
 import {
   CheckIcon,
   CloseIcon,
   ImageIcon
 } from "../icons";
-import { Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
+import { Sparkles, Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
 
 type SlashCommandOption = {
   id: string;
@@ -164,6 +180,14 @@ type ComposerAttachmentButtonProps = {
   onAttachmentInputChange: ChangeEventHandler<HTMLInputElement>;
 };
 
+/** models.dev 有 logo 的提供商白名单;之外的提供商用兜底图标。 */
+const LOGO_PROVIDERS = new Set([
+  "openai", "anthropic", "deepseek", "openrouter", "google", "xai", "groq",
+  "mistral", "azure", "amazon-bedrock", "togetherai", "fireworks-ai",
+  "perplexity", "zai", "zhipuai", "alibaba", "moonshotai", "lmstudio",
+  "huggingface", "cerebras", "google-vertex", "ollama"
+]);
+
 type ComposerConfigButtonProps = {
   modelPickerRef: RefObject<HTMLDivElement | null>;
   showModelPicker: boolean;
@@ -229,7 +253,7 @@ function ComposerEditor(props: ComposerEditorProps) {
       ) : null}
 
       <div className="flex min-w-0 items-end">
-        <Textarea
+        <PromptInputTextarea
           ref={props.promptInputRef as RefObject<HTMLTextAreaElement>}
           className={cn(
             "min-h-8 max-h-40 resize-none rounded-none border-0 bg-transparent px-0 py-1 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
@@ -375,154 +399,126 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
   const updateOpen = (open: boolean) => {
     if (open !== props.showModelPicker) props.onToggleModelPicker();
   };
-  const rowClass =
-    "h-8 justify-between gap-2 rounded-xl px-2.5 text-[13px] font-medium leading-5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground data-[state=open]:bg-muted data-[state=open]:text-foreground";
-  const valueClass = "min-w-0 flex-1 truncate text-right text-muted-foreground";
+  const search = props.modelPickerSearch.trim().toLowerCase();
+  // 按 provider 分组 + 搜索过滤(models.dev 有 logo 的提供商才渲染图标,否则用兜底图标)。
+  const groups = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const modelRef of props.configuredModelCandidates) {
+      const display = props.getModelDisplay(modelRef);
+      if (
+        search
+        && !(modelRef.toLowerCase().includes(search)
+          || (display.label || "").toLowerCase().includes(search)
+          || (display.provider || "").toLowerCase().includes(search))
+      ) {
+        continue;
+      }
+      const provider = display.provider || "其他";
+      if (!map.has(provider)) map.set(provider, []);
+      map.get(provider)!.push(modelRef);
+    }
+    return [...map.entries()];
+  }, [props.configuredModelCandidates, props.getModelDisplay, search]);
+
+  const pillButton = (
+    <Button
+      className={cn(
+        "h-7 max-w-[220px] rounded-full px-2.5 py-0 text-[13px] font-medium leading-4 text-foreground",
+        "hover:bg-muted/70 hover:text-foreground",
+        "focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
+      )}
+      aria-label={props.hasConfiguredModel ? "选择模型" : props.labels.configureModels}
+      title={props.hasConfiguredModel ? "选择模型" : props.labels.configureModels}
+      variant="ghost"
+    >
+      <span className="min-w-0 truncate">{props.configSummaryLabel}</span>
+    </Button>
+  );
+
+  if (!props.hasConfiguredModel) {
+    return (
+      <div ref={props.modelPickerRef as RefObject<HTMLDivElement>}>
+        <span onClick={props.onOpenModelSettings} role="button" tabIndex={0}>
+          {pillButton}
+        </span>
+      </div>
+    );
+  }
 
   return (
-    <div ref={props.modelPickerRef as RefObject<HTMLDivElement>}>
-      <DropdownMenu open={props.showModelPicker} onOpenChange={updateOpen}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            className={cn(
-              "h-7 max-w-[220px] rounded-full px-2.5 py-0 text-[13px] font-medium leading-4 text-foreground",
-              "hover:bg-muted/70 hover:text-foreground",
-              "focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
-            )}
-            aria-label={props.hasConfiguredModel ? "配置模型与推理强度" : props.labels.configureModels}
-            title={props.hasConfiguredModel ? "配置模型与推理强度" : props.labels.configureModels}
-            variant="ghost"
-          >
-            <span className="min-w-0 truncate">{props.configSummaryLabel}</span>
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          side="top"
-          sideOffset={16}
-          alignOffset={0}
-          collisionPadding={12}
-          className="w-[240px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
+    <div ref={props.modelPickerRef as RefObject<HTMLDivElement>} className="flex items-center gap-0.5">
+      <ModelSelector open={props.showModelPicker} onOpenChange={updateOpen}>
+        <ModelSelectorTrigger asChild>
+          {pillButton}
+        </ModelSelectorTrigger>
+        <ModelSelectorContent title={props.labels.model}>
+          <ModelSelectorInput
+            value={props.modelPickerSearch}
+            onValueChange={props.onModelPickerSearchChange}
+            placeholder="搜索模型..."
+          />
+          <ModelSelectorList>
+            {groups.map(([provider, refs]) => (
+              <ModelSelectorGroup key={provider} heading={provider}>
+                {refs.map((modelRef) => {
+                  const display = props.getModelDisplay(modelRef);
+                  const selected = modelRef === props.activeModel;
+                  const providerKey = (display.provider || "").toLowerCase();
+                  return (
+                    <ModelSelectorItem
+                      key={modelRef}
+                      value={modelRef}
+                      onSelect={() => props.onApplyModel(modelRef)}
+                      title={modelRef}
+                    >
+                      {LOGO_PROVIDERS.has(providerKey) ? (
+                        <ModelSelectorLogo provider={providerKey} />
+                      ) : (
+                        <Sparkles className="size-3 shrink-0 text-muted-foreground" />
+                      )}
+                      <ModelSelectorName>{display.label || modelRef}</ModelSelectorName>
+                      {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
+                    </ModelSelectorItem>
+                  );
+                })}
+              </ModelSelectorGroup>
+            ))}
+            <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
+          </ModelSelectorList>
+        </ModelSelectorContent>
+      </ModelSelector>
+
+      <PromptInputActionMenu>
+        <PromptInputActionMenuTrigger
+          className="size-7 rounded-full text-foreground hover:bg-muted/70 hover:text-foreground"
+          aria-label="推理强度与自动权限"
+          title="推理强度与自动权限"
         >
-          {props.hasConfiguredModel ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger className={rowClass}>
-                <span className="shrink-0">{props.labels.model}</span>
-                <span className={valueClass}>{props.modelValueLabel || props.labels.configureModelsAction}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                sideOffset={6}
-                collisionPadding={12}
-                className="w-[220px] overflow-hidden rounded-[18px] border-border/55 bg-background p-1 shadow-md"
+          <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
+        </PromptInputActionMenuTrigger>
+        <PromptInputActionMenuContent align="end" side="top" sideOffset={12} className="min-w-[180px]">
+          {props.thinkingLevelOptions.map((level) => {
+            const meta = thinkingLevelMeta(level);
+            const active = props.activeThinkingLevel === level;
+            return (
+              <PromptInputActionMenuItem
+                key={level}
+                onSelect={() => props.onApplyThinkingLevel(level)}
+                className="justify-between gap-2"
               >
-                <div className="flex h-6 items-center justify-between gap-2 pl-2.5 pr-0.5">
-                  <span className="shrink-0 text-[12px] font-medium leading-4 text-muted-foreground">
-                    {props.labels.model}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-6 shrink-0 rounded-md text-muted-foreground/80 hover:bg-transparent hover:text-foreground"
-                    aria-label={props.labels.configureModels}
-                    title={props.labels.configureModels}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      props.onOpenModelSettings();
-                    }}
-                  >
-                    <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
-                  </Button>
-                </div>
-                <DropdownMenuSeparator className="my-0.5" />
-                <div
-                  className="max-h-[min(280px,45vh)] overflow-y-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                  onWheel={(event) => event.stopPropagation()}
-                >
-                  <DropdownMenuGroup>
-                    {props.configuredModelCandidates.map((modelRef) => {
-                      const display = props.getModelDisplay(modelRef);
-                      const selected = modelRef === props.activeModel;
-                      return (
-                        <DropdownMenuItem
-                          key={`saved-model-${modelRef}`}
-                          className={cn(
-                            "h-auto min-h-8 justify-between gap-2 rounded-xl px-2.5 py-1.5 text-left data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
-                            selected && "bg-muted text-foreground"
-                          )}
-                          onSelect={() => props.onApplyModel(modelRef)}
-                          title={modelRef}
-                        >
-                          <span className="grid min-w-0 gap-0.5">
-                            <span className="min-w-0 truncate text-[13px] font-medium leading-5">
-                              {display.label || modelRef}
-                            </span>
-                            {display.provider ? (
-                              <span className="min-w-0 truncate text-[12px] font-medium leading-4 text-muted-foreground">
-                                {display.provider}
-                              </span>
-                            ) : null}
-                          </span>
-                          {selected ? <CheckIcon width={14} height={14} /> : null}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuGroup>
-                </div>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : (
-            <DropdownMenuItem
-              className={cn(rowClass, "bg-muted/40")}
-              onSelect={props.onOpenModelSettings}
-            >
-              <span>{props.labels.model}</span>
-              <span className="text-[13px] font-medium text-foreground">{props.labels.configureModelsAction}</span>
-            </DropdownMenuItem>
-          )}
-
-          {props.hasConfiguredModel ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger className={rowClass}>
-                <span className="shrink-0">推理强度</span>
-                <span className={valueClass}>{props.thinkingValueLabel}</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                sideOffset={6}
-                className="w-[120px] rounded-[18px] border-border/55 bg-background p-1 shadow-md"
-              >
-                <DropdownMenuGroup>
-                  {props.thinkingLevelOptions.map((level) => {
-                    const meta = thinkingLevelMeta(level);
-                    return (
-                      <DropdownMenuItem
-                        key={level}
-                        className={cn(
-                          "h-8 justify-between gap-2 rounded-xl px-2.5 data-[highlighted]:bg-muted data-[highlighted]:text-foreground",
-                          props.activeThinkingLevel === level && "bg-muted text-foreground"
-                        )}
-                        onSelect={() => props.onApplyThinkingLevel(level)}
-                      >
-                        <span className="text-[13px] font-medium leading-5">{meta.label}</span>
-                        {props.activeThinkingLevel === level ? <CheckIcon width={14} height={14} /> : null}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : null}
-
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className={rowClass}
+                <span>推理强度 · {meta.label}</span>
+                {active ? <CheckIcon width={14} height={14} /> : null}
+              </PromptInputActionMenuItem>
+            );
+          })}
+          <PromptInputActionMenuItem
             onSelect={(event) => {
               event.preventDefault();
               props.onToggleAutoAcceptPermissions();
             }}
+            className="justify-between gap-2"
           >
-            <span>Auto</span>
+            <span>自动接受权限</span>
             <Switch
               size="sm"
               checked={props.autoAcceptPermissions}
@@ -530,9 +526,9 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
               tabIndex={-1}
               className="pointer-events-none"
             />
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </PromptInputActionMenuItem>
+        </PromptInputActionMenuContent>
+      </PromptInputActionMenu>
     </div>
   );
 }
@@ -560,10 +556,10 @@ function ComposerSubmitButton({
       ? "停止生成"
       : idleTitle;
   return (
-    <Button
+    <PromptInputSubmit
       className={cn(
         "size-8 rounded-full shadow-sm transition-[transform,background-color,color,box-shadow] duration-150",
-        // 覆盖 Button 默认 [&_svg]:size-4，让箭头在圆钮里更饱满。
+        // 覆盖默认 [&_svg]:size-4，让箭头在圆钮里更饱满。
         "[&_svg]:size-5",
         "hover:-translate-y-0.5 active:translate-y-0",
         disabled
@@ -575,10 +571,10 @@ function ComposerSubmitButton({
       aria-label={primaryLabel}
       title={primaryTitle}
       variant={disabled ? "secondary" : "contrast"}
-      size="icon"
+      status={showStop ? "streaming" : undefined}
     >
       <SendIcon busy={showStop} />
-    </Button>
+    </PromptInputSubmit>
   );
 }
 
