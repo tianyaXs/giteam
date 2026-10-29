@@ -15,6 +15,7 @@ import {
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
+import { QueueItem } from "../ai-elements/queue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1030,7 +1031,7 @@ export function AutomationView(props: Props) {
                   <SectionLabel>运行历史</SectionLabel>
                   <ul className="space-y-1.5">
                     {runs.map((run) => (
-                      <li key={run.id} className="rounded-lg border border-border/60 px-3 py-2 text-sm">
+                      <QueueItem key={run.id} className="border border-border/60 px-3 py-2 text-sm hover:bg-transparent">
                         <div className="flex items-center justify-between gap-2">
                           <RunStatusBadge status={run.status} />
                           <span className="text-xs text-muted-foreground">
@@ -1043,7 +1044,7 @@ export function AutomationView(props: Props) {
                         {run.errorMessage ? (
                           <div className="mt-1 line-clamp-2 text-xs text-destructive">{run.errorMessage}</div>
                         ) : null}
-                      </li>
+                      </QueueItem>
                     ))}
                   </ul>
                 </div>
