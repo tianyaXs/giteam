@@ -21,6 +21,7 @@ import {
   TraceLine,
   TraceTitle,
 } from "../ui/trace";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
@@ -328,6 +329,23 @@ export function SubagentRunCard({
           <div className="flex min-w-0 max-w-md gap-2 pb-1">
             <span className="w-[28px] shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+              {/* 官方 Details:任务描述置顶,类型用 Badge。 */}
+              {prompt ? (
+                <div className="flex flex-wrap items-start gap-1.5">
+                  <Badge
+                    variant="secondary"
+                    className="mt-0.5 shrink-0 rounded-full px-2 py-0 text-[10px] font-medium normal-case tracking-normal"
+                  >
+                    {subagentType}
+                  </Badge>
+                  <span
+                    className="min-w-0 flex-1 overflow-hidden whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground/90 [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [display:-webkit-box]"
+                    title={prompt}
+                  >
+                    {prompt}
+                  </span>
+                </div>
+              ) : null}
               {summary && summary !== description ? (
                 <div className="text-[12.5px] leading-5 text-muted-foreground">
                   <MarkdownLite source={summary} />
@@ -378,12 +396,6 @@ export function SubagentRunCard({
                   </div>
                 ) : null}
               </div>
-
-              {prompt && !running ? (
-                <pre className="max-w-full whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground/80">
-                  {prompt}
-                </pre>
-              ) : null}
 
               {childSessionId && (completed || isError || interrupted) ? (
                 <div className="flex min-w-0 justify-start pt-0.5">
