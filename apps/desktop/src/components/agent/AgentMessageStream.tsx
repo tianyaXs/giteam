@@ -51,6 +51,7 @@ import { ShimmerText } from "../transitions/ShimmerText";
 import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
 import { MessageAction, MessageActions } from "../ai-elements/message";
 import { Bubble, BubbleContent } from "../ai-elements/bubble";
+import { buildFileTree, FileTree, FileTreeFile, FileTreeFolder } from "../ai-elements/file-tree";
 import {
   Trace,
   TraceCollapsible,
@@ -1539,6 +1540,21 @@ function TurnModifiedFilesRow({
         ) : null}
       </button>
       <Separator />
+      {/* 官方 File Tree 形态:文件多时按文件夹折叠导航(语义"files the agent
+          changed, as a folder tree");少量文件保留悬停预览的平铺行。 */}
+      {files.length > 4 ? (
+        <FileTree
+          className="p-1.5"
+          onSelect={(path) => {
+            const file = files.find((item) => item.path === path);
+            if (!file) return;
+            if (file.edits?.length) onOpenTurnDiff?.(files, turnIndex, file.path);
+            else onOpenToolFile({ filePath: file.path });
+          }}
+        >
+          {renderFileTreeNodes(buildFileTree(files.map((file) => file.path)), files)}
+        </FileTree>
+      ) : (
       <div>
         {files.map((file) => (
           <HoverCard key={file.path} openDelay={250} closeDelay={180}>
@@ -1567,8 +1583,39 @@ function TurnModifiedFilesRow({
           </HoverCard>
         ))}
       </div>
+      )}
     </div>
   );
+}
+
+/** 递归渲染官方 File Tree 节点;文件行带 +/- 统计(FileTreeActions 在按钮外侧)。 */
+function renderFileTreeNodes(
+  nodes: ReturnType<typeof buildFileTree>,
+  files: TurnModifiedFile[]
+): ReactNode {
+  return nodes.map((node) => {
+    if (node.type === "folder") {
+      return (
+        <FileTreeFolder key={node.path} path={node.path} name={node.name}>
+          {renderFileTreeNodes(node.children, files)}
+        </FileTreeFolder>
+      );
+    }
+    const file = files.find((item) => item.path === node.path);
+    return (
+      <FileTreeFile
+        key={node.path}
+        path={node.path}
+        actions={
+          file?.added != null ? (
+            <span className="font-mono text-[11px] tabular-nums">
+              <StatsBadgeText added={file.added} removed={file.removed} />
+            </span>
+          ) : null
+        }
+      />
+    );
+  });
 }
 
 function AssistantMessage({
