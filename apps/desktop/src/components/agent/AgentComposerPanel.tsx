@@ -22,6 +22,7 @@ import type { GraphContextRef } from "../../lib/graphContextRefs";
 import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
+import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { SendIcon } from "../common/AppChromeIcons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -804,8 +805,14 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             {visiblePermissions.map((request) => {
               const view = describePermissionInteraction(request);
               const ToolIcon = permissionToolIcon(view.tool);
+              // 同 AgentModulePanel:仅 pending 阶段渲染,适配 approval-requested 状态。
               return (
-                <div key={request.id} className="grid gap-3 rounded-xl border border-border/60 bg-card/80 p-3 shadow-sm">
+                <Confirmation
+                  key={request.id}
+                  approval={{ id: request.id }}
+                  state="approval-requested"
+                  className="rounded-xl border-border/60 bg-card/80 p-3 shadow-sm"
+                >
                   <div className="flex min-w-0 items-center gap-2.5">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
                       <ToolIcon className="h-4 w-4" />
@@ -818,12 +825,12 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                   {view.target ? (
                     <code className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/55 px-3 py-2 font-mono text-xs leading-relaxed">{view.target}</code>
                   ) : null}
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <Button onClick={() => onReplyPermission(request.id, "reject")} variant="ghost" size="sm">拒绝</Button>
-                    <Button onClick={() => onReplyPermission(request.id, "once")} variant="outline" size="sm">本次允许</Button>
-                    <Button onClick={() => onReplyPermission(request.id, "always")} variant="contrast" size="sm">总是允许</Button>
-                  </div>
-                </div>
+                  <ConfirmationActions>
+                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "reject")} variant="ghost" size="sm">拒绝</ConfirmationAction>
+                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "once")} variant="outline" size="sm">本次允许</ConfirmationAction>
+                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "always")} variant="contrast" size="sm">总是允许</ConfirmationAction>
+                  </ConfirmationActions>
+                </Confirmation>
               );
             })}
             {hiddenPermissionCount > 0 ? (
