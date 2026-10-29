@@ -1031,7 +1031,7 @@ export function AutomationView(props: Props) {
                   <SectionLabel>运行历史</SectionLabel>
                   <ul className="space-y-1.5">
                     {runs.map((run) => (
-                      <QueueItem key={run.id} className="border border-border/60 px-3 py-2 text-sm hover:bg-transparent">
+                      <QueueItem key={run.id} className="border border-border/60 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <RunStatusBadge status={run.status} />
                           <span className="text-xs text-muted-foreground">

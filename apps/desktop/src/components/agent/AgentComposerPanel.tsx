@@ -877,7 +877,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             {queuedFollowUps.map((item) => (
               <QueueItem
                 key={item.id}
-                className="flex-row items-start gap-2 bg-muted/45 px-2.5 py-1.5 hover:bg-muted/45"
+                className="flex-row items-start gap-2 bg-muted/45 px-2.5 py-1.5 hover:bg-muted/60"
               >
                 <span className="shrink-0 text-muted-foreground">↳</span>
                 <QueueItemContent className="line-clamp-none whitespace-pre-wrap break-words text-sm text-foreground/90">
@@ -922,22 +922,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </div>
             </div>
 
-            {onFillPrompt ? (
-              <Suggestions className="justify-center px-2">
-                {COMPOSER_SUGGESTIONS.map((suggestion) => (
-                  <Suggestion
-                    key={suggestion}
-                    suggestion={suggestion}
-                    onClick={onFillPrompt}
-                    variant="outline"
-                    className="border-border/70 bg-background/70 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-                  >
-                    {suggestion}
-                  </Suggestion>
-                ))}
-              </Suggestions>
-            ) : null}
-
             <div className={cn("relative flex w-full min-w-0 flex-col gap-3 rounded-3xl p-5", composerSurfaceClass)}>
               {previewStrip}
               <div className="flex min-h-[102px] w-full min-w-0 flex-1 flex-col gap-3">
@@ -964,6 +948,23 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                 </div>
               </div>
             </div>
+
+            {/* 建议 chips 紧贴输入卡下方(官方 ChatGPT 式布局),gap-3 与卡内节奏一致。 */}
+            {onFillPrompt ? (
+              <Suggestions className="-mt-5 justify-center px-2">
+                {COMPOSER_SUGGESTIONS.map((suggestion) => (
+                  <Suggestion
+                    key={suggestion}
+                    suggestion={suggestion}
+                    onClick={onFillPrompt}
+                    variant="outline"
+                    className="rounded-full border-border/70 bg-background/70 px-4 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  >
+                    {suggestion}
+                  </Suggestion>
+                ))}
+              </Suggestions>
+            ) : null}
           </div>
         ) : (
           // 旧会话：贴图只叠在输入行上方，底栏「继续跟进」行布局不变，整卡自然向上增高。

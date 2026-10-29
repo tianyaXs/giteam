@@ -18,6 +18,7 @@ import {
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { CollapsibleTrigger } from "../ui/collapsible";
+import { cloneElement } from "react";
 import { Tool, getStatusBadge } from "../ai-elements/tool";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Separator } from "../ui/separator";
@@ -572,8 +573,13 @@ export function AgentExecutionPartView({
           打开
         </span>
       ) : null}
-      {/* 官方 ToolHeader 风格的状态徽章(独立卡时展示;时间线条目保持紧凑)。 */}
-      {!listItem ? getStatusBadge(isError ? "output-error" : running ? "input-available" : "output-available") : null}
+      {/* 官方 ToolHeader 风格的状态徽章(独立卡时展示;时间线条目保持紧凑)。
+          徽章默认 text-xs,在紧凑标题里缩到 text-[10px] 与行内其余元素协调。 */}
+      {!listItem
+        ? cloneElement(getStatusBadge(isError ? "output-error" : running ? "input-available" : "output-available"), {
+            className: "shrink-0 gap-1 rounded-full px-2 py-0 text-[10px] [&_svg]:size-3"
+          })
+        : null}
     </div>
   );
 
