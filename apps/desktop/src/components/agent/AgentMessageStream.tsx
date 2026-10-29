@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { FilePen, BrainIcon, ChevronDownIcon } from "lucide-react";
+import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -49,6 +49,7 @@ import { SubagentRunCard } from "./SubagentRunCard";
 import { MatrixLoader } from "../transitions/MatrixLoader";
 import { ShimmerText } from "../transitions/ShimmerText";
 import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
+import { MessageAction, MessageActions } from "../ai-elements/message";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -893,6 +894,26 @@ function ContextGroup({
   );
 }
 
+/** 复制整条助手回复(MessageAction 封装:1.5s 勾选反馈)。 */
+function CopyReplyAction({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <MessageAction
+      aria-label="复制回复"
+      label="复制回复"
+      tooltip="复制回复"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? <CheckIconLucide className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+    </MessageAction>
+  );
+}
+
 /** 思考耗时（vendored Reasoning 根组件在流式结束后计算秒数）。 */
 function ReasoningDuration() {
   const { isStreaming, duration } = useReasoning();
@@ -1617,6 +1638,18 @@ function AssistantMessage({
       ) : null}
       {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
       {errorMessage && !renderPartsHasFailure(row.renderParts) ? <AgentErrorMessage message={errorMessage} /> : null}
+      {/* 回复结束后的操作行(ai-elements MessageActions):复制全文。 */}
+      {!isStreaming && !errorMessage && (hasTimeline || Boolean(fallbackReply?.trim())) ? (
+        <MessageActions className="justify-end text-muted-foreground">
+          <CopyReplyAction
+            text={
+              timelineHasTextPart
+                ? buildAgentReplyMarkdownFromParts(renderParts)
+                : (fallbackReply || "").trim() || buildAgentReplyMarkdownFromParts(renderParts)
+            }
+          />
+        </MessageActions>
+      ) : null}
     </div>
   );
 }
