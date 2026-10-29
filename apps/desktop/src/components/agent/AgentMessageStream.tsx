@@ -485,7 +485,7 @@ type AgentMessageStreamProps = {
   onStartReached: () => void;
   onAtBottomChange: (atBottom: boolean) => void;
   scrollerRef: (node: HTMLElement | Window | null) => void;
-  virtuosoRef: RefObject<VirtuosoHandle>;
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
   onRangeChanged: () => void;
   /** 外部请求滚动定位到的消息 id（搜索命中时由 App 写入，定位完成后清空）。 */
   pendingScrollMessageId?: string;
