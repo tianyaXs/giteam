@@ -1,7 +1,17 @@
 "use client";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
+// Migrated from the AI SDK Elements Confirmation (Alert base) to the
+// shadcn/ui Item + Button composition, per
+// https://ui.shadcn.com/docs/ai-elements/aria/confirmation
+// Every export keeps its name and props; only the rendering changed.
+
 import { Button } from "@/components/ui/button";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemTitle,
+} from "@/components/ui/item";
 import { cn } from "@/lib/utils";
 import type { ToolUIPart } from "ai";
 import type { ComponentProps, ReactNode } from "react";
@@ -27,8 +37,7 @@ type ToolUIPartApproval =
       id: string;
       approved: false;
       reason?: string;
-    }
-  | undefined;
+    };
 
 interface ConfirmationContextValue {
   approval: ToolUIPartApproval;
@@ -39,17 +48,15 @@ const ConfirmationContext = createContext<ConfirmationContextValue | null>(
   null
 );
 
-const useConfirmation = () => {
+function useConfirmation() {
   const context = useContext(ConfirmationContext);
-
   if (!context) {
-    throw new Error("Confirmation components must be used within Confirmation");
+    throw new Error("useConfirmation must be used within Confirmation");
   }
-
   return context;
-};
+}
 
-export type ConfirmationProps = ComponentProps<typeof Alert> & {
+export type ConfirmationProps = ComponentProps<typeof Item> & {
   approval?: ToolUIPartApproval;
   state: ToolUIPart["state"];
 };
@@ -60,26 +67,37 @@ export const Confirmation = ({
   state,
   ...props
 }: ConfirmationProps) => {
-  const contextValue = useMemo(() => ({ approval, state }), [approval, state]);
-
   if (!approval || state === "input-streaming" || state === "input-available") {
     return null;
   }
 
+  const confirmedApproval: ToolUIPartApproval = approval;
+  const contextValue = useMemo(
+    () => ({ approval: confirmedApproval, state }),
+    [confirmedApproval, state]
+  );
+
   return (
     <ConfirmationContext.Provider value={contextValue}>
-      <Alert className={cn("flex flex-col gap-2", className)} {...props} />
+      <Item
+        variant="outline"
+        size="sm"
+        className={cn("flex-col gap-2", className)}
+        {...props}
+      />
     </ConfirmationContext.Provider>
   );
 };
 
-export type ConfirmationTitleProps = ComponentProps<typeof AlertDescription>;
+export type ConfirmationTitleProps = ComponentProps<typeof ItemTitle>;
 
 export const ConfirmationTitle = ({
   className,
   ...props
 }: ConfirmationTitleProps) => (
-  <AlertDescription className={cn("inline", className)} {...props} />
+  <ItemContent className={cn("inline", className)}>
+    <ItemTitle {...props} />
+  </ItemContent>
 );
 
 export interface ConfirmationRequestProps {
@@ -141,7 +159,7 @@ export const ConfirmationRejected = ({
   return children;
 };
 
-export type ConfirmationActionsProps = ComponentProps<"div">;
+export type ConfirmationActionsProps = ComponentProps<typeof ItemActions>;
 
 export const ConfirmationActions = ({
   className,
@@ -154,16 +172,11 @@ export const ConfirmationActions = ({
     return null;
   }
 
-  return (
-    <div
-      className={cn("flex items-center justify-end gap-2 self-end", className)}
-      {...props}
-    />
-  );
+  return <ItemActions className={cn("self-end", className)} {...props} />;
 };
 
 export type ConfirmationActionProps = ComponentProps<typeof Button>;
 
 export const ConfirmationAction = (props: ConfirmationActionProps) => (
-  <Button className="h-8 px-3 text-sm" type="button" {...props} />
+  <Button size="sm" type="button" {...props} />
 );
