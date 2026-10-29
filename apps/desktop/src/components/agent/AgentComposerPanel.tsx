@@ -37,7 +37,7 @@ import {
   ModelSelectorName,
   ModelSelectorTrigger
 } from "../ai-elements/model-selector";
-import { Suggestion, Suggestions } from "../ai-elements/suggestion";
+import { Suggestion } from "../ai-elements/suggestion";
 import {
   PromptInputActionMenu,
   PromptInputActionMenuContent,
@@ -949,9 +949,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </div>
             </div>
 
-            {/* 建议 chips 紧贴输入卡下方(官方 ChatGPT 式布局),gap-3 与卡内节奏一致。 */}
+            {/* 建议 chips 紧贴输入卡下方(官方 ChatGPT 式布局)。
+                不用 vendored Suggestions:它的 ScrollArea 包装在自绘 scroll-area
+                下高度计算异常会把 chips 裁掉;普通 flex 容器即可。 */}
             {onFillPrompt ? (
-              <Suggestions className="-mt-5 justify-center px-2">
+              <div className="-mt-5 flex flex-wrap items-center justify-center gap-2 px-2">
                 {COMPOSER_SUGGESTIONS.map((suggestion) => (
                   <Suggestion
                     key={suggestion}
@@ -963,7 +965,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     {suggestion}
                   </Suggestion>
                 ))}
-              </Suggestions>
+              </div>
             ) : null}
           </div>
         ) : (
