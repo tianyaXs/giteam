@@ -1,176 +1,159 @@
+"use client";
+
+// Migrated from AI SDK Elements (Dialog + Command) to the shadcn/ui
+// Dropdown Menu composition, per
+// https://ui.shadcn.com/docs/ai-elements/aria/model-selector
+// Every export keeps its name; aria-rhea's selectionMode/selectedKeys are
+// Radix-adapted (open/onOpenChange on the root, selection indicated by the
+// caller). Search lives in a plain menu-embedded Input — aria menus have
+// none, so filtering stays the caller's job.
+
+import { Button } from "@/components/ui/button";
 import {
-  Command,
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from "@/components/ui/command";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { ComponentProps, ReactNode } from "react";
 
-export type ModelSelectorProps = ComponentProps<typeof Dialog>;
+export type ModelSelectorProps = ComponentProps<typeof DropdownMenu>;
 
 export const ModelSelector = (props: ModelSelectorProps) => (
-  <Dialog {...props} />
+  <DropdownMenu {...props} />
 );
 
-export type ModelSelectorTriggerProps = ComponentProps<typeof DialogTrigger>;
+export type ModelSelectorTriggerProps = ComponentProps<
+  typeof DropdownMenuTrigger
+>;
 
 export const ModelSelectorTrigger = (props: ModelSelectorTriggerProps) => (
-  <DialogTrigger {...props} />
+  <DropdownMenuTrigger {...props} />
 );
 
-export type ModelSelectorContentProps = ComponentProps<typeof DialogContent> & {
+export type ModelSelectorContentProps = ComponentProps<
+  typeof DropdownMenuContent
+> & {
   title?: ReactNode;
 };
 
 export const ModelSelectorContent = ({
   className,
-  children,
   title = "Model Selector",
   ...props
 }: ModelSelectorContentProps) => (
-  <DialogContent
-    aria-describedby={undefined}
+  <DropdownMenuContent
+    aria-label={typeof title === "string" ? title : undefined}
+    className={cn("w-64 p-1", className)}
+    {...props}
+  />
+);
+
+export type ModelSelectorListProps = ComponentProps<"div">;
+
+export const ModelSelectorList = ({
+  className,
+  ...props
+}: ModelSelectorListProps) => (
+  <div
+    className={cn("max-h-72 overflow-y-auto overscroll-contain", className)}
+    {...props}
+  />
+);
+
+export type ModelSelectorGroupProps = ComponentProps<
+  typeof DropdownMenuGroup
+> & {
+  heading?: ReactNode;
+};
+
+export const ModelSelectorGroup = ({
+  heading,
+  children,
+  ...props
+}: ModelSelectorGroupProps) => (
+  <DropdownMenuGroup {...props}>
+    {heading ? <DropdownMenuLabel>{heading}</DropdownMenuLabel> : null}
+    {children}
+  </DropdownMenuGroup>
+);
+
+export type ModelSelectorItemProps = ComponentProps<typeof DropdownMenuItem>;
+
+export const ModelSelectorItem = ({
+  className,
+  ...props
+}: ModelSelectorItemProps) => (
+  <DropdownMenuItem className={cn("gap-2", className)} {...props} />
+);
+
+export type ModelSelectorSeparatorProps = ComponentProps<
+  typeof DropdownMenuSeparator
+>;
+
+export const ModelSelectorSeparator = (
+  props: ModelSelectorSeparatorProps
+) => <DropdownMenuSeparator {...props} />;
+
+export type ModelSelectorShortcutProps = ComponentProps<"span">;
+
+export const ModelSelectorShortcut = ({
+  className,
+  ...props
+}: ModelSelectorShortcutProps) => (
+  <span
     className={cn(
-      "outline! border-none! p-0 outline-border! outline-solid!",
+      "ml-auto text-muted-foreground text-xs tracking-widest",
       className
     )}
     {...props}
-  >
-    <DialogTitle className="sr-only">{title}</DialogTitle>
-    <Command className="**:data-[slot=command-input-wrapper]:h-auto">
-      {children}
-    </Command>
-  </DialogContent>
+  />
 );
 
-export type ModelSelectorDialogProps = ComponentProps<typeof CommandDialog>;
-
-export const ModelSelectorDialog = (props: ModelSelectorDialogProps) => (
-  <CommandDialog {...props} />
-);
-
-export type ModelSelectorInputProps = ComponentProps<typeof CommandInput>;
+// Search inside the menu. Official menus have no search field — kept for
+// callers that filter their groups externally; keydown is stopped so menu
+// typeahead and shortcuts don't fight the input.
+export type ModelSelectorInputProps = ComponentProps<typeof Input>;
 
 export const ModelSelectorInput = ({
   className,
   ...props
 }: ModelSelectorInputProps) => (
-  <CommandInput className={cn("h-auto py-3.5", className)} {...props} />
+  <div className="p-1" onKeyDown={(event) => event.stopPropagation()}>
+    <Input autoFocus className={cn("h-8 text-[13px]", className)} {...props} />
+  </div>
 );
 
-export type ModelSelectorListProps = ComponentProps<typeof CommandList>;
+export type ModelSelectorEmptyProps = ComponentProps<"div"> & {
+  /** Render nothing while any group still has visible items. */
+  visible?: boolean;
+};
 
-export const ModelSelectorList = (props: ModelSelectorListProps) => (
-  <CommandList {...props} />
-);
-
-export type ModelSelectorEmptyProps = ComponentProps<typeof CommandEmpty>;
-
-export const ModelSelectorEmpty = (props: ModelSelectorEmptyProps) => (
-  <CommandEmpty {...props} />
-);
-
-export type ModelSelectorGroupProps = ComponentProps<typeof CommandGroup>;
-
-export const ModelSelectorGroup = (props: ModelSelectorGroupProps) => (
-  <CommandGroup {...props} />
-);
-
-export type ModelSelectorItemProps = ComponentProps<typeof CommandItem>;
-
-export const ModelSelectorItem = (props: ModelSelectorItemProps) => (
-  <CommandItem {...props} />
-);
-
-export type ModelSelectorShortcutProps = ComponentProps<typeof CommandShortcut>;
-
-export const ModelSelectorShortcut = (props: ModelSelectorShortcutProps) => (
-  <CommandShortcut {...props} />
-);
-
-export type ModelSelectorSeparatorProps = ComponentProps<
-  typeof CommandSeparator
->;
-
-export const ModelSelectorSeparator = (props: ModelSelectorSeparatorProps) => (
-  <CommandSeparator {...props} />
-);
+export const ModelSelectorEmpty = ({
+  visible = true,
+  className,
+  ...props
+}: ModelSelectorEmptyProps) =>
+  visible ? (
+    <div
+      className={cn(
+        "px-2 py-3 text-center text-muted-foreground text-sm",
+        className
+      )}
+      {...props}
+    />
+  ) : null;
 
 export type ModelSelectorLogoProps = Omit<
   ComponentProps<"img">,
   "src" | "alt"
 > & {
-  provider:
-    | "moonshotai-cn"
-    | "lucidquery"
-    | "moonshotai"
-    | "zai-coding-plan"
-    | "alibaba"
-    | "xai"
-    | "vultr"
-    | "nvidia"
-    | "upstage"
-    | "groq"
-    | "github-copilot"
-    | "mistral"
-    | "vercel"
-    | "nebius"
-    | "deepseek"
-    | "alibaba-cn"
-    | "google-vertex-anthropic"
-    | "venice"
-    | "chutes"
-    | "cortecs"
-    | "github-models"
-    | "togetherai"
-    | "azure"
-    | "baseten"
-    | "huggingface"
-    | "opencode"
-    | "fastrouter"
-    | "google"
-    | "google-vertex"
-    | "cloudflare-workers-ai"
-    | "inception"
-    | "wandb"
-    | "openai"
-    | "zhipuai-coding-plan"
-    | "perplexity"
-    | "openrouter"
-    | "zenmux"
-    | "v0"
-    | "iflowcn"
-    | "synthetic"
-    | "deepinfra"
-    | "zhipuai"
-    | "submodel"
-    | "zai"
-    | "inference"
-    | "requesty"
-    | "morph"
-    | "lmstudio"
-    | "anthropic"
-    | "aihubmix"
-    | "fireworks-ai"
-    | "modelscope"
-    | "llama"
-    | "scaleway"
-    | "amazon-bedrock"
-    | "cerebras"
-    // oxlint-disable-next-line typescript-eslint(ban-types) -- intentional pattern for autocomplete-friendly string union
-    | (string & {});
+  provider: string;
 };
 
 export const ModelSelectorLogo = ({

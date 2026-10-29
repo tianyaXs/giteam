@@ -465,7 +465,7 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
         <ModelSelectorContent title={props.labels.model}>
           <ModelSelectorInput
             value={props.modelPickerSearch}
-            onValueChange={props.onModelPickerSearchChange}
+            onChange={(event) => props.onModelPickerSearchChange(event.target.value)}
             placeholder="搜索模型..."
           />
           <ModelSelectorList>
@@ -478,7 +478,6 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
                   return (
                     <ModelSelectorItem
                       key={modelRef}
-                      value={modelRef}
                       onSelect={() => props.onApplyModel(modelRef)}
                       title={modelRef}
                     >
@@ -494,7 +493,9 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
                 })}
               </ModelSelectorGroup>
             ))}
-            <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
+            <ModelSelectorEmpty visible={groups.length === 0}>
+              没有匹配的模型
+            </ModelSelectorEmpty>
           </ModelSelectorList>
         </ModelSelectorContent>
       </ModelSelector>
