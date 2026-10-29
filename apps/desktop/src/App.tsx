@@ -10934,6 +10934,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onActivateSlashCommand={activateAgentSlashCommand}
               promptInputRef={agentInputRef}
               promptInput={agentPromptInput}
+              onFillPrompt={(text) => {
+                captureAgentPromptHistoryDraft(text);
+                setAgentPromptInput(text);
+                agentInputRef.current?.focus();
+              }}
               onPromptCompositionStart={() => {
                 agentInputComposingRef.current = true;
               }}

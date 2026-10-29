@@ -37,6 +37,7 @@ import {
   ModelSelectorName,
   ModelSelectorTrigger
 } from "../ai-elements/model-selector";
+import { Suggestion, Suggestions } from "../ai-elements/suggestion";
 import {
   PromptInputActionMenu,
   PromptInputActionMenuContent,
@@ -147,7 +148,17 @@ type AgentComposerPanelProps = {
   onPrimaryAction: () => void;
   queuedFollowUps?: Array<{ id: string; content: string }>;
   onRemoveQueuedFollowUp?: (id: string) => void;
+  /** 空态建议 chips 点击回填(并聚焦输入框)。 */
+  onFillPrompt?: (text: string) => void;
 };
+
+/** 空态建议(ai-elements Suggestions 风格,ChatGPT 式起手 chips)。 */
+const COMPOSER_SUGGESTIONS = [
+  "解释一下这个仓库的结构",
+  "找出代码里潜在的 bug",
+  "最近几次提交改了什么",
+  "帮我优化性能热点"
+];
 
 type ComposerEditorProps = {
   className?: string;
@@ -639,7 +650,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     canSubmit,
     onPrimaryAction,
     queuedFollowUps = [],
-    onRemoveQueuedFollowUp
+    onRemoveQueuedFollowUp,
+    onFillPrompt
   } = props;
 
   const activeModelDisplay = getModelDisplay(activeModel || "");
@@ -909,6 +921,22 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                 )}
               </div>
             </div>
+
+            {onFillPrompt ? (
+              <Suggestions className="justify-center px-2">
+                {COMPOSER_SUGGESTIONS.map((suggestion) => (
+                  <Suggestion
+                    key={suggestion}
+                    suggestion={suggestion}
+                    onClick={onFillPrompt}
+                    variant="outline"
+                    className="border-border/70 bg-background/70 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  >
+                    {suggestion}
+                  </Suggestion>
+                ))}
+              </Suggestions>
+            ) : null}
 
             <div className={cn("relative flex w-full min-w-0 flex-col gap-3 rounded-3xl p-5", composerSurfaceClass)}>
               {previewStrip}

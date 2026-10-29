@@ -18,7 +18,7 @@ import {
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { CollapsibleTrigger } from "../ui/collapsible";
-import { Tool } from "../ai-elements/tool";
+import { Tool, getStatusBadge } from "../ai-elements/tool";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
@@ -572,6 +572,8 @@ export function AgentExecutionPartView({
           打开
         </span>
       ) : null}
+      {/* 官方 ToolHeader 风格的状态徽章(独立卡时展示;时间线条目保持紧凑)。 */}
+      {!listItem ? getStatusBadge(isError ? "output-error" : running ? "input-available" : "output-available") : null}
     </div>
   );
 
