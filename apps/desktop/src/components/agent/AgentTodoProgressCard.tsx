@@ -1,9 +1,23 @@
 import type { AgentTodoItem } from "../../lib/agentSessions";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { ScrollArea } from "../ui/scroll-area";
-import { CheckIcon, CloseIcon } from "../icons";
 import { cn } from "../../lib/utils";
+import {
+  Plan,
+  PlanDescription,
+  PlanHeader,
+  PlanHeaderTrigger,
+  PlanIcon,
+  PlanTitle,
+  PlanTrigger,
+  PlanContent,
+} from "../ai-elements/plan";
+import { TraceIcon, TraceLine, TraceTitle } from "../ui/trace";
+import {
+  CircleCheckIcon,
+  CircleDotIcon,
+  CircleIcon,
+  RouteIcon,
+} from "lucide-react";
 
 type AgentTodoProgressCardProps = {
   todos: AgentTodoItem[];
@@ -15,39 +29,6 @@ type AgentTodoProgressCardProps = {
   activeSessionBusy: boolean;
   collapsed?: boolean;
 };
-
-function TodoStatusMark({
-  status,
-  activeSessionBusy
-}: {
-  status: AgentTodoItem["status"];
-  activeSessionBusy: boolean;
-}) {
-  const running = status === "in_progress";
-  const completed = status === "completed";
-  const cancelled = status === "cancelled";
-
-  return (
-    <span
-      className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-full border text-muted-foreground",
-        completed && "border-muted-foreground/75 bg-muted-foreground/80 text-background",
-        cancelled && "border-border bg-muted text-muted-foreground",
-        running && "border-muted-foreground/75 bg-muted-foreground/80 text-background",
-        running && activeSessionBusy && "animate-pulse"
-      )}
-      aria-hidden="true"
-    >
-      {completed ? (
-        <CheckIcon width={12} height={12} />
-      ) : cancelled ? (
-        <CloseIcon width={10} height={10} />
-      ) : running ? (
-        <span className="size-1 rounded-full bg-background" />
-      ) : null}
-    </span>
-  );
-}
 
 export function AgentTodoProgressCard({
   todos,
@@ -68,51 +49,68 @@ export function AgentTodoProgressCard({
       <div
         className={cn(
           "inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-border/60 bg-card px-2.5",
-          "text-xs font-medium tabular-nums tracking-normal text-muted-foreground shadow-sm",
-          "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out",
-          "hover:-translate-y-px hover:border-border hover:bg-muted hover:text-foreground hover:shadow-md",
-          "active:translate-y-0 active:shadow-sm"
+          activeSessionBusy && "border-muted-foreground/70 animate-pulse"
         )}
-        title={title}
-        aria-label={title}
       >
         {label}
       </div>
     );
   }
 
+  // 官方 Plan 形状：Route 图标摘要行（isStreaming 时 shimmer）+ done/running/
+  // pending 三态步骤行，外层 Trace 折叠。
   return (
-    <Collapsible open>
-      <Card className="w-full rounded-[28px] border-border/55 bg-card/95 shadow-sm transition-all duration-200">
-        <CardHeader className="flex-row items-center justify-between gap-2 px-4 pb-2 pt-4">
-          <CardTitle className="text-sm font-normal text-muted-foreground">进度</CardTitle>
-          <span className="text-xs font-medium tabular-nums text-muted-foreground">{label}</span>
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent className="px-4 pb-4 pt-0">
-            <ScrollArea className="max-h-[min(46vh,340px)] pr-1.5" scrollBarClassName="w-1.5">
-              <div className="flex flex-col gap-2">
-                {todos.map((todo) => {
-                  const current = progress.active?.id === todo.id && todo.status !== "completed";
-                  return (
-                    <div key={todo.id} className="flex min-w-0 items-start gap-2">
-                      <TodoStatusMark status={todo.status} activeSessionBusy={activeSessionBusy} />
-                      <span
-                        className={cn(
-                          "min-w-0 flex-1 text-sm font-normal leading-6 text-muted-foreground",
-                          current && "text-foreground"
-                        )}
-                      >
-                        {todo.content}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
+    <Plan
+      isStreaming={activeSessionBusy}
+      className="w-full rounded-[28px] border border-border/55 bg-card/95 p-3 shadow-sm"
+    >
+      <PlanHeader defaultOpen>
+        <PlanHeaderTrigger>
+          <PlanTrigger>
+            <PlanIcon>
+              <RouteIcon />
+            </PlanIcon>
+            <PlanTitle>进度</PlanTitle>
+            <PlanDescription className="max-w-[280px] truncate">
+              {label}
+              {progress.active?.content ? ` · ${progress.active.content}` : ""}
+            </PlanDescription>
+          </PlanTrigger>
+        </PlanHeaderTrigger>
+      </PlanHeader>
+      <PlanContent>
+        <ScrollArea className="max-h-[min(46vh,340px)] pr-1.5" scrollBarClassName="w-1.5">
+          <div className="flex flex-col gap-1">
+            {todos.map((todo) => {
+              const completed = todo.status === "completed";
+              const running =
+                todo.status === "in_progress"
+                && progress.active?.id === todo.id;
+              const status: "running" | "pending" | undefined = completed
+                ? undefined
+                : running
+                  ? "running"
+                  : "pending";
+              return (
+                <TraceLine key={todo.id} status={status}>
+                  <TraceIcon>
+                    {completed ? (
+                      <CircleCheckIcon />
+                    ) : running ? (
+                      <CircleDotIcon />
+                    ) : (
+                      <CircleIcon />
+                    )}
+                  </TraceIcon>
+                  <TraceTitle className={cn("font-normal", completed && "line-through opacity-70")}>
+                    {todo.content}
+                  </TraceTitle>
+                </TraceLine>
+              );
+            })}
+          </div>
+        </ScrollArea>
+      </PlanContent>
+    </Plan>
   );
 }
