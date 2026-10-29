@@ -46,6 +46,8 @@ import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecuti
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
 import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
+import { MatrixLoader } from "../transitions/MatrixLoader";
+import { ShimmerText } from "../transitions/ShimmerText";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -192,7 +194,10 @@ function ActivityStatus({
           {label}
         </span>
       ))}
-      <span className={cn("col-start-1 row-start-1 whitespace-nowrap", active && "animate-pulse")}>
+      <span
+        className={cn("col-start-1 row-start-1 whitespace-nowrap", active && "t-shimmer")}
+        data-text={active ? activeLabel : undefined}
+      >
         {active ? activeLabel : doneLabel}
       </span>
     </span>
@@ -241,6 +246,7 @@ function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   // min-h-10 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
   return (
     <div className="flex h-10 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
+      <MatrixLoader variant="twinkle" className="shrink-0" />
       <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
       {activeTodo ? (
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
@@ -534,7 +540,10 @@ function AgentMessageListHeader() {
 function StreamLoadingState() {
   return (
     <div className="flex flex-col gap-2 px-1 py-2 text-sm text-muted-foreground">
-      <span>加载会话中…</span>
+      <span className="flex items-center gap-2">
+        <MatrixLoader variant="scan" rounded />
+        <ShimmerText text="加载会话中…" />
+      </span>
       <Skeleton className="h-3 w-2/3" />
       <Skeleton className="h-3 w-1/2" />
     </div>
