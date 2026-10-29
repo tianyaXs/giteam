@@ -104,13 +104,17 @@ export const Reasoning = memo(
       }
     }, [isStreaming, isOpen, setIsOpen, isExplicitlyClosed]);
 
-    // Auto-close when streaming ends (once only, and only if it ever streamed)
+    // Auto-close when streaming ends (once only, and only if it ever streamed).
+    // Patch: respect an explicit defaultOpen={false} (same guard as the
+    // auto-open effect) — giteam keeps reasoning collapsed by default and
+    // never auto-closes a manually expanded group.
     useEffect(() => {
       if (
         hasEverStreamedRef.current &&
         !isStreaming &&
         isOpen &&
-        !hasAutoClosed
+        !hasAutoClosed &&
+        !isExplicitlyClosed
       ) {
         const timer = setTimeout(() => {
           setIsOpen(false);
@@ -119,7 +123,7 @@ export const Reasoning = memo(
 
         return () => clearTimeout(timer);
       }
-    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
+    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed, isExplicitlyClosed]);
 
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {

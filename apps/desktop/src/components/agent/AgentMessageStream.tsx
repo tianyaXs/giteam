@@ -48,6 +48,7 @@ import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { MatrixLoader } from "../transitions/MatrixLoader";
 import { ShimmerText } from "../transitions/ShimmerText";
+import { Reasoning, ReasoningTrigger } from "../ai-elements/reasoning";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -917,29 +918,32 @@ function ReasoningGroup({
     .filter(Boolean)
     .slice(-1)[0] || "整理推理摘要";
 
-  // 默认始终收起：过程中与结束后都不自动展开，避免高度变化抖动；仅手动点击展开
+  // 默认始终收起：过程中与结束后都不自动展开，避免高度变化抖动；仅手动点击展开。
+  // defaultOpen={false} 同时关掉 vendored Reasoning 的流式自动展开/自动收起
+  // (见 ai-elements/reasoning.tsx 的 giteam patch)。
   return (
-    <TimelineFoldGroup
+    <Reasoning
+      isStreaming={active}
       open={open}
       onOpenChange={onOpenChange}
-      label={
-        <>
-          <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 text-sm" />
-          {open ? null : (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
-          )}
-        </>
-      }
+      defaultOpen={false}
+      className="mb-0"
     >
-      <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+      <ReasoningTrigger className="h-10 appearance-none justify-start border-0 bg-transparent px-0 text-left hover:bg-transparent">
+        <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 text-sm" />
+        {open ? null : (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
+        )}
+      </ReasoningTrigger>
+      <CollapsibleContent className="min-w-0 max-w-full pb-2 pl-3 text-sm text-muted-foreground">
         <StreamingMarkdownBlock
           text={text}
           streaming={active}
           renderMarkdown={renderMarkdown}
           className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]"
         />
-      </div>
-    </TimelineFoldGroup>
+      </CollapsibleContent>
+    </Reasoning>
   );
 }
 
