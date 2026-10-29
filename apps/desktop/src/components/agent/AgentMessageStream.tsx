@@ -1001,10 +1001,6 @@ function ReasoningGroup({
         {open ? null : (
           <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
         )}
-        <ChevronDownIcon
-          className={cn("size-4 shrink-0 text-muted-foreground/70 transition-transform", open && "rotate-180")}
-          aria-hidden
-        />
       </ReasoningTrigger>
       <CollapsibleContent className="min-w-0 max-w-full pb-2 pl-3 text-sm text-muted-foreground">
         <StreamingMarkdownBlock
