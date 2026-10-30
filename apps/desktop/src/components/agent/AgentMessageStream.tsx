@@ -516,7 +516,7 @@ const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactN
 AgentMessageListContainer.displayName = "AgentMessageListContainer";
 
 function AgentMessageRowFrame({ children }: { children: ReactNode }) {
-  return <div className="pb-4">{children}</div>;
+  return <div className="pb-3">{children}</div>;
 }
 
 /** 首条消息与顶部分隔线之间的呼吸留白（参考 ChatGPT 首条消息的顶部间距）。 */

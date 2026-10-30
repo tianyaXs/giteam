@@ -63,7 +63,7 @@ import {
   CloseIcon,
   ImageIcon
 } from "../icons";
-import { Sparkles, Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
+import { ChevronDownIcon, Sparkles, Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
 
 type SlashCommandOption = {
   id: string;
@@ -442,8 +442,57 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
       title={props.hasConfiguredModel ? "选择模型" : props.labels.configureModels}
       variant="ghost"
     >
-      <span className="min-w-0 truncate">{props.configSummaryLabel}</span>
+      <span className="min-w-0 truncate">
+        {props.hasConfiguredModel ? props.modelValueLabel || props.configSummaryLabel : props.configSummaryLabel}
+      </span>
+      <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
     </Button>
+  );
+
+  // 官方双触发器之二:推理强度▾(含自动权限开关),与模型▾并排。
+  const effortTrigger = (
+    <PromptInputActionMenu>
+      <PromptInputActionMenuTrigger
+        className="h-7 max-w-[140px] rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 hover:text-foreground focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
+        aria-label="推理强度与自动权限"
+        title="推理强度与自动权限"
+      >
+        <span className="min-w-0 truncate">{props.thinkingValueLabel || "自动"}</span>
+        <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+      </PromptInputActionMenuTrigger>
+      <PromptInputActionMenuContent align="end" className="min-w-[180px]">
+        {props.thinkingLevelOptions.map((level) => {
+          const meta = thinkingLevelMeta(level);
+          const active = props.activeThinkingLevel === level;
+          return (
+            <PromptInputActionMenuItem
+              key={level}
+              onSelect={() => props.onApplyThinkingLevel(level)}
+              className="justify-between gap-2"
+            >
+              <span>推理强度 · {meta.label}</span>
+              {active ? <CheckIcon width={14} height={14} /> : null}
+            </PromptInputActionMenuItem>
+          );
+        })}
+        <PromptInputActionMenuItem
+          onSelect={(event) => {
+            event.preventDefault();
+            props.onToggleAutoAcceptPermissions();
+          }}
+          className="justify-between gap-2"
+        >
+          <span>自动接受权限</span>
+          <Switch
+            size="sm"
+            checked={props.autoAcceptPermissions}
+            aria-label="自动接受权限"
+            tabIndex={-1}
+            className="pointer-events-none"
+          />
+        </PromptInputActionMenuItem>
+      </PromptInputActionMenuContent>
+    </PromptInputActionMenu>
   );
 
   if (!props.hasConfiguredModel) {
@@ -499,48 +548,7 @@ function ComposerConfigButton(props: ComposerConfigButtonProps) {
           </ModelSelectorList>
         </ModelSelectorContent>
       </ModelSelector>
-
-      <PromptInputActionMenu>
-        <PromptInputActionMenuTrigger
-          className="size-7 rounded-full text-foreground hover:bg-muted/70 hover:text-foreground"
-          aria-label="推理强度与自动权限"
-          title="推理强度与自动权限"
-        >
-          <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
-        </PromptInputActionMenuTrigger>
-        <PromptInputActionMenuContent align="end" side="top" sideOffset={12} className="min-w-[180px]">
-          {props.thinkingLevelOptions.map((level) => {
-            const meta = thinkingLevelMeta(level);
-            const active = props.activeThinkingLevel === level;
-            return (
-              <PromptInputActionMenuItem
-                key={level}
-                onSelect={() => props.onApplyThinkingLevel(level)}
-                className="justify-between gap-2"
-              >
-                <span>推理强度 · {meta.label}</span>
-                {active ? <CheckIcon width={14} height={14} /> : null}
-              </PromptInputActionMenuItem>
-            );
-          })}
-          <PromptInputActionMenuItem
-            onSelect={(event) => {
-              event.preventDefault();
-              props.onToggleAutoAcceptPermissions();
-            }}
-            className="justify-between gap-2"
-          >
-            <span>自动接受权限</span>
-            <Switch
-              size="sm"
-              checked={props.autoAcceptPermissions}
-              aria-label="自动接受权限"
-              tabIndex={-1}
-              className="pointer-events-none"
-            />
-          </PromptInputActionMenuItem>
-        </PromptInputActionMenuContent>
-      </PromptInputActionMenu>
+      {effortTrigger}
     </div>
   );
 }
@@ -925,11 +933,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
 
             <div className={cn("relative flex w-full min-w-0 flex-col gap-3 rounded-3xl p-5", composerSurfaceClass)}>
               {previewStrip}
-              <div className="flex min-h-[102px] w-full min-w-0 flex-1 flex-col gap-3">
-                <ComposerEditor className="w-full -mt-0.5" {...editorProps} />
-                <div className="mt-auto flex items-end justify-between gap-3">
+              <div className="flex min-h-[88px] w-full min-w-0 flex-1 flex-col justify-end gap-2">
+                <ComposerEditor className="w-full" {...editorProps} />
+                {/* 官方 addon 行:附件 + 模型▾ 强度▾ + 发送 */}
+                <div className="flex items-center gap-1">
                   <ComposerAttachmentButton
-                    buttonClassName="-ml-[15px] translate-y-[15px]"
                     attachmentMenuOpen={attachmentMenuOpen}
                     onToggleAttachmentMenu={onToggleAttachmentMenu}
                     attachmentInputRef={attachmentInputRef}
@@ -937,7 +945,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                     onOpenAttachmentPicker={onOpenAttachmentPicker}
                     onAttachmentInputChange={onAttachmentInputChange}
                   />
-                  <div className="flex translate-x-[15px] translate-y-[15px] items-center gap-1">
+                  <div className="ml-auto flex items-center gap-1">
                     <ComposerConfigButton {...configButtonProps} />
                     <ComposerSubmitButton
                       activeSessionBusy={activeSessionBusy}
@@ -980,7 +988,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             )}
           >
             {previewStrip}
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-1">
+            <ComposerEditor
+              {...editorProps}
+              // 与 size-8 控件同高，单行文字上下约 4px。
+              textareaClassName="min-h-8 py-1 text-[15px] leading-6"
+            />
+            {/* 官方 addon 行:附件 + 模型▾ 强度▾ + 发送 */}
+            <div className="flex items-center gap-1">
               <ComposerAttachmentButton
                 attachmentMenuOpen={attachmentMenuOpen}
                 onToggleAttachmentMenu={onToggleAttachmentMenu}
@@ -989,12 +1003,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                 onOpenAttachmentPicker={onOpenAttachmentPicker}
                 onAttachmentInputChange={onAttachmentInputChange}
               />
-              <ComposerEditor
-                {...editorProps}
-                // 与 size-8 控件同高，单行文字上下约 4px。
-                textareaClassName="min-h-8 py-1 text-[15px] leading-6"
-              />
-              <div className="flex items-center gap-1">
+              <div className="ml-auto flex items-center gap-1">
                 <ComposerConfigButton {...configButtonProps} />
                 <ComposerSubmitButton
                   activeSessionBusy={activeSessionBusy}
