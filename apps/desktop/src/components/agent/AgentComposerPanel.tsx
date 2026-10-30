@@ -484,7 +484,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             <InputGroupButton
               size="sm"
               variant="outline"
-              className="ml-auto min-w-0"
+              className="ml-auto min-w-0 rounded-full text-base"
               aria-label="选择模型"
               title="选择模型"
             >
@@ -540,6 +540,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             <InputGroupButton
               size="sm"
               variant="outline"
+              className="min-w-0 rounded-full text-base"
               aria-label="推理强度与自动权限"
               title="推理强度与自动权限"
             >
