@@ -586,7 +586,7 @@ function MessageShell({
             旧容器(宫格附件 + 气泡混排会双圆角)。 */}
         {!isAssistant && !userHasAttachments ? (
           <Bubble align="end" variant="muted" className="max-w-full">
-            <BubbleContent className="text-[15px] font-medium leading-6 text-foreground">
+            <BubbleContent className="text-sm leading-6 text-foreground">
               {children}
             </BubbleContent>
           </Bubble>
@@ -1097,7 +1097,7 @@ function AssistantTextBlock({
       streaming={streaming}
       renderMarkdown={renderMarkdown}
       className={cn(
-        "min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]",
+        "min-w-0 max-w-full select-text overflow-hidden break-words text-sm leading-7 text-foreground [overflow-wrap:anywhere]",
         // 流式期间预留 h-6：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
         // 不会出现「标签消失 → 列表上移」。结束后释放（仅单行回复收一次）。
         streaming && "min-h-6",
