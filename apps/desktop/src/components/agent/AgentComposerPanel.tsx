@@ -547,11 +547,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       )}
     >
       {previewStrip}
-      <div className="relative min-w-0">
+      <div className="relative w-full min-w-0">
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="max-h-40 min-h-8 resize-none border-0 bg-transparent px-4 py-3 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="max-h-40 min-h-8 w-full resize-none self-stretch border-0 bg-transparent px-4 py-3 text-left text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           style={{ fontSize: 15, lineHeight: "24px" }}
           placeholder={composerPlaceholder}
           value={promptInput}
@@ -566,7 +566,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           rows={1}
         />
       </div>
-      <InputGroupAddon align="block-end" className="px-3 pb-2.5 pt-0">
+      <InputGroupAddon align="block-end" className="w-full px-3 pb-2.5 pt-0">
         <InputGroupButton
           size="icon-sm"
           variant="outline"
@@ -585,8 +585,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           className="hidden"
           onChange={onAttachmentInputChange}
         />
+        {/* ml-auto 在第一个菜单触发器上:模型/强度紧挨发送按钮(官方布局) */}
+        <div className="ml-auto flex items-center gap-0.5">
+          {modelMenu}
+          {effortMenu}
+        </div>
         <PromptInputSubmit
-          className="ml-auto size-8 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 [&_svg]:size-5"
+          className="size-8 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 [&_svg]:size-5"
           disabled={submitDisabled}
           onClick={onPrimaryAction}
           onStop={onPrimaryAction}
@@ -595,8 +600,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           title={primaryTitle}
           variant="default"
         />
-        {modelMenu}
-        {effortMenu}
       </InputGroupAddon>
     </InputGroup>
   );
