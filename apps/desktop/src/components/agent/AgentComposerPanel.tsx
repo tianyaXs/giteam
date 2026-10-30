@@ -454,9 +454,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
 
-  // 软悬浮:近距微阴影 + 中层 + 远距弥散。
-  const composerSurfaceClass =
-    "border border-border/55 bg-card text-card-foreground shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_16px_rgba(15,23,42,0.06),0_18px_44px_rgba(15,23,42,0.09)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_8px_24px_rgba(0,0,0,0.32)]";
+
 
   const previewStrip = (
     <AnimatePresence initial={false}>
@@ -537,19 +535,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
 
   // 两种状态共用同一个官方组合,只有外层包装不同。
   const composerCard = (
-    <InputGroup
-      className={cn(
-        "rounded-3xl border-0 bg-transparent shadow-none focus-within:shadow-none",
-        composerSurfaceClass
-      )}
-    >
+    <InputGroup className="rounded-3xl border-0 bg-muted shadow-none focus-within:shadow-none">
       {previewStrip}
       <div className="relative w-full min-w-0">
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="max-h-40 min-h-8 w-full resize-none self-stretch border-0 bg-transparent px-4 py-3 text-left text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          style={{ fontSize: 15, lineHeight: "24px" }}
+          className="max-h-40 min-h-12 w-full resize-none self-stretch border-0 bg-transparent px-4 py-3 text-left text-base leading-7 shadow-none outline-none placeholder:font-normal focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           placeholder={composerPlaceholder}
           value={promptInput}
           onCompositionStart={onPromptCompositionStart}
