@@ -1,4 +1,6 @@
+import * as React from "react";
 import {
+  Fragment,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -35,6 +37,7 @@ import {
   ModelSelectorList,
   ModelSelectorLogo,
   ModelSelectorName,
+  ModelSelectorSeparator,
   ModelSelectorTrigger
 } from "../ai-elements/model-selector";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
@@ -286,8 +289,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     return () => observer.disconnect();
   }, [showEmptyState, hasComposerPreviews, attachments.length, graphRefs.length]);
 
-  // ── 官方 Prompt Input 解剖结构:InputGroup + textarea(p-3) + addon 行
-  //    [附件] … [模型▾][强度▾][发送] ── 全部官方原语,无旧壳。
+  const reduceMotion = useReducedMotion();
+  const previewExpandTransition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
+
   const showStop = activeSessionBusy && !canSubmit;
   const submitDisabled = !activeSessionBusy && !canSubmit;
   const primaryTitle = showStop
@@ -345,116 +351,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       ))}
     </div>
   ) : null;
-
-  const modelMenu = (
-    <ModelSelector open={showModelPicker} onOpenChange={(open) => { if (open !== showModelPicker) onToggleModelPicker(); }}>
-      <ModelSelectorTrigger asChild>
-        <InputGroupButton size="sm" variant="outline" className="h-7 min-w-0 gap-1 rounded-full pl-3 pr-2 text-sm">
-          <span className="min-w-0 truncate">{hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}</span>
-          <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
-        </InputGroupButton>
-      </ModelSelectorTrigger>
-      <ModelSelectorContent title={labels.model}>
-        <ModelSelectorInput
-          value={modelPickerSearch}
-          onChange={(event) => onModelPickerSearchChange(event.target.value)}
-          placeholder="搜索模型..."
-        />
-        <ModelSelectorList>
-          {hasConfiguredModel ? groups.map(([provider, refs]) => (
-            <ModelSelectorGroup key={provider} heading={provider}>
-              {refs.map((modelRef) => {
-                const display = getModelDisplay(modelRef);
-                const selected = modelRef === activeModel;
-                const providerKey = (display.provider || "").toLowerCase();
-                return (
-                  <ModelSelectorItem
-                    key={modelRef}
-                    onSelect={() => onApplyModel(modelRef)}
-                    title={modelRef}
-                  >
-                    {LOGO_PROVIDERS.has(providerKey) ? (
-                      <ModelSelectorLogo provider={providerKey} />
-                    ) : (
-                      <Sparkles className="size-3 shrink-0 text-muted-foreground" />
-                    )}
-                    <ModelSelectorName>{display.label || modelRef}</ModelSelectorName>
-                    {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
-                  </ModelSelectorItem>
-                );
-              })}
-            </ModelSelectorGroup>
-          )) : null}
-          {hasConfiguredModel ? null : (
-            <ModelSelectorGroup heading="未配置模型">
-              <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
-                <Sparkles className="size-3 shrink-0 text-muted-foreground" />
-                <ModelSelectorName>打开设置配置模型…</ModelSelectorName>
-              </ModelSelectorItem>
-            </ModelSelectorGroup>
-          )}
-          <ModelSelectorEmpty visible={hasConfiguredModel && groups.length === 0}>
-            没有匹配的模型
-          </ModelSelectorEmpty>
-        </ModelSelectorList>
-      </ModelSelectorContent>
-    </ModelSelector>
-  );
-
-  const effortMenu = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <InputGroupButton size="sm" variant="outline" className="h-7 min-w-0 gap-1 rounded-full pl-3 pr-2 text-sm">
-          <span className="shrink-0 text-muted-foreground">强度</span>
-          <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
-          <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
-        </InputGroupButton>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[160px]">
-        <DropdownMenuLabel>推理强度</DropdownMenuLabel>
-        <DropdownMenuGroup>
-          {thinkingLevelOptions.map((level) => {
-            const meta = thinkingLevelMeta(level);
-            const active = activeThinkingLevel === level;
-            return (
-              <DropdownMenuItem
-                key={level}
-                onSelect={() => onApplyThinkingLevel(level)}
-                className="justify-between gap-2"
-              >
-                <span>{meta.label}</span>
-                {active ? <CheckIcon width={14} height={14} /> : null}
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={(event) => {
-            event.preventDefault();
-            onToggleAutoAcceptPermissions();
-          }}
-          className="justify-between gap-2"
-        >
-          <span>自动接受权限</span>
-          <Switch
-            size="sm"
-            checked={autoAcceptPermissions}
-            aria-label="自动接受权限"
-            tabIndex={-1}
-            className="pointer-events-none"
-          />
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-
-  const reduceMotion = useReducedMotion();
-  const previewExpandTransition = reduceMotion
-    ? { duration: 0 }
-    : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
-
-
 
   const previewStrip = (
     <AnimatePresence initial={false}>
@@ -533,15 +429,19 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     </AnimatePresence>
   );
 
-  // 两种状态共用同一个官方组合,只有外层包装不同。
+  // ── 官方 Prompt Input 组合(https://ui.shadcn.com/docs/ai-elements/aria/model-selector):
+  //    InputGroup + InputGroupTextarea(p-3) + block-end addon
+  //    [⊕ outline] … ml-auto [模型▾][强度▾] … [↑ default]。
+  //    间距全部来自原语烘焙值(textarea py-3 / addon px-3 pb-3 / sm h-8 px-2.5),
+  //    调用处不再叠加任何 padding/尺寸类。
   const composerCard = (
-    <InputGroup className="rounded-3xl border border-border/70 bg-muted shadow-xs has-[[data-slot=input-group-control]:focus-visible]:ring-0">
+    <InputGroup className="rounded-3xl bg-muted/50">
       {previewStrip}
       <div className="relative w-full min-w-0">
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="max-h-40 min-h-16 w-full resize-none self-stretch border-0 bg-transparent px-4 pb-2 pt-4 text-left text-base leading-7 shadow-none outline-none placeholder:font-normal focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="p-3"
           placeholder={composerPlaceholder}
           value={promptInput}
           onCompositionStart={onPromptCompositionStart}
@@ -555,7 +455,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           rows={1}
         />
       </div>
-      <InputGroupAddon align="block-end" className="w-full px-3 pb-3 pt-1">
+      <InputGroupAddon align="block-end">
         <InputGroupButton
           size="icon-sm"
           variant="outline"
@@ -564,7 +464,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           title="添加附件"
           onClick={onOpenAttachmentPicker}
         >
-          <PlusIcon className="size-4" />
+          <PlusIcon />
         </InputGroupButton>
         <input
           ref={attachmentInputRef as RefObject<HTMLInputElement>}
@@ -574,25 +474,131 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           className="hidden"
           onChange={onAttachmentInputChange}
         />
-        {/* ml-auto 在第一个菜单触发器上:模型/强度紧挨发送按钮(官方布局) */}
-        <div className="ml-auto flex items-center gap-0.5">
-          {modelMenu}
-          {effortMenu}
-        </div>
+        <ModelSelector
+          open={showModelPicker}
+          onOpenChange={(open) => {
+            if (open !== showModelPicker) onToggleModelPicker();
+          }}
+        >
+          <ModelSelectorTrigger asChild>
+            <InputGroupButton
+              size="sm"
+              variant="outline"
+              className="ml-auto min-w-0"
+              aria-label="选择模型"
+              title="选择模型"
+            >
+              <span className="min-w-0 truncate">
+                {hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}
+              </span>
+              <ChevronDownIcon />
+            </InputGroupButton>
+          </ModelSelectorTrigger>
+          <ModelSelectorContent title={labels.model}>
+            <ModelSelectorInput
+              value={modelPickerSearch}
+              onChange={(event) => onModelPickerSearchChange(event.target.value)}
+              placeholder="搜索模型..."
+            />
+            <ModelSelectorList>
+              {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
+                <Fragment key={provider}>
+                  {groupIndex > 0 ? <ModelSelectorSeparator /> : null}
+                  <ModelSelectorGroup heading={provider}>
+                    {refs.map((modelRef) => {
+                      const display = getModelDisplay(modelRef);
+                      const selected = modelRef === activeModel;
+                      return (
+                        <ModelSelectorItem
+                          key={modelRef}
+                          onSelect={() => onApplyModel(modelRef)}
+                          title={modelRef}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{display.label || modelRef}</span>
+                          {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
+                        </ModelSelectorItem>
+                      );
+                    })}
+                  </ModelSelectorGroup>
+                </Fragment>
+              )) : null}
+              {hasConfiguredModel ? null : (
+                <ModelSelectorGroup heading="未配置模型">
+                  <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
+                    <span className="min-w-0 flex-1">打开设置配置模型…</span>
+                  </ModelSelectorItem>
+                </ModelSelectorGroup>
+              )}
+              <ModelSelectorEmpty visible={hasConfiguredModel && groups.length === 0}>
+                没有匹配的模型
+              </ModelSelectorEmpty>
+            </ModelSelectorList>
+          </ModelSelectorContent>
+        </ModelSelector>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <InputGroupButton
+              size="sm"
+              variant="outline"
+              aria-label="推理强度与自动权限"
+              title="推理强度与自动权限"
+            >
+              <span className="text-muted-foreground">强度</span>
+              <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
+              <ChevronDownIcon />
+            </InputGroupButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]">
+            <DropdownMenuLabel>推理强度</DropdownMenuLabel>
+            <DropdownMenuGroup>
+              {thinkingLevelOptions.map((level) => {
+                const meta = thinkingLevelMeta(level);
+                const active = activeThinkingLevel === level;
+                return (
+                  <DropdownMenuItem
+                    key={level}
+                    onSelect={() => onApplyThinkingLevel(level)}
+                    className="justify-between gap-2"
+                  >
+                    <span>{meta.label}</span>
+                    {active ? <CheckIcon width={14} height={14} /> : null}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                onToggleAutoAcceptPermissions();
+              }}
+              className="justify-between gap-2"
+            >
+              <span>自动接受权限</span>
+              <Switch
+                size="sm"
+                checked={autoAcceptPermissions}
+                aria-label="自动接受权限"
+                tabIndex={-1}
+                className="pointer-events-none"
+              />
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <PromptInputSubmit
-          className="transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 [&_svg]:size-4"
+          size="icon-sm"
+          variant="default"
+          className="rounded-full"
           disabled={submitDisabled}
           onClick={onPrimaryAction}
           onStop={onPrimaryAction}
           status={showStop ? "streaming" : undefined}
           aria-label={showStop ? "停止生成" : "发送"}
           title={primaryTitle}
-          variant="contrast"
         />
       </InputGroupAddon>
     </InputGroup>
   );
-
   return (
     <div className={showEmptyState ? "mx-auto flex w-full max-w-[620px] flex-col items-stretch justify-center px-2" : "w-full"}>
       <div className="flex w-full flex-col gap-3">
@@ -734,4 +740,5 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       </div>
     </div>
   );
+
 }
