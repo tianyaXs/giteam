@@ -349,7 +349,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const modelMenu = (
     <ModelSelector open={showModelPicker} onOpenChange={(open) => { if (open !== showModelPicker) onToggleModelPicker(); }}>
       <ModelSelectorTrigger asChild>
-        <InputGroupButton size="sm" className="min-w-0">
+        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full">
           <span className="min-w-0 truncate">{hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
         </InputGroupButton>
@@ -595,7 +595,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           status={showStop ? "streaming" : undefined}
           aria-label={showStop ? "停止生成" : "发送"}
           title={primaryTitle}
-          variant="default"
+          variant="contrast"
         />
       </InputGroupAddon>
     </InputGroup>
