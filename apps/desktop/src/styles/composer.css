@@ -1,0 +1,21 @@
+/* Composer style isolation ─────────────────────────────────────
+   The composer subtree is pinned to the official shadcn/ai-elements
+   baseline (16px inherited, normal weight) so app-wide density rules
+   (body 13px, custom button/textarea recipes) cannot leak in.
+   Scope: .giteam-composer on the InputGroup root. */
+.giteam-composer {
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.giteam-composer textarea {
+  font: inherit;
+  letter-spacing: normal;
+}
+.giteam-composer ::placeholder {
+  font-weight: 400;
+  opacity: 1;
+}
+.giteam-composer button {
+  font: inherit;
+}
