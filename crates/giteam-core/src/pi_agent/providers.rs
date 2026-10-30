@@ -1110,7 +1110,15 @@ impl ProviderCatalog {
             name: model.name.clone(),
             api: model.api.clone(),
             base_url: model.base_url.clone(),
-            reasoning: model.reasoning,
+            // reasoning 与 image_input 同一类清单缺标记问题：自定义/第三方
+            // provider（openai-compatible、中转 relay）的 pi 清单普遍不标
+            // reasoning，导致前端只给 auto/off 两档（glm-5.3 实测）。乐观规则：
+            // ① 自定义 provider（is_removable）② 第三方 endpoint ③ GLM-5 系列
+            // 显式家族。误乐观（端点真不支持）代价仅是多几档不可用的选项。
+            reasoning: model.reasoning
+                || is_removable_custom_provider_id(&model.provider)
+                || is_third_party_endpoint(&model.base_url)
+                || model.id.to_lowercase().starts_with("glm-5"),
             supports_xhigh: entry.supports_xhigh(),
             // image_input：三轨乐观，避免静默丢图（用户明确要求"默认允许图片"）。
             // ① pi 清单明确标 Image（内置视觉模型如 Claude/GPT-4o）→ 支持；
