@@ -56,7 +56,7 @@ const DropdownMenuContent = forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-[2605] min-w-40 overflow-hidden rounded-xl border border-border/70 bg-background/98 p-1 text-foreground shadow-[0_16px_40px_rgba(15,23,42,0.16)] backdrop-blur-sm",
+        "z-[2605] min-w-40 overflow-hidden rounded-2xl bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-foreground/5 outline-none dark:ring-foreground/10",
         className
       )}
       {...props}
@@ -113,7 +113,7 @@ const DropdownMenuLabel = forwardRef<
 >(({ className, inset, ...props }, ref) => (
   <DropdownMenuPrimitive.Label
     ref={ref}
-    className={cn("px-2.5 py-1.5 text-xs font-medium text-muted-foreground", inset && "pl-8", className)}
+    className={cn("px-2 py-1 text-xs text-muted-foreground", inset && "pl-8", className)}
     {...props}
   />
 ));
