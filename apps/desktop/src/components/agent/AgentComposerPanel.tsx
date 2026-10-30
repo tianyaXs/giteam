@@ -541,7 +541,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="max-h-40 min-h-12 w-full resize-none self-stretch border-0 bg-transparent px-4 py-3 text-left text-base leading-7 shadow-none outline-none placeholder:font-normal focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="max-h-40 min-h-16 w-full resize-none self-stretch border-0 bg-transparent px-4 pb-2 pt-4 text-left text-base leading-7 shadow-none outline-none placeholder:font-normal focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           placeholder={composerPlaceholder}
           value={promptInput}
           onCompositionStart={onPromptCompositionStart}
@@ -555,7 +555,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           rows={1}
         />
       </div>
-      <InputGroupAddon align="block-end" className="w-full px-3 pb-2.5 pt-0">
+      <InputGroupAddon align="block-end" className="w-full px-3 pb-3 pt-1">
         <InputGroupButton
           size="icon-sm"
           variant="outline"
