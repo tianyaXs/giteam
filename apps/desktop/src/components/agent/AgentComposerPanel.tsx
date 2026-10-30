@@ -44,6 +44,8 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
 import { Badge } from "../ui/badge";
@@ -403,11 +405,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <InputGroupButton size="sm" className="min-w-0">
+          <span className="shrink-0 text-muted-foreground">强度</span>
           <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
         </InputGroupButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[180px]">
+      <DropdownMenuContent align="end" className="min-w-[160px]">
+        <DropdownMenuLabel>推理强度</DropdownMenuLabel>
         <DropdownMenuGroup>
           {thinkingLevelOptions.map((level) => {
             const meta = thinkingLevelMeta(level);
@@ -418,28 +422,29 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                 onSelect={() => onApplyThinkingLevel(level)}
                 className="justify-between gap-2"
               >
-                <span>推理强度 · {meta.label}</span>
+                <span>{meta.label}</span>
                 {active ? <CheckIcon width={14} height={14} /> : null}
               </DropdownMenuItem>
             );
           })}
-          <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault();
-              onToggleAutoAcceptPermissions();
-            }}
-            className="justify-between gap-2"
-          >
-            <span>自动接受权限</span>
-            <Switch
-              size="sm"
-              checked={autoAcceptPermissions}
-              aria-label="自动接受权限"
-              tabIndex={-1}
-              className="pointer-events-none"
-            />
-          </DropdownMenuItem>
         </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault();
+            onToggleAutoAcceptPermissions();
+          }}
+          className="justify-between gap-2"
+        >
+          <span>自动接受权限</span>
+          <Switch
+            size="sm"
+            checked={autoAcceptPermissions}
+            aria-label="自动接受权限"
+            tabIndex={-1}
+            className="pointer-events-none"
+          />
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
