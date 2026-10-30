@@ -349,7 +349,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const modelMenu = (
     <ModelSelector open={showModelPicker} onOpenChange={(open) => { if (open !== showModelPicker) onToggleModelPicker(); }}>
       <ModelSelectorTrigger asChild>
-        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full">
+        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full text-sm">
           <span className="min-w-0 truncate">{hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
         </InputGroupButton>
@@ -404,7 +404,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const effortMenu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full">
+        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full text-sm">
           <span className="shrink-0 text-muted-foreground">强度</span>
           <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
