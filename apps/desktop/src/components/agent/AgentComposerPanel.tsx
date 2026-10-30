@@ -46,24 +46,27 @@ import {
   PromptInputSubmit,
   PromptInputTextarea
 } from "../ai-elements/prompt-input";
-import { SendIcon } from "../common/AppChromeIcons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from "../ui/dropdown-menu";
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+} from "../ui/input-group";
 import { Switch } from "../ui/switch";
 import { cn } from "../../lib/utils";
+import { CheckIcon, CloseIcon } from "../icons";
 import {
-  CheckIcon,
-  CloseIcon,
-  ImageIcon
-} from "../icons";
-import { ChevronDownIcon, Sparkles, Terminal, FilePen, FileCode, SlidersHorizontal, Wrench, type LucideIcon } from "lucide-react";
+  ChevronDownIcon,
+  ImagePlus,
+  PlusIcon,
+  Sparkles,
+  Terminal,
+  FilePen,
+  FileCode,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 
 type SlashCommandOption = {
   id: string;
@@ -160,36 +163,12 @@ const COMPOSER_SUGGESTIONS = [
   "帮我优化性能热点"
 ];
 
-type ComposerEditorProps = {
-  className?: string;
-  textareaClassName?: string;
-  promptInputRef: RefObject<HTMLTextAreaElement | null>;
-  promptInput: string;
-  placeholder: string;
-  onCompositionStart: () => void;
-  onCompositionEnd: () => void;
-  onChange: ChangeEventHandler<HTMLTextAreaElement>;
-  onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
-  onPaste: ClipboardEventHandler<HTMLTextAreaElement>;
-  onContextMenu?: MouseEventHandler<HTMLTextAreaElement>;
-  onDragOver: DragEventHandler<HTMLTextAreaElement>;
-  onDrop: DragEventHandler<HTMLTextAreaElement>;
-  slashOpen: boolean;
-  slashSuggestions: SlashCommandOption[];
-  slashActiveIndex: number;
-  onHoverSlashSuggestion: (index: number) => void;
-  onActivateSlashCommand: (command: SlashCommandOption) => void;
-};
-
-type ComposerAttachmentButtonProps = {
-  buttonClassName?: string;
-  attachmentMenuOpen: boolean;
-  onToggleAttachmentMenu: () => void;
-  attachmentInputRef: RefObject<HTMLInputElement | null>;
-  attachmentInputAccept: string;
-  onOpenAttachmentPicker: () => void;
-  onAttachmentInputChange: ChangeEventHandler<HTMLInputElement>;
-};
+function permissionToolIcon(tool: string): LucideIcon {
+  if (tool === "bash") return Terminal;
+  if (tool === "edit" || tool === "hashline_edit" || tool === "write") return FilePen;
+  if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return FileCode;
+  return Wrench;
+}
 
 /** models.dev 有 logo 的提供商白名单;之外的提供商用兜底图标。 */
 const LOGO_PROVIDERS = new Set([
@@ -198,405 +177,6 @@ const LOGO_PROVIDERS = new Set([
   "perplexity", "zai", "zhipuai", "alibaba", "moonshotai", "lmstudio",
   "huggingface", "cerebras", "google-vertex", "ollama"
 ]);
-
-type ComposerConfigButtonProps = {
-  modelPickerRef: RefObject<HTMLDivElement | null>;
-  showModelPicker: boolean;
-  onToggleModelPicker: () => void;
-  configSummaryLabel: string;
-  /** 是否已有可用的已启用模型；否则引导去设置配置。 */
-  hasConfiguredModel: boolean;
-  modelPickerSearch: string;
-  onModelPickerSearchChange: (value: string) => void;
-  modelValueLabel: string;
-  activeThinkingLevel: AgentThinkingLevel;
-  thinkingLevelOptions: AgentThinkingLevel[];
-  thinkingValueLabel: string;
-  onApplyThinkingLevel: (level: AgentThinkingLevel) => void;
-  autoAcceptPermissions: boolean;
-  onToggleAutoAcceptPermissions: () => void;
-  configuredModelCandidates: string[];
-  activeModel: string;
-  getModelDisplay: (modelRef: string) => AgentModelDisplay;
-  onApplyModel: (modelRef: string) => void;
-  onOpenModelSettings: () => void;
-  labels: {
-    model: string;
-    configureModels: string;
-    configureModelsAction: string;
-  };
-};
-
-function permissionToolIcon(tool: string): LucideIcon {
-  if (tool === "bash") return Terminal;
-  if (tool === "edit" || tool === "hashline_edit" || tool === "write") return FilePen;
-  if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return FileCode;
-  return Wrench;
-}
-
-function ComposerEditor(props: ComposerEditorProps) {
-  return (
-    <div className={cn("relative min-w-0 flex-1", props.className)}>
-      {props.slashOpen && props.slashSuggestions.length > 0 ? (
-        <div className="absolute bottom-full left-0 z-[2600] mb-2 grid max-h-72 w-[min(520px,calc(100vw-48px))] gap-1 overflow-auto rounded-xl border border-border/70 bg-background p-1 shadow-xl">
-          {props.slashSuggestions.map((command, index) => (
-            <Button
-              key={command.id}
-              className={cn(
-                "grid h-auto w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 text-left",
-                index === props.slashActiveIndex && "bg-accent text-accent-foreground"
-              )}
-              onMouseEnter={() => props.onHoverSlashSuggestion(index)}
-              onClick={() => props.onActivateSlashCommand(command)}
-              variant="ghost"
-            >
-              <span className="font-mono text-xs font-semibold text-muted-foreground">/{command.trigger}</span>
-              <span className="min-w-0 truncate text-sm font-medium">{command.title}</span>
-              <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">
-                {command.source}
-              </Badge>
-              {command.description ? (
-                <span className="col-start-2 min-w-0 truncate text-xs text-muted-foreground">{command.description}</span>
-              ) : null}
-            </Button>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="flex min-w-0 items-end">
-        <PromptInputTextarea
-          ref={props.promptInputRef as RefObject<HTMLTextAreaElement>}
-          className={cn(
-            "min-h-8 max-h-40 resize-none rounded-none border-0 bg-transparent px-0 py-1 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-            props.textareaClassName
-          )}
-          style={{ fontSize: 15, lineHeight: "24px" }}
-          placeholder={props.placeholder}
-          value={props.promptInput}
-          onCompositionStart={props.onCompositionStart}
-          onCompositionEnd={props.onCompositionEnd}
-          onChange={props.onChange}
-          onKeyDown={props.onKeyDown}
-          onPaste={props.onPaste}
-          onContextMenu={props.onContextMenu}
-          onDragOver={props.onDragOver}
-          onDrop={props.onDrop}
-          rows={1}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ComposerAddIcon(props: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={props.className}
-      fill="none"
-      height="20"
-      viewBox="0 0 20 20"
-      width="20"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path d="M10 3.75V16.25M3.75 10H16.25" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
-    </svg>
-  );
-}
-
-function ComposerAttachmentButton(props: ComposerAttachmentButtonProps) {
-  return (
-    <>
-      <DropdownMenu
-        open={props.attachmentMenuOpen}
-        onOpenChange={(open) => {
-          if (open !== props.attachmentMenuOpen) props.onToggleAttachmentMenu();
-        }}
-      >
-        <DropdownMenuTrigger asChild>
-          <Button
-            className={cn(
-              // 参考底栏：干净细线 +，默认黑色；与发送按钮同为 size-8。
-              "size-8 rounded-full text-foreground [&_svg]:size-[18px]",
-              "hover:bg-muted/70 hover:text-foreground",
-              props.attachmentMenuOpen && "bg-muted text-foreground",
-              props.buttonClassName
-            )}
-            aria-label={props.attachmentMenuOpen ? "关闭附件菜单" : "添加附件"}
-            aria-expanded={props.attachmentMenuOpen}
-            title="添加附件"
-            variant="ghost"
-            size="icon"
-          >
-            {props.attachmentMenuOpen ? <CloseIcon width={16} height={16} /> : <ComposerAddIcon />}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-56">
-          <DropdownMenuGroup>
-            <DropdownMenuItem className="gap-2" onClick={props.onOpenAttachmentPicker}>
-              <ImageIcon width={18} height={18} aria-hidden="true" />
-              <span>上传图片或文档</span>
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <input
-        ref={props.attachmentInputRef as RefObject<HTMLInputElement>}
-        type="file"
-        accept={props.attachmentInputAccept}
-        multiple
-        className="hidden"
-        onChange={props.onAttachmentInputChange}
-      />
-    </>
-  );
-}
-
-function ComposerAttachmentPreview({
-  attachment,
-  onRemove
-}: {
-  attachment: AgentAttachment;
-  onRemove: (id: string) => void;
-}) {
-  if (isImageAttachment(attachment)) {
-    return (
-      <div
-        className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
-        title={attachment.filename}
-      >
-        <img
-          src={attachment.dataUrl}
-          alt={attachment.filename}
-          className="size-full rounded-[13px] border border-border/35 bg-background object-cover"
-        />
-        <Button
-          className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
-          onClick={() => onRemove(attachment.id)}
-          aria-label={`移除 ${attachment.filename}`}
-          variant="ghost"
-          size="icon"
-        >
-          <CloseIcon width={12} height={12} />
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
-      title={attachment.filename}
-    >
-      <div className="flex size-full items-center justify-center rounded-[13px] border border-border/35 bg-muted/45">
-        <span className="max-w-[44px] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-semibold tracking-normal text-foreground/85">
-          {getAttachmentBadgeLabel(attachment)}
-        </span>
-      </div>
-      <Button
-        className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
-        onClick={() => onRemove(attachment.id)}
-        aria-label={`移除 ${attachment.filename}`}
-        variant="ghost"
-        size="icon"
-      >
-        <CloseIcon width={12} height={12} />
-      </Button>
-    </div>
-  );
-}
-
-function ComposerConfigButton(props: ComposerConfigButtonProps) {
-  const updateOpen = (open: boolean) => {
-    if (open !== props.showModelPicker) props.onToggleModelPicker();
-  };
-  const search = props.modelPickerSearch.trim().toLowerCase();
-  // 按 provider 分组 + 搜索过滤(models.dev 有 logo 的提供商才渲染图标,否则用兜底图标)。
-  const groups = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const modelRef of props.configuredModelCandidates) {
-      const display = props.getModelDisplay(modelRef);
-      if (
-        search
-        && !(modelRef.toLowerCase().includes(search)
-          || (display.label || "").toLowerCase().includes(search)
-          || (display.provider || "").toLowerCase().includes(search))
-      ) {
-        continue;
-      }
-      const provider = display.provider || "其他";
-      if (!map.has(provider)) map.set(provider, []);
-      map.get(provider)!.push(modelRef);
-    }
-    return [...map.entries()];
-  }, [props.configuredModelCandidates, props.getModelDisplay, search]);
-
-  const pillButton = (
-    <Button
-      className={cn(
-        "h-7 max-w-[220px] rounded-full px-2.5 py-0 text-[13px] font-medium leading-4 text-foreground",
-        "hover:bg-muted/70 hover:text-foreground",
-        "focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
-      )}
-      aria-label={props.hasConfiguredModel ? "选择模型" : props.labels.configureModels}
-      title={props.hasConfiguredModel ? "选择模型" : props.labels.configureModels}
-      variant="ghost"
-    >
-      <span className="min-w-0 truncate">
-        {props.hasConfiguredModel ? props.modelValueLabel || props.configSummaryLabel : props.configSummaryLabel}
-      </span>
-      <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
-    </Button>
-  );
-
-  // 官方双触发器之二:推理强度▾(含自动权限开关),与模型▾并排。
-  const effortTrigger = (
-    <PromptInputActionMenu>
-      <PromptInputActionMenuTrigger
-        className="h-7 max-w-[140px] rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 hover:text-foreground focus-visible:ring-0 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
-        aria-label="推理强度与自动权限"
-        title="推理强度与自动权限"
-      >
-        <span className="min-w-0 truncate">{props.thinkingValueLabel || "自动"}</span>
-        <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
-      </PromptInputActionMenuTrigger>
-      <PromptInputActionMenuContent align="end" className="min-w-[180px]">
-        {props.thinkingLevelOptions.map((level) => {
-          const meta = thinkingLevelMeta(level);
-          const active = props.activeThinkingLevel === level;
-          return (
-            <PromptInputActionMenuItem
-              key={level}
-              onSelect={() => props.onApplyThinkingLevel(level)}
-              className="justify-between gap-2"
-            >
-              <span>推理强度 · {meta.label}</span>
-              {active ? <CheckIcon width={14} height={14} /> : null}
-            </PromptInputActionMenuItem>
-          );
-        })}
-        <PromptInputActionMenuItem
-          onSelect={(event) => {
-            event.preventDefault();
-            props.onToggleAutoAcceptPermissions();
-          }}
-          className="justify-between gap-2"
-        >
-          <span>自动接受权限</span>
-          <Switch
-            size="sm"
-            checked={props.autoAcceptPermissions}
-            aria-label="自动接受权限"
-            tabIndex={-1}
-            className="pointer-events-none"
-          />
-        </PromptInputActionMenuItem>
-      </PromptInputActionMenuContent>
-    </PromptInputActionMenu>
-  );
-
-  if (!props.hasConfiguredModel) {
-    return (
-      <div ref={props.modelPickerRef as RefObject<HTMLDivElement>}>
-        <span onClick={props.onOpenModelSettings} role="button" tabIndex={0}>
-          {pillButton}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div ref={props.modelPickerRef as RefObject<HTMLDivElement>} className="flex items-center gap-0.5">
-      <ModelSelector open={props.showModelPicker} onOpenChange={updateOpen}>
-        <ModelSelectorTrigger asChild>
-          {pillButton}
-        </ModelSelectorTrigger>
-        <ModelSelectorContent title={props.labels.model}>
-          <ModelSelectorInput
-            value={props.modelPickerSearch}
-            onChange={(event) => props.onModelPickerSearchChange(event.target.value)}
-            placeholder="搜索模型..."
-          />
-          <ModelSelectorList>
-            {groups.map(([provider, refs]) => (
-              <ModelSelectorGroup key={provider} heading={provider}>
-                {refs.map((modelRef) => {
-                  const display = props.getModelDisplay(modelRef);
-                  const selected = modelRef === props.activeModel;
-                  const providerKey = (display.provider || "").toLowerCase();
-                  return (
-                    <ModelSelectorItem
-                      key={modelRef}
-                      onSelect={() => props.onApplyModel(modelRef)}
-                      title={modelRef}
-                    >
-                      {LOGO_PROVIDERS.has(providerKey) ? (
-                        <ModelSelectorLogo provider={providerKey} />
-                      ) : (
-                        <Sparkles className="size-3 shrink-0 text-muted-foreground" />
-                      )}
-                      <ModelSelectorName>{display.label || modelRef}</ModelSelectorName>
-                      {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
-                    </ModelSelectorItem>
-                  );
-                })}
-              </ModelSelectorGroup>
-            ))}
-            <ModelSelectorEmpty visible={groups.length === 0}>
-              没有匹配的模型
-            </ModelSelectorEmpty>
-          </ModelSelectorList>
-        </ModelSelectorContent>
-      </ModelSelector>
-      {effortTrigger}
-    </div>
-  );
-}
-
-function ComposerSubmitButton({
-  activeSessionBusy,
-  canSubmit,
-  hasModel,
-  onPrimaryAction
-}: {
-  activeSessionBusy: boolean;
-  canSubmit: boolean;
-  hasModel: boolean;
-  onPrimaryAction: () => void;
-}) {
-  // 单一主按钮态机：有内容 → 可发送（空闲发新消息 / busy 插话）；busy 且无内容 → 停止。
-  const canSteer = activeSessionBusy && canSubmit;
-  const showStop = activeSessionBusy && !canSubmit;
-  const disabled = !activeSessionBusy && !canSubmit;
-  const idleTitle = !hasModel ? "请先配置并选择模型" : canSubmit ? "发送" : "输入内容后发送";
-  const primaryLabel = canSteer ? "插话发送" : showStop ? "停止" : "发送";
-  const primaryTitle = canSteer
-    ? "发送补充指令（当前任务进行中插话）"
-    : showStop
-      ? "停止生成"
-      : idleTitle;
-  return (
-    <PromptInputSubmit
-      className={cn(
-        "size-8 rounded-full shadow-sm transition-[transform,background-color,color,box-shadow] duration-150",
-        // 覆盖默认 [&_svg]:size-4，让箭头在圆钮里更饱满。
-        "[&_svg]:size-5",
-        "hover:-translate-y-0.5 active:translate-y-0",
-        disabled
-          ? "shadow-none hover:translate-y-0 hover:bg-muted/80"
-          : "hover:shadow-md"
-      )}
-      disabled={disabled}
-      onClick={onPrimaryAction}
-      aria-label={primaryLabel}
-      title={primaryTitle}
-      variant={disabled ? "secondary" : "contrast"}
-      status={showStop ? "streaming" : undefined}
-    >
-      <SendIcon busy={showStop} />
-    </PromptInputSubmit>
-  );
-}
 
 export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const {
@@ -704,32 +284,180 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     return () => observer.disconnect();
   }, [showEmptyState, hasComposerPreviews, attachments.length, graphRefs.length]);
 
-  const editorProps = {
-    textareaClassName: "py-0 text-[15px] leading-7",
-    promptInputRef,
-    promptInput,
-    placeholder: composerPlaceholder,
-    onCompositionStart: onPromptCompositionStart,
-    onCompositionEnd: onPromptCompositionEnd,
-    onChange: onPromptChange,
-    onKeyDown: onPromptKeyDown,
-    onPaste: onPromptPaste,
-    onContextMenu: onPromptContextMenu,
-    onDragOver: onPromptDragOver,
-    onDrop: onPromptDrop,
-    slashOpen,
-    slashSuggestions,
-    slashActiveIndex,
-    onHoverSlashSuggestion,
-    onActivateSlashCommand
-  } as const;
+  // ── 官方 Prompt Input 解剖结构:InputGroup + textarea(p-3) + addon 行
+  //    [附件] … [模型▾][强度▾][发送] ── 全部官方原语,无旧壳。
+  const showStop = activeSessionBusy && !canSubmit;
+  const submitDisabled = !activeSessionBusy && !canSubmit;
+  const primaryTitle = showStop
+    ? "停止生成"
+    : activeSessionBusy && canSubmit
+      ? "发送补充指令（当前任务进行中插话）"
+      : (activeModel || "").trim()
+        ? canSubmit
+          ? "发送"
+          : "输入内容后发送"
+        : "请先配置并选择模型";
+
+  const search = modelPickerSearch.trim().toLowerCase();
+  const groups = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const modelRef of configuredModelCandidates) {
+      const display = getModelDisplay(modelRef);
+      if (
+        search
+        && !(modelRef.toLowerCase().includes(search)
+          || (display.label || "").toLowerCase().includes(search)
+          || (display.provider || "").toLowerCase().includes(search))
+      ) {
+        continue;
+      }
+      const provider = display.provider || "其他";
+      if (!map.has(provider)) map.set(provider, []);
+      map.get(provider)!.push(modelRef);
+    }
+    return [...map.entries()];
+  }, [configuredModelCandidates, getModelDisplay, search]);
+
+  const slashOverlay = slashOpen && slashSuggestions.length > 0 ? (
+    <div className="absolute bottom-full left-0 z-[2600] mb-2 grid max-h-72 w-[min(520px,calc(100vw-48px))] gap-1 overflow-auto rounded-xl border border-border/70 bg-background p-1 shadow-xl">
+      {slashSuggestions.map((command, index) => (
+        <Button
+          key={command.id}
+          className={cn(
+            "grid h-auto w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 text-left",
+            index === slashActiveIndex && "bg-accent text-accent-foreground"
+          )}
+          onMouseEnter={() => onHoverSlashSuggestion(index)}
+          onClick={() => onActivateSlashCommand(command)}
+          variant="ghost"
+        >
+          <span className="font-mono text-xs font-semibold text-muted-foreground">/{command.trigger}</span>
+          <span className="min-w-0 truncate text-sm font-medium">{command.title}</span>
+          <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">
+            {command.source}
+          </Badge>
+          {command.description ? (
+            <span className="col-start-2 min-w-0 truncate text-xs text-muted-foreground">{command.description}</span>
+          ) : null}
+        </Button>
+      ))}
+    </div>
+  ) : null;
+
+  const modelMenu = (
+    <ModelSelector open={showModelPicker} onOpenChange={(open) => { if (open !== showModelPicker) onToggleModelPicker(); }}>
+      <ModelSelectorTrigger asChild>
+        <InputGroupButton
+          size="sm"
+          variant="ghost"
+          className="h-7 rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
+          aria-label="选择模型"
+          title="选择模型"
+        >
+          <span className="min-w-0 truncate">
+            {hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}
+          </span>
+          <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+        </InputGroupButton>
+      </ModelSelectorTrigger>
+      <ModelSelectorContent title={labels.model}>
+        <ModelSelectorInput
+          value={modelPickerSearch}
+          onChange={(event) => onModelPickerSearchChange(event.target.value)}
+          placeholder="搜索模型..."
+        />
+        <ModelSelectorList>
+          {hasConfiguredModel ? groups.map(([provider, refs]) => (
+            <ModelSelectorGroup key={provider} heading={provider}>
+              {refs.map((modelRef) => {
+                const display = getModelDisplay(modelRef);
+                const selected = modelRef === activeModel;
+                const providerKey = (display.provider || "").toLowerCase();
+                return (
+                  <ModelSelectorItem
+                    key={modelRef}
+                    onSelect={() => onApplyModel(modelRef)}
+                    title={modelRef}
+                  >
+                    {LOGO_PROVIDERS.has(providerKey) ? (
+                      <ModelSelectorLogo provider={providerKey} />
+                    ) : (
+                      <Sparkles className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <ModelSelectorName>{display.label || modelRef}</ModelSelectorName>
+                    {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
+                  </ModelSelectorItem>
+                );
+              })}
+            </ModelSelectorGroup>
+          )) : null}
+          {hasConfiguredModel ? null : (
+            <ModelSelectorGroup heading="未配置模型">
+              <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
+                <Sparkles className="size-3 shrink-0 text-muted-foreground" />
+                <ModelSelectorName>打开设置配置模型…</ModelSelectorName>
+              </ModelSelectorItem>
+            </ModelSelectorGroup>
+          )}
+          <ModelSelectorEmpty visible={hasConfiguredModel && groups.length === 0}>
+            没有匹配的模型
+          </ModelSelectorEmpty>
+        </ModelSelectorList>
+      </ModelSelectorContent>
+    </ModelSelector>
+  );
+
+  const effortMenu = (
+    <PromptInputActionMenu>
+      <PromptInputActionMenuTrigger
+        className="h-7 rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
+        aria-label="推理强度与自动权限"
+        title="推理强度与自动权限"
+      >
+        <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
+        <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+      </PromptInputActionMenuTrigger>
+      <PromptInputActionMenuContent align="end" className="min-w-[180px]">
+        {thinkingLevelOptions.map((level) => {
+          const meta = thinkingLevelMeta(level);
+          const active = activeThinkingLevel === level;
+          return (
+            <PromptInputActionMenuItem
+              key={level}
+              onSelect={() => onApplyThinkingLevel(level)}
+              className="justify-between gap-2"
+            >
+              <span>推理强度 · {meta.label}</span>
+              {active ? <CheckIcon width={14} height={14} /> : null}
+            </PromptInputActionMenuItem>
+          );
+        })}
+        <PromptInputActionMenuItem
+          onSelect={(event) => {
+            event.preventDefault();
+            onToggleAutoAcceptPermissions();
+          }}
+          className="justify-between gap-2"
+        >
+          <span>自动接受权限</span>
+          <Switch
+            size="sm"
+            checked={autoAcceptPermissions}
+            aria-label="自动接受权限"
+            tabIndex={-1}
+            className="pointer-events-none"
+          />
+        </PromptInputActionMenuItem>
+      </PromptInputActionMenuContent>
+    </PromptInputActionMenu>
+  );
 
   const reduceMotion = useReducedMotion();
   const previewExpandTransition = reduceMotion
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
 
-  // 软悬浮：近距微阴影 + 中层 + 远距弥散，避免「只有描边、贴在平面上」的扁平感。
+  // 软悬浮:近距微阴影 + 中层 + 远距弥散。
   const composerSurfaceClass =
     "border border-border/55 bg-card text-card-foreground shadow-[0_1px_2px_rgba(15,23,42,0.04),0_6px_16px_rgba(15,23,42,0.06),0_18px_44px_rgba(15,23,42,0.09)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.4),0_8px_24px_rgba(0,0,0,0.32)]";
 
@@ -773,11 +501,34 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             {attachments.length > 0 ? (
               <div className="flex min-w-0 flex-wrap items-start gap-1.5">
                 {attachments.map((attachment) => (
-                  <ComposerAttachmentPreview
+                  <div
                     key={attachment.id}
-                    attachment={attachment}
-                    onRemove={onRemoveAttachment}
-                  />
+                    className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+                    title={attachment.filename}
+                  >
+                    {isImageAttachment(attachment) ? (
+                      <img
+                        src={attachment.dataUrl}
+                        alt={attachment.filename}
+                        className="size-full rounded-[13px] border border-border/35 bg-background object-cover"
+                      />
+                    ) : (
+                      <div className="flex size-full items-center justify-center rounded-[13px] border border-border/35 bg-muted/45">
+                        <span className="max-w-[44px] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-semibold text-foreground/85">
+                          {getAttachmentBadgeLabel(attachment)}
+                        </span>
+                      </div>
+                    )}
+                    <Button
+                      className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
+                      onClick={() => onRemoveAttachment(attachment.id)}
+                      aria-label={`移除 ${attachment.filename}`}
+                      variant="ghost"
+                      size="icon"
+                    >
+                      <CloseIcon width={12} height={12} />
+                    </Button>
+                  </div>
                 ))}
               </div>
             ) : null}
@@ -787,28 +538,68 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     </AnimatePresence>
   );
 
-  const configButtonProps: ComposerConfigButtonProps = {
-    modelPickerRef,
-    showModelPicker,
-    onToggleModelPicker,
-    configSummaryLabel,
-    hasConfiguredModel,
-    modelPickerSearch,
-    onModelPickerSearchChange,
-    modelValueLabel,
-    activeThinkingLevel,
-    thinkingLevelOptions,
-    thinkingValueLabel,
-    onApplyThinkingLevel,
-    autoAcceptPermissions,
-    onToggleAutoAcceptPermissions,
-    configuredModelCandidates,
-    activeModel,
-    getModelDisplay,
-    onApplyModel,
-    onOpenModelSettings,
-    labels
-  };
+  // 两种状态共用同一个官方组合,只有外层包装不同。
+  const composerCard = (
+    <InputGroup
+      className={cn(
+        "rounded-3xl border-0 bg-transparent shadow-none focus-within:shadow-none",
+        composerSurfaceClass
+      )}
+    >
+      {previewStrip}
+      <div className="relative min-w-0">
+        {slashOverlay}
+        <PromptInputTextarea
+          ref={promptInputRef as RefObject<HTMLTextAreaElement>}
+          className="max-h-40 min-h-8 resize-none border-0 bg-transparent px-4 py-3 text-[15px] leading-7 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{ fontSize: 15, lineHeight: "24px" }}
+          placeholder={composerPlaceholder}
+          value={promptInput}
+          onCompositionStart={onPromptCompositionStart}
+          onCompositionEnd={onPromptCompositionEnd}
+          onChange={onPromptChange}
+          onKeyDown={onPromptKeyDown}
+          onPaste={onPromptPaste}
+          onContextMenu={onPromptContextMenu}
+          onDragOver={onPromptDragOver}
+          onDrop={onPromptDrop}
+          rows={1}
+        />
+      </div>
+      <InputGroupAddon align="block-end" className="px-3 pb-2.5 pt-0">
+        <InputGroupButton
+          size="icon-sm"
+          variant="outline"
+          className="rounded-full"
+          aria-label="添加附件"
+          title="添加附件"
+          onClick={onOpenAttachmentPicker}
+        >
+          <PlusIcon className="size-4" />
+        </InputGroupButton>
+        <input
+          ref={attachmentInputRef as RefObject<HTMLInputElement>}
+          type="file"
+          accept={attachmentInputAccept}
+          multiple
+          className="hidden"
+          onChange={onAttachmentInputChange}
+        />
+        <PromptInputSubmit
+          className="ml-auto size-8 transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 [&_svg]:size-5"
+          disabled={submitDisabled}
+          onClick={onPrimaryAction}
+          onStop={onPrimaryAction}
+          status={showStop ? "streaming" : undefined}
+          aria-label={showStop ? "停止生成" : "发送"}
+          title={primaryTitle}
+          variant="default"
+        />
+        {modelMenu}
+        {effortMenu}
+      </InputGroupAddon>
+    </InputGroup>
+  );
 
   return (
     <div className={showEmptyState ? "mx-auto flex w-full max-w-[620px] flex-col items-stretch justify-center px-2" : "w-full"}>
@@ -823,7 +614,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             {visiblePermissions.map((request) => {
               const view = describePermissionInteraction(request);
               const ToolIcon = permissionToolIcon(view.tool);
-              // 同 AgentModulePanel:仅 pending 阶段渲染,适配 approval-requested 状态。
               return (
                 <Confirmation
                   key={request.id}
@@ -915,7 +705,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             style={emptyGrowUpOffset > 0 ? { marginTop: -emptyGrowUpOffset } : undefined}
           >
             <div className="flex flex-col items-center gap-5">
-              {/* 透明底 logo 本体，深色主题反白；悬浮旋转一周的彩蛋保留 */}
               <img
                 src={appIconMarkUrl}
                 alt=""
@@ -931,37 +720,10 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </div>
             </div>
 
-            <div className={cn("relative flex w-full min-w-0 flex-col gap-3 rounded-3xl p-5", composerSurfaceClass)}>
-              {previewStrip}
-              <div className="flex min-h-[88px] w-full min-w-0 flex-1 flex-col justify-end gap-2">
-                <ComposerEditor className="w-full" {...editorProps} />
-                {/* 官方 addon 行:附件 + 模型▾ 强度▾ + 发送 */}
-                <div className="flex items-center gap-1">
-                  <ComposerAttachmentButton
-                    attachmentMenuOpen={attachmentMenuOpen}
-                    onToggleAttachmentMenu={onToggleAttachmentMenu}
-                    attachmentInputRef={attachmentInputRef}
-                    attachmentInputAccept={attachmentInputAccept}
-                    onOpenAttachmentPicker={onOpenAttachmentPicker}
-                    onAttachmentInputChange={onAttachmentInputChange}
-                  />
-                  <div className="ml-auto flex items-center gap-1">
-                    <ComposerConfigButton {...configButtonProps} />
-                    <ComposerSubmitButton
-                      activeSessionBusy={activeSessionBusy}
-                      canSubmit={canSubmit}
-                      hasModel={Boolean((activeModel || "").trim())}
-                      onPrimaryAction={onPrimaryAction}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
+            {composerCard}
 
-            {/* 建议 chips 紧贴输入卡下方(官方布局);Suggestions 现为普通
-                div 滚动行(官方形态),不会再被 ScrollArea 裁切。 */}
             {onFillPrompt ? (
-              <Suggestions className="-mt-5 justify-center px-2">
+              <Suggestions className="-mt-4 justify-center px-2">
                 {COMPOSER_SUGGESTIONS.map((suggestion) => (
                   <Suggestion
                     key={suggestion}
@@ -976,45 +738,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </Suggestions>
             ) : null}
           </div>
-        ) : (
-          // 旧会话：贴图只叠在输入行上方，底栏「继续跟进」行布局不变，整卡自然向上增高。
-          // 「拉到最新」由 AgentChatFrame 悬浮渲染，避免占行或被 footer overflow 裁切。
-          <div
-            className={cn(
-              // 再收一档厚度：控件 size-8 + py-1，贴边约 4px。
-              "relative flex w-full min-w-0 flex-col rounded-[24px] px-1 py-1",
-              composerSurfaceClass,
-              hasComposerPreviews && "gap-2"
-            )}
-          >
-            {previewStrip}
-            <ComposerEditor
-              {...editorProps}
-              // 与 size-8 控件同高，单行文字上下约 4px。
-              textareaClassName="min-h-8 py-1 text-[15px] leading-6"
-            />
-            {/* 官方 addon 行:附件 + 模型▾ 强度▾ + 发送 */}
-            <div className="flex items-center gap-1">
-              <ComposerAttachmentButton
-                attachmentMenuOpen={attachmentMenuOpen}
-                onToggleAttachmentMenu={onToggleAttachmentMenu}
-                attachmentInputRef={attachmentInputRef}
-                attachmentInputAccept={attachmentInputAccept}
-                onOpenAttachmentPicker={onOpenAttachmentPicker}
-                onAttachmentInputChange={onAttachmentInputChange}
-              />
-              <div className="ml-auto flex items-center gap-1">
-                <ComposerConfigButton {...configButtonProps} />
-                <ComposerSubmitButton
-                  activeSessionBusy={activeSessionBusy}
-                  canSubmit={canSubmit}
-                  hasModel={Boolean((activeModel || "").trim())}
-                  onPrimaryAction={onPrimaryAction}
-                />
-              </div>
-            </div>
-          </div>
-        )}
+        ) : composerCard}
       </div>
     </div>
   );
