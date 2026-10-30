@@ -404,7 +404,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const effortMenu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <InputGroupButton size="sm" className="min-w-0">
+        <InputGroupButton size="sm" variant="outline" className="min-w-0 rounded-full">
           <span className="shrink-0 text-muted-foreground">强度</span>
           <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
