@@ -38,14 +38,14 @@ import {
   ModelSelectorTrigger
 } from "../ai-elements/model-selector";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
+import { PromptInputSubmit, PromptInputTextarea } from "../ai-elements/prompt-input";
 import {
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuItem,
-  PromptInputActionMenuTrigger,
-  PromptInputSubmit,
-  PromptInputTextarea
-} from "../ai-elements/prompt-input";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -347,16 +347,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const modelMenu = (
     <ModelSelector open={showModelPicker} onOpenChange={(open) => { if (open !== showModelPicker) onToggleModelPicker(); }}>
       <ModelSelectorTrigger asChild>
-        <InputGroupButton
-          size="sm"
-          variant="ghost"
-          className="h-7 rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
-          aria-label="选择模型"
-          title="选择模型"
-        >
-          <span className="min-w-0 truncate">
-            {hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}
-          </span>
+        <InputGroupButton size="sm" className="min-w-0">
+          <span className="min-w-0 truncate">{hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}</span>
           <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
         </InputGroupButton>
       </ModelSelectorTrigger>
@@ -408,48 +400,48 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   );
 
   const effortMenu = (
-    <PromptInputActionMenu>
-      <PromptInputActionMenuTrigger
-        className="h-7 rounded-full px-2.5 text-[13px] font-medium text-foreground hover:bg-muted/70 data-[state=open]:bg-muted/70 data-[state=open]:text-foreground"
-        aria-label="推理强度与自动权限"
-        title="推理强度与自动权限"
-      >
-        <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
-        <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
-      </PromptInputActionMenuTrigger>
-      <PromptInputActionMenuContent align="end" className="min-w-[180px]">
-        {thinkingLevelOptions.map((level) => {
-          const meta = thinkingLevelMeta(level);
-          const active = activeThinkingLevel === level;
-          return (
-            <PromptInputActionMenuItem
-              key={level}
-              onSelect={() => onApplyThinkingLevel(level)}
-              className="justify-between gap-2"
-            >
-              <span>推理强度 · {meta.label}</span>
-              {active ? <CheckIcon width={14} height={14} /> : null}
-            </PromptInputActionMenuItem>
-          );
-        })}
-        <PromptInputActionMenuItem
-          onSelect={(event) => {
-            event.preventDefault();
-            onToggleAutoAcceptPermissions();
-          }}
-          className="justify-between gap-2"
-        >
-          <span>自动接受权限</span>
-          <Switch
-            size="sm"
-            checked={autoAcceptPermissions}
-            aria-label="自动接受权限"
-            tabIndex={-1}
-            className="pointer-events-none"
-          />
-        </PromptInputActionMenuItem>
-      </PromptInputActionMenuContent>
-    </PromptInputActionMenu>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <InputGroupButton size="sm" className="min-w-0">
+          <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
+          <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+        </InputGroupButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[180px]">
+        <DropdownMenuGroup>
+          {thinkingLevelOptions.map((level) => {
+            const meta = thinkingLevelMeta(level);
+            const active = activeThinkingLevel === level;
+            return (
+              <DropdownMenuItem
+                key={level}
+                onSelect={() => onApplyThinkingLevel(level)}
+                className="justify-between gap-2"
+              >
+                <span>推理强度 · {meta.label}</span>
+                {active ? <CheckIcon width={14} height={14} /> : null}
+              </DropdownMenuItem>
+            );
+          })}
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              onToggleAutoAcceptPermissions();
+            }}
+            className="justify-between gap-2"
+          >
+            <span>自动接受权限</span>
+            <Switch
+              size="sm"
+              checked={autoAcceptPermissions}
+              aria-label="自动接受权限"
+              tabIndex={-1}
+              className="pointer-events-none"
+            />
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 
   const reduceMotion = useReducedMotion();
