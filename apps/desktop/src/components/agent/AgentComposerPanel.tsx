@@ -435,13 +435,13 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   //    间距全部来自原语烘焙值(textarea py-3 / addon px-3 pb-3 / sm h-8 px-2.5),
   //    调用处不再叠加任何 padding/尺寸类。
   const composerCard = (
-    <InputGroup className="rounded-3xl bg-muted/50">
+    <InputGroup className="rounded-3xl border-border/70 bg-muted/50 [--tw-ring-color:transparent] focus-within:border-border/70">
       {previewStrip}
       <div className="relative w-full min-w-0">
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="p-3"
+          className="min-h-20 p-3 pt-5"
           placeholder={composerPlaceholder}
           value={promptInput}
           onCompositionStart={onPromptCompositionStart}
@@ -588,7 +588,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
         </DropdownMenu>
         <PromptInputSubmit
           size="icon-sm"
-          variant="default"
+          variant="contrast"
           className="rounded-full"
           disabled={submitDisabled}
           onClick={onPrimaryAction}
