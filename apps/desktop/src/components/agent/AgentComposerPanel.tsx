@@ -535,7 +535,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
 
   // 两种状态共用同一个官方组合,只有外层包装不同。
   const composerCard = (
-    <InputGroup className="rounded-3xl border-0 bg-muted shadow-none focus-within:shadow-none">
+    <InputGroup className="rounded-3xl border border-border/70 bg-muted shadow-xs has-[[data-slot=input-group-control]:focus-visible]:ring-0">
       {previewStrip}
       <div className="relative w-full min-w-0">
         {slashOverlay}
