@@ -429,19 +429,20 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     </AnimatePresence>
   );
 
-  // ── 官方 Prompt Input 组合(https://ui.shadcn.com/docs/ai-elements/aria/model-selector):
-  //    InputGroup + InputGroupTextarea(p-3) + block-end addon
-  //    [⊕ outline] … ml-auto [模型▾][强度▾] … [↑ default]。
-  //    间距全部来自原语烘焙值(textarea py-3 / addon px-3 pb-3 / sm h-8 px-2.5),
-  //    调用处不再叠加任何 padding/尺寸类。
+  // ── Official aria-rhea Model Selector composition
+  //    (https://ui.shadcn.com/docs/ai-elements/aria/model-selector):
+  //    InputGroup + InputGroupTextarea(p-3) + block-end addon:
+  //    [⊕ outline rounded-full] … ml-auto [model ▾][effort ▾] … [↑ default rounded-full].
+  //    Spacing comes from aria-rhea baked values; composer.css aligns the local
+  //    (default-shadcn) primitives to those values in this isolated scope.
   const composerCard = (
-    <InputGroup className="giteam-composer rounded-3xl border-border/70 bg-muted/50 [--tw-ring-color:transparent] focus-within:border-border/70">
+    <InputGroup className="giteam-composer rounded-2xl border-transparent bg-input/50">
       {previewStrip}
       <div className="relative w-full min-w-0">
         {slashOverlay}
         <PromptInputTextarea
           ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="min-h-20 p-3 pt-5"
+          className="p-3"
           placeholder={composerPlaceholder}
           value={promptInput}
           onCompositionStart={onPromptCompositionStart}
@@ -484,7 +485,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             <InputGroupButton
               size="sm"
               variant="outline"
-              className="ml-auto min-w-0 rounded-full"
+              className="ml-auto min-w-0"
               aria-label="选择模型"
               title="选择模型"
             >
@@ -494,7 +495,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               <ChevronDownIcon />
             </InputGroupButton>
           </ModelSelectorTrigger>
-          <ModelSelectorContent title={labels.model} className="w-48">
+          <ModelSelectorContent
+            title={labels.model}
+            className="giteam-composer-menu w-48"
+            sideOffset={4}
+          >
             <ModelSelectorList>
               {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
                 <Fragment key={provider}>
@@ -532,7 +537,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             <InputGroupButton
               size="sm"
               variant="outline"
-              className="min-w-0 rounded-full"
+              className="min-w-0"
               aria-label="推理强度与自动权限"
               title="推理强度与自动权限"
             >
@@ -541,7 +546,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               <ChevronDownIcon />
             </InputGroupButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-36">
+          <DropdownMenuContent
+            align="end"
+            className="giteam-composer-menu w-36"
+            sideOffset={4}
+          >
             <DropdownMenuLabel>推理强度</DropdownMenuLabel>
             <DropdownMenuGroup>
               {thinkingLevelOptions.map((level) => {
@@ -580,7 +589,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
         </DropdownMenu>
         <PromptInputSubmit
           size="icon-sm"
-          variant="contrast"
+          variant="default"
           className="rounded-full"
           disabled={submitDisabled}
           onClick={onPrimaryAction}

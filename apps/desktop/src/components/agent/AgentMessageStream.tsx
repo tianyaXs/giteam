@@ -601,8 +601,6 @@ function MessageShell({
 function ToolBatchGroup({
   timelineKey,
   group,
-  open,
-  onOpenChange,
   forceInactive = false,
   shellToolPartsExpanded,
   editToolPartsExpanded,
@@ -704,7 +702,9 @@ function ToolBatchGroup({
             : browser
               ? "次"
               : "个文件";
-  const resolvedOpen = open;
+  // 官方 Task 语义:运行中的组自动展开,完成后自动收起;用户点过则以用户选择为准。
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const resolvedOpen = userOpen ?? running;
 
   // 只显示真实子 agent 行，并去掉父壳/空壳造成的重复卡。
   const visibleTaskParts = task
@@ -773,7 +773,7 @@ function ToolBatchGroup({
   // 失败=红叹号)+ 官方左缩进步骤区;开放状态仍由 timelineOpenState 托管
   return (
     <Trace>
-      <TraceCollapsible open={resolvedOpen} onOpenChange={onOpenChange}>
+      <TraceCollapsible open={resolvedOpen} onOpenChange={setUserOpen}>
         <TraceCollapsibleTrigger className="min-w-0 max-w-full">
           <TraceLine status={memoryFailed && !memoryWrote ? "error" : running ? "running" : undefined}>
             <TraceIcon>
@@ -827,8 +827,6 @@ function ToolBatchGroup({
 function ContextGroup({
   timelineKey,
   group,
-  open,
-  onOpenChange,
   forceInactive = false,
   shellToolPartsExpanded,
   editToolPartsExpanded,
@@ -862,9 +860,12 @@ function ContextGroup({
 
   // Chain of Thought 形状(同 ToolBatchGroup):探索中 spinner+shimmer,
   // 已探索绿勾;detail 经 lastDetailRef 在工具切换空窗间保持连续。
+  // 官方 Task 语义(同 ToolBatchGroup):探索中自动展开,完成后收起。
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const resolvedOpen = userOpen ?? active;
   return (
     <Trace>
-      <TraceCollapsible open={open} onOpenChange={onOpenChange}>
+      <TraceCollapsible open={resolvedOpen} onOpenChange={setUserOpen}>
         <TraceCollapsibleTrigger className="min-w-0 max-w-full">
           <TraceLine status={active ? "running" : undefined}>
             <TraceIcon>
