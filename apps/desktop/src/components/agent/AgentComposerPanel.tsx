@@ -494,12 +494,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               <ChevronDownIcon />
             </InputGroupButton>
           </ModelSelectorTrigger>
-          <ModelSelectorContent title={labels.model}>
-            <ModelSelectorInput
-              value={modelPickerSearch}
-              onChange={(event) => onModelPickerSearchChange(event.target.value)}
-              placeholder="搜索模型..."
-            />
+          <ModelSelectorContent title={labels.model} className="w-48">
             <ModelSelectorList>
               {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
                 <Fragment key={provider}>
@@ -529,9 +524,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                   </ModelSelectorItem>
                 </ModelSelectorGroup>
               )}
-              <ModelSelectorEmpty visible={hasConfiguredModel && groups.length === 0}>
-                没有匹配的模型
-              </ModelSelectorEmpty>
             </ModelSelectorList>
           </ModelSelectorContent>
         </ModelSelector>
@@ -549,7 +541,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               <ChevronDownIcon />
             </InputGroupButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[160px]">
+          <DropdownMenuContent align="end" className="w-36">
             <DropdownMenuLabel>推理强度</DropdownMenuLabel>
             <DropdownMenuGroup>
               {thinkingLevelOptions.map((level) => {
