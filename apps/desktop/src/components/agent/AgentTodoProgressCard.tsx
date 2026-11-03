@@ -1,22 +1,21 @@
 import type { AgentTodoItem } from "../../lib/agentSessions";
-import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import {
-  Plan,
-  PlanDescription,
-  PlanHeader,
-  PlanHeaderTrigger,
-  PlanIcon,
-  PlanTitle,
-  PlanTrigger,
-  PlanContent,
-} from "../ai-elements/plan";
-import { TraceIcon, TraceLine, TraceTitle } from "../ui/trace";
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "../ui/trace";
 import {
   CircleCheckIcon,
   CircleDotIcon,
   CircleIcon,
-  RouteIcon,
+  ListChecksIcon,
+  ListTodoIcon,
 } from "lucide-react";
 
 type AgentTodoProgressCardProps = {
@@ -39,9 +38,6 @@ export function AgentTodoProgressCard({
   if (todos.length <= 0) return null;
 
   const label = `${progress.done}/${progress.total}`;
-  const title = progress.active?.content
-    ? `进度 ${label} · ${progress.active.content}`
-    : `进度 ${label}`;
 
   if (collapsed) {
     // 单层胶囊：避免 Card+Badge 叠成「外白圈 + 内灰底」。
@@ -57,60 +53,68 @@ export function AgentTodoProgressCard({
     );
   }
 
-  // 官方 Plan 形状：Route 图标摘要行（isStreaming 时 shimmer）+ done/running/
-  // pending 三态步骤行，外层 Trace 折叠。
+  // 官方 QueueDemo 形状：一个 Trace 里两组 TraceCollapsible（N to do / N completed），
+  // 条目按当前状态「滑动」归属——随 todowrite 快照推进，条目从 pending 组滑入
+  // completed 组，而不是整卡平铺滚动。pending 展开、completed 收起（defaultOpen）。
+  const pending = todos.filter((todo) => todo.status !== "completed");
+  const completed = todos.filter((todo) => todo.status === "completed");
   return (
-    <Plan
-      isStreaming={activeSessionBusy}
-      className="w-full rounded-[28px] border border-border/55 bg-card/95 p-3 shadow-sm"
-    >
-      <PlanHeader defaultOpen>
-        <PlanHeaderTrigger>
-          <PlanTrigger>
-            <PlanIcon>
-              <RouteIcon />
-            </PlanIcon>
-            <PlanTitle>进度</PlanTitle>
-            <PlanDescription className="max-w-[280px] truncate">
-              {label}
-              {progress.active?.content ? ` · ${progress.active.content}` : ""}
-            </PlanDescription>
-          </PlanTrigger>
-        </PlanHeaderTrigger>
-      </PlanHeader>
-      <PlanContent>
-        <ScrollArea className="max-h-[min(46vh,340px)] pr-1.5" scrollBarClassName="w-1.5">
-          <div className="flex flex-col gap-1">
-            {todos.map((todo) => {
-              const completed = todo.status === "completed";
-              const running =
-                todo.status === "in_progress"
-                && progress.active?.id === todo.id;
-              const status: "running" | "pending" | undefined = completed
-                ? undefined
-                : running
-                  ? "running"
-                  : "pending";
-              return (
-                <TraceLine key={todo.id} status={status}>
-                  <TraceIcon>
-                    {completed ? (
+    <div className="w-full rounded-[28px] border border-border/55 bg-card/95 p-3 text-sm shadow-sm">
+      <Trace>
+        {pending.length > 0 ? (
+          <TraceCollapsible key={`pending:${todos.length}`} defaultOpen>
+            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+              <TraceLine status={activeSessionBusy ? "running" : undefined}>
+                <TraceIcon>
+                  <ListTodoIcon />
+                </TraceIcon>
+                <TraceTitle>{`${pending.length} 待办`}</TraceTitle>
+                {progress.active?.content ? (
+                  <TraceDescription className="max-w-[240px] shrink truncate">
+                    {progress.active.content}
+                  </TraceDescription>
+                ) : null}
+              </TraceLine>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <Trace>
+                {pending.map((todo) => (
+                  <TraceLine key={todo.id} status={activeSessionBusy && todo.status === "in_progress" ? "running" : "pending"}>
+                    <TraceIcon>
+                      {todo.status === "in_progress" && activeSessionBusy ? <CircleDotIcon /> : <CircleIcon />}
+                    </TraceIcon>
+                    <TraceTitle className="font-normal">{todo.content}</TraceTitle>
+                  </TraceLine>
+                ))}
+              </Trace>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        ) : null}
+        {completed.length > 0 ? (
+          <TraceCollapsible defaultOpen>
+            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+              <TraceLine>
+                <TraceIcon>
+                  <ListChecksIcon />
+                </TraceIcon>
+                <TraceTitle>{`${completed.length} 已完成`}</TraceTitle>
+              </TraceLine>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <Trace>
+                {completed.map((todo) => (
+                  <TraceLine key={todo.id}>
+                    <TraceIcon>
                       <CircleCheckIcon />
-                    ) : running ? (
-                      <CircleDotIcon />
-                    ) : (
-                      <CircleIcon />
-                    )}
-                  </TraceIcon>
-                  <TraceTitle className={cn("font-normal", completed && "line-through opacity-70")}>
-                    {todo.content}
-                  </TraceTitle>
-                </TraceLine>
-              );
-            })}
-          </div>
-        </ScrollArea>
-      </PlanContent>
-    </Plan>
+                    </TraceIcon>
+                    <TraceTitle className="font-normal line-through opacity-70">{todo.content}</TraceTitle>
+                  </TraceLine>
+                ))}
+              </Trace>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        ) : null}
+      </Trace>
+    </div>
   );
 }

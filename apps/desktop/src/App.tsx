@@ -264,6 +264,7 @@ import {
   pickPreferredAgentContent,
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
+  unionAgentParts,
   dedupeAgentDuplicateTextParts,
   hasVisibleTimelineGroups,
   isPauseFailureText,
@@ -3924,9 +3925,16 @@ export function App() {
           const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
           const incomingParts = Array.isArray(detail.parts) ? detail.parts : [];
           const liveParts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
-          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）。
-          // 有 live 或已有更丰富 details 时不要用瘦 history 盖掉。
-          if (liveParts.length > 0 || existingParts.length > incomingParts.length) {
+          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）：
+          // 有 live 时用并集补齐缺失工具而不是让瘦 history 独占；无 live 时 history 直接盖掉。
+          if (liveParts.length > 0) {
+            next[messageId] = {
+              ...detail,
+              parts: unionAgentParts(liveParts, detail.parts)
+            };
+            continue;
+          }
+          if (existingParts.length > incomingParts.length) {
             if (!existing) next[messageId] = detail;
             continue;
           }
@@ -7785,17 +7793,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             const touchedIdSet = new Set(touchedAssistantIds);
             const detailsPatch: Record<string, AgentDetailedMessage> = {};
             for (const agentMsg of agentMessages) {
-              if (agentMsg.role !== "assistant" || !touchedIdSet.has(agentMsg.id)) continue;
+              if (agentMsg.role !== "assistant") continue;
+              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
+              const isTouched = touchedIdSet.has(agentMsg.id);
+              // 本回合有 live 的行即使正文没变化也要 union：流式漏事件的工具
+              // （如 review 回合只收到部分 toolCall）在结束后由 JSONL 补齐。
+              if (liveParts.length === 0 && !isTouched) continue;
               const textBlocks = agentMsg.parts
                 .filter(
                   (part): part is Extract<AgentPart, { type: "text" }> =>
                     part.type === "text" && Boolean(part.text.trim())
                 )
                 .map((part) => part.text);
-              let liveHasText = livePartsHaveTextPart(
-                agentLivePartsByServerMessageIdRef.current[agentMsg.id]
-              );
-              if (textBlocks.length > 0) {
+              let liveHasText = livePartsHaveTextPart(liveParts);
+              if (textBlocks.length > 0 && isTouched) {
                 commitAgentLiveParts((prev) => {
                   const current = prev[agentMsg.id] || [];
                   const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
@@ -7804,13 +7815,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   return { ...prev, [agentMsg.id]: parts };
                 });
               }
-              // live 已有 text part 时不再写 details：避免 fetched text:0 与 live text:soft 双轨。
-              if (liveHasText) continue;
+              // live 已有 text part 时不再用 history 独占盖掉：union 补齐缺失工具，
+              // 正文/思考按「更长的一份」去重，避免 fetched 与 live 双轨。
               const incoming = agentMessageToDetailedMessage(agentMsg, toolResults);
-              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
               if (liveParts.length === 0) {
-                detailsPatch[agentMsg.id] = incoming;
+                if (!liveHasText) detailsPatch[agentMsg.id] = incoming;
+                continue;
               }
+              detailsPatch[agentMsg.id] = {
+                info: incoming.info,
+                parts: unionAgentParts(liveParts, incoming.parts)
+              };
             }
             if (Object.keys(detailsPatch).length > 0) {
               setAgentDetailsByMessageId((prev) => {
@@ -7822,6 +7837,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   if (existingParts.length > incomingParts.length) continue;
                   next[messageId] = incoming;
                 }
+                agentDetailsByMessageIdRef.current = next;
                 return next;
               });
             }

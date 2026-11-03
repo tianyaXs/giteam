@@ -829,11 +829,21 @@ export function MarkdownLite(props: MarkdownLiteProps) {
   return (
     <div className="markdown-lite min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
       <Streamdown
-        // 不用 Streamdown 自带 caret：它把光标渲染成最后块之后的独立块级元素
-        // （独占一行、消失时塌行）。流式光标由调用侧的 StreamingMarkdownBlock
-        // 以 absolute 叠层绘制（零布局影响）。
+        // 对齐官方 Chat demo：不加尾部 caret 符号，流式反馈由词级淡入动画承担。
         controls={STREAMDOWN_CONTROLS}
         dir="auto"
+        // 官方 Chat 的丝滑流式来自 Streamdown 词级动画：新增词淡入，旧内容
+        // 通过 prevContentLength 不重播。官方 demo 按 ~16ms 逐 token 推送，
+        // 我们的后端事件块更大，默认 150ms/40ms 在大块到达时感知偏弱；
+        // 用官方 animated 配置项拉长单词淡入、缩短交错间隔（仍是官方 API，
+        // 不引入任何自定义 CSS 覆盖）。
+        animated={{
+          animation: "fadeIn",
+          duration: 260,
+          easing: "ease",
+          sep: "word",
+          stagger: 18
+        }}
         isAnimating={Boolean(props.streaming)}
         lineNumbers
         mode={props.streaming ? "streaming" : "static"}

@@ -1254,9 +1254,9 @@ export const PromptInputSubmit = ({
   let Icon = <ArrowUpIcon className="size-4" />;
 
   if (status === "submitted") {
-    Icon = <Spinner />;
+    Icon = <Spinner className="text-current" />;
   } else if (status === "streaming") {
-    Icon = <SquareIcon className="size-4" />;
+    Icon = <SquareIcon className="size-4 fill-current" />;
   } else if (status === "error") {
     Icon = <XIcon className="size-4" />;
   }

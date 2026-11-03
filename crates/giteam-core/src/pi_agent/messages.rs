@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +148,23 @@ pub(crate) fn message_id(role: &str, timestamp: i64) -> String {
     format!("{role}-{timestamp}")
 }
 
+/// pi SDK 的消息本身没有 id，我们只能按 role+timestamp 合成。
+/// 同一批 provider 消息可能共享同一毫秒时间戳，直接合成会互相覆盖、
+/// 导致历史重载后的分组/合并坍缩。这里按出现顺序给重复 id 追加序号，
+/// 生成与 JSONL 行序一致的稳定 id。
+pub(crate) fn assign_stable_message_ids(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut messages = messages;
+    for message in &mut messages {
+        let count = seen.entry(message.id.clone()).or_default();
+        if *count > 0 {
+            message.id = format!("{}-{}", message.id, *count);
+        }
+        *count += 1;
+    }
+    messages
+}
+
 fn timestamp_ms(timestamp: i64) -> u64 {
     timestamp.try_into().unwrap_or_default()
 }
@@ -200,5 +219,50 @@ mod tests {
         let round_trip: AgentMessage =
             serde_json::from_value(json).expect("deserialize message");
         assert_eq!(round_trip, message);
+    }
+
+    /// JSONL 实证：同一批 assistant/toolResult 消息可能共享同一毫秒时间戳。
+    /// 历史读取时若继续合成相同 id，前端 details/分组会互相覆盖，步骤数坍缩。
+    #[test]
+    fn assign_stable_message_ids_disambiguates_repeated_timestamps() {
+        let make = |role: AgentRole, text: &str| AgentMessage {
+            id: message_id("assistant", 1_793_089_622_165),
+            role,
+            created_at_ms: 1_793_089_622_165,
+            parts: vec![AgentPart::Text {
+                text: text.to_string(),
+            }],
+        };
+        let messages = assign_stable_message_ids(vec![
+            make(AgentRole::Assistant, "a"),
+            make(AgentRole::Assistant, "b"),
+            make(AgentRole::Assistant, "c"),
+        ]);
+        let ids: Vec<_> = messages.iter().map(|message| message.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "assistant-1793089622165",
+                "assistant-1793089622165-1",
+                "assistant-1793089622165-2",
+            ]
+        );
+    }
+
+    /// 相同时间戳但角色不同并非冲突；只有完整 id 重复才需要追加序号。
+    #[test]
+    fn assign_stable_message_ids_keeps_distinct_roles_distinct() {
+        let message = |id: &str, role: AgentRole| AgentMessage {
+            id: id.to_string(),
+            role,
+            created_at_ms: 1,
+            parts: Vec::new(),
+        };
+        let messages = assign_stable_message_ids(vec![
+            message("user-1", AgentRole::User),
+            message("assistant-1", AgentRole::Assistant),
+        ]);
+        assert_eq!(messages[0].id, "user-1");
+        assert_eq!(messages[1].id, "assistant-1");
     }
 }

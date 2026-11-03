@@ -21,6 +21,7 @@ use super::subagents::{
     SubagentHost, SubagentSpawnRequest, SubagentSpawnResult,
 };
 use super::tools::GiteamToolFactory;
+use super::messages::assign_stable_message_ids;
 use super::{
     ensure_pi_agent_dir_env, AgentEvent, AgentEventEnvelope, AgentInteraction,
     AgentInteractionReply, AgentMessage, AgentModelInfo, AgentPart, AgentProviderInfo, AgentRole,
@@ -892,8 +893,9 @@ impl PiAgentService {
             };
             // 无标题时刚读过 messages：顺带刷新快照，供下次 busy 列表兜底。
             if let Some(messages) = live_messages {
-                let agent_messages: Vec<AgentMessage> =
-                    messages.into_iter().map(AgentMessage::from_pi).collect();
+                let agent_messages = assign_stable_message_ids(
+                    messages.into_iter().map(AgentMessage::from_pi).collect(),
+                );
                 if let Ok(mut snap) = session.message_snapshot.lock() {
                     *snap = agent_messages;
                 }
@@ -1035,10 +1037,15 @@ impl PiAgentService {
                     handle
                         .messages()
                         .await
-                        .map_err(|error| PiAgentError::Sdk(error.to_string()))?
-                        .into_iter()
-                        .map(AgentMessage::from_pi)
-                        .collect::<Vec<_>>(),
+                        .map_err(|error| PiAgentError::Sdk(error.to_string()))
+                        .map(|messages| {
+                            assign_stable_message_ids(
+                                messages
+                                    .into_iter()
+                                    .map(AgentMessage::from_pi)
+                                    .collect::<Vec<_>>(),
+                            )
+                        })?,
                 )
             } else {
                 None
@@ -1267,7 +1274,9 @@ impl PiAgentService {
             // 持锁前先把当前历史写入快照，避免并发 messages() 读到空列表。
             if let Ok(current) = handle.messages().await {
                 if let Ok(mut snap) = session.message_snapshot.lock() {
-                    *snap = current.into_iter().map(AgentMessage::from_pi).collect();
+                    *snap = assign_stable_message_ids(
+                        current.into_iter().map(AgentMessage::from_pi).collect(),
+                    );
                 }
             }
             // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），

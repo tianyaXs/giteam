@@ -29,9 +29,11 @@
   background: color-mix(in oklab, var(--input) 50%, transparent);
   box-shadow: none;
 }
+/* 官方 InputGroup focus 是中性描边（foreground 弱化 + 微 ring），不是主题色：
+   蓝色 ring 是本项目 --ring=accent 泄漏，这里改用 foreground 中性色。 */
 .giteam-composer[data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
-  border-color: var(--ring);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 30%, transparent);
+  border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--foreground) 12%, transparent);
 }
 .giteam-composer button[data-size="sm"] {
   border-radius: 1.25rem;
@@ -41,16 +43,15 @@
   line-height: 1.25rem;
   font-weight: 500;
 }
-.giteam-composer button[data-size="icon-sm"] {
-  width: 1.75rem;
-  height: 1.75rem;
-  padding: 0;
-}
 .giteam-composer [data-slot="input-group-addon"] {
   padding-inline: 0.625rem;
   padding-bottom: 0.5rem;
 }
 .giteam-composer textarea {
+  /* 官方 composer 正文是 16px 基底上的 14px（text-sm）；本应用 base.css 会把
+     textarea 全局降成 12px code 字号，这里必须显式钉回 14px，与消息正文同级。 */
+  font-size: 0.875rem;
+  line-height: 1.45rem;
   min-height: 4rem;
   max-height: 12rem;
   field-sizing: content;

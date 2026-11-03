@@ -35,7 +35,9 @@ export type ToolProps = Omit<
 export const Tool = ({ className, ...props }: ToolProps) => (
   <Trace>
     <TraceCollapsible
-      className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+      // 无外边距：嵌在事件列表/Trace 缩进里时，mb-4 会留出一段塌陷空隙，
+      // 让行与行之间看起来像凭空多了一层占位。
+      className={cn("group not-prose w-full rounded-md border", className)}
       {...(props as ComponentProps<typeof TraceCollapsible>)}
     />
   </Trace>

@@ -131,10 +131,16 @@ function TraceCollapsibleContent({
   children,
   ...props
 }: React.ComponentProps<typeof CollapsibleContent>) {
+  // 官方 Trace 折叠是干净的滑开/收合动画，无内部滚动条。demo 用的 height 变量
+  // (base-ui data-starting/ending-style) 在 Radix Collapsible 上不存在：
+  // Radix 不会写 --collapsible-panel-height，固定高度拿到陈旧值 → 无动画且内容被
+  // 裁切（展开区出现滚动条）。这里改用 Radix 原生动画变量 --radix-collapsible-content-height
+  // （tw-animate-css 的 collapsible-down/up keyframes）：高度动画结束后回落 auto，
+  // 内容完整展开、无固定高度裁切；关闭动画结束由 Radix Presence 负责卸载。
   return (
     <CollapsibleContent
       data-slot="trace-collapsible-content"
-      className="h-(--collapsible-panel-height) min-w-0 overflow-hidden transition-[height] duration-200 data-ending-style:h-0 data-starting-style:h-0"
+      className="min-w-0 overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
       {...props}
     >
       <div

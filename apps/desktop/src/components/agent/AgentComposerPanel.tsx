@@ -587,9 +587,12 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* 官方 demo 发送键是深色圆（aria-rhea primary ≈ near-black）；本项目 --primary
+            是蓝色主题色，直接用 default 会泄漏蓝色。contrast = bg-foreground 深色圆，
+            与官方按钮视觉一致（见 2026-10-30 会话 e055edb）。 */}
         <PromptInputSubmit
           size="icon-sm"
-          variant="default"
+          variant="contrast"
           className="rounded-full"
           disabled={submitDisabled}
           onClick={onPrimaryAction}

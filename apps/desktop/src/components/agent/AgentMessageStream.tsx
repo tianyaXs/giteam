@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
@@ -7,7 +7,9 @@ import { Separator } from "../ui/separator";
 import { buildHunks, diffLines } from "../../lib/turnDiff";
 import { DiffLineRows, StatsBadgeText, collectTurnModifiedFiles, compressEdits, deriveTurnStats, type TurnManifestEntry, type TurnModifiedFile } from "./TurnDiffViewer";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import Lenis from "lenis";
 import {
+  buildAgentActivityRows,
   buildAgentAssistantRenderGroups,
   buildAgentReplyMarkdownFromParts,
   collapseDuplicatedAgentContent,
@@ -265,6 +267,42 @@ function mergeAdjacentContextGroups(groups: AgentAssistantRenderGroup[]): AgentA
   return merged;
 }
 
+/**
+ * pi 的正文按 message.index 分块（text:0/text:1/text:2…），正文轮间常插着不可见
+ * boundary（隐藏思考）。这些同回合同一正文的连续 text part 需要在进入时间线前
+ * 合成一个 part，否则活动段会被正文块切碎成「工作段 → 正文 → 工作段」多组并列卡。
+ */
+function dedupeAgentChunkedTextParts(
+  parts: AgentDetailedPart[]
+): AgentDetailedPart[] {
+  const out: AgentDetailedPart[] = [];
+  for (const part of parts) {
+    const type = String(part?.type || "");
+    const last = out[out.length - 1];
+    if (
+      type === "text"
+      && last
+      && String(last.type || "") === "text"
+    ) {
+      const lastText = String(last.text || "");
+      const nextText = String(part.text || "");
+      if (lastText && nextText && lastText.includes(nextText)) continue;
+      if (lastText && nextText && nextText.includes(lastText)) {
+        out[out.length - 1] = { ...part, id: String(last.id || part.id || "") };
+        continue;
+      }
+      out[out.length - 1] = {
+        ...part,
+        id: String(last.id || part.id || ""),
+        text: [lastText, nextText].filter(Boolean).join("\n\n")
+      };
+      continue;
+    }
+    out.push(part);
+  }
+  return out;
+}
+
 function buildDisplayTimelineGroups(
   groups: AgentAssistantRenderGroup[],
   showReasoningSummaries: boolean
@@ -436,6 +474,55 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentD
   return out;
 }
 
+/**
+ * 段内二次合并：活动段切分只认「可见正文」，但同一工作流里的多个同 kind 工作批
+ * （shell → 隐藏思考 → shell → shell）会在段内留成并列 Trace 卡（官方 Task 卡展开
+ * 后只有一层缩进步骤列表）。这里把相邻同 batchKind 的 tool-batch 合成一个 step，
+ * 对应官方「已运行 4 个步骤」一层折叠列表；kind 不同的批（探索→运行）保留为
+ * 相邻两步，通过 batchKind 语义区分工作类型。
+ */
+function mergeAdjacentWorkSteps(
+  steps: AgentDisplayTimelineGroup[]
+): AgentDisplayTimelineGroup[] {
+  const out: AgentDisplayTimelineGroup[] = [];
+  for (const step of steps) {
+    const last = out[out.length - 1];
+    // 相邻工作步骤一律并入同一个 tool-batch：段落内不允许并列多张段卡
+    // （旧实现只合并同 kind，会留出 探索→运行→运行→探索 的多张并列卡）。
+    const nextKind = step.kind === "tool-batch" ? step.batchKind : "";
+    const lastParts = last?.kind === "tool-batch" ? last.parts : [];
+    const incoming = step.kind === "tool-batch"
+      ? step.parts
+      : step.kind === "context"
+        ? step.parts
+        : step.kind === "part"
+          ? [step.part]
+          : [];
+    if (last?.kind === "tool-batch" && incoming.length > 0) {
+      out[out.length - 1] = {
+        kind: "tool-batch",
+        key: last.key,
+        batchKind: nextKind || last.batchKind,
+        parts: [...lastParts, ...incoming]
+      };
+      continue;
+    }
+    // 非批组步骤（reasoning 等）不丢弃：转成普通 tool-batch 行，保证全部
+    // 穿插操作都收进同一张段卡；后面遇到第一个工作步骤时继续并入。
+    if (incoming.length > 0) {
+      out.push({
+        kind: "tool-batch",
+        key: step.key,
+        batchKind: nextKind || "shell",
+        parts: incoming
+      });
+      continue;
+    }
+    out.push(step);
+  }
+  return out;
+}
+
 type AgentMessageStreamProps = {
   sessionLoading: boolean;
   messages: AgentChatMessage[];
@@ -494,6 +581,9 @@ type AgentMessageStreamProps = {
 };
 
 type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
+
+/** Lenis 官方 lerp 模式（帧率无关 damp）：连续 wheel 连续追踪目标，避免固定时长动画重排/跳变。 */
+const SMOOTH_WHEEL_LENIS_LERP = 0.1;
 
 // Virtuoso List：必须把官方传入的 style（含 paddingTop/height）原样挂上；不要用 flex/gap，
 // 也不要用会覆盖 paddingTop 语义的布局类抢测高。行间距放在 Item 内 padding。
@@ -598,224 +688,274 @@ function MessageShell({
   );
 }
 
-function ToolBatchGroup({
+/**
+ * 活动段：一段连续的 agent 工作（思考/探索/命令/编辑…）收进一张官方 Task 形态的
+ * 折叠卡；可见正文之外的每两次正文之间至多一张卡（划分机制见 buildAgentActivityRows）。
+ * 运行中自动展开、完成后自动收起；用户点过则以用户选择为准（官方语义）。
+ */
+/** 活动段标题：按主导步骤类型取名，运行时进行时、完成过去时（官方 Task 语义）。 */
+const SEGMENT_TITLES: Record<string, { active: string; done: string }> = {
+  "思考": { active: "思考中", done: "已思考" },
+  "探索": { active: "探索中", done: "已探索" },
+  "运行": { active: "运行中", done: "已运行" },
+  "编辑": { active: "编辑中", done: "已编辑" },
+  "查询": { active: "查询中", done: "已查询" },
+  "浏览": { active: "浏览中", done: "已浏览" },
+  "执行子任务": { active: "子任务执行中", done: "已执行子任务" },
+  "记录": { active: "记录中", done: "已记录" },
+  "回忆": { active: "回忆中", done: "已回忆" },
+  "操作文件": { active: "操作文件中", done: "已操作文件" },
+  "执行": { active: "执行中", done: "已执行" }
+};
+
+function ActivitySegment({
   timelineKey,
-  group,
-  forceInactive = false,
+  steps,
+  forceInactive,
+  timelineOpenState,
+  setTimelineOpenState,
   shellToolPartsExpanded,
   editToolPartsExpanded,
   onOpenTaskSession,
   onOpenToolFile,
-  onOpenBrowserUrl
+  onOpenBrowserUrl,
+  renderMarkdown
 }: {
   timelineKey: string;
-  group: Extract<AgentDisplayTimelineGroup, { kind: "tool-batch" }>;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  forceInactive?: boolean;
+  steps: AgentDisplayTimelineGroup[];
+  forceInactive: boolean;
+  timelineOpenState: Record<string, boolean>;
+  setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
   shellToolPartsExpanded: boolean;
   editToolPartsExpanded: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
+  renderMarkdown: RenderMarkdown;
 }) {
-  const shell = group.batchKind === "shell";
-  const web = group.batchKind === "web";
-  const browser = group.batchKind === "browser";
-  const task = group.batchKind === "task";
-  const memory = group.batchKind === "memory";
-  // 记忆批组三分态：进行中（part phase=started）给瞬时反馈；有真实写入
-  // （实体/关系/意图）留卡；失败留卡可排查；完成的空抽取（寒暄轮等）整组不渲染。
-  const memoryPhaseOf = (part: (typeof group.parts)[number]) =>
-    String((part as { phase?: string }).phase || "").trim();
-  const memoryHasRunning = memory && group.parts.some((part) => memoryPhaseOf(part) === "started");
-  const memoryFailed = memory && group.parts.some((part) => memoryPhaseOf(part) === "failed");
-  const memoryWrote =
-    memory &&
-    group.parts.some(
-      (part) =>
-        (Number((part as { entityCount?: number }).entityCount) || 0) > 0 ||
-        (Number((part as { relationCount?: number }).relationCount) || 0) > 0 ||
-        Boolean(String((part as { intent?: string }).intent || "").trim())
-    );
-  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
-  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
-  // 例外：记忆抽取在 turn 结束后异步到达，forceInactive 已为 true，但 part 仍在
-  // started——此时组标签必须以 part 相位为准显示「记录中」，否则「已记录」抢先出现。
-  const running = !forceInactive || memoryHasRunning;
-  const recall = group.batchKind === "recall";
-  // office 批组：合并渲染为「正在操作文件」卡（类型化微缩视觉），不走通用折叠列表。
-  if (group.batchKind === "office") {
-    const officeRunning =
-      !forceInactive
-      && group.parts.some((part) => {
-        const status = String((part as { status?: string }).status || "").toLowerCase();
-        return status === "running" || status === "pending" || status === "deciding";
-      });
-    return (
-      <OfficeOperationCard
-        parts={group.parts}
-        running={officeRunning}
-        onOpenFile={(path) => onOpenToolFile({ filePath: path })}
-      />
-    );
-  }
-  // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
-  const activeLabel = memory
-    ? "记录中"
-    : recall
-      ? "回忆中"
-      : task
-        ? "执行中"
-        : shell
-          ? "运行中"
-          : web
-            ? "查询中"
-            : browser
-              ? "浏览中"
-              : "编辑中";
-  const doneLabel = memory
-    ? memoryFailed && !memoryWrote
-      ? "记忆写入失败"
-      : "已记录"
-    : recall
-      ? "已回忆"
-      : task
-        ? "已完成"
-        : shell
-          ? "已运行"
-          : web
-            ? "已查询"
-            : browser
-              ? "已浏览"
-              : "已编辑";
-  const noun = memory
-    ? "次写入"
-    : recall
-      ? "次"
-      : task
-        ? "个子任务"
-        : shell
-          ? "条命令"
-          : web
-            ? "次"
-            : browser
-              ? "次"
-              : "个文件";
-  // 官方 Task 语义:运行中的组自动展开,完成后自动收起;用户点过则以用户选择为准。
+  const anyRunning = !forceInactive;
+  const hasTask = steps.some(
+    (step) =>
+      (step.kind === "part" && isTaskToolPart(step.part))
+      || (step.kind === "tool-batch" && step.batchKind === "task")
+  );
+  // 只有含「子任务」的段默认展开运行态；思考/探索/命令/编辑段保持收起的摘要行（默认值仅
+  // 在用户未点过时生效，timelineOpenState 优先）。
+  const autoOpenRunning = hasTask;
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
-  const resolvedOpen = userOpen ?? running;
+  const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
+  const setError = steps.some((step) =>
+    step.kind === "part"
+    && String((step.part as { error?: string }).error || "").trim()
+  );
+  const openKey = `${timelineKey}:segment`;
+  const isOpen = timelineOpenState[openKey] ?? resolvedOpen;
+  const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [openKey]: open }));
 
-  // 只显示真实子 agent 行，并去掉父壳/空壳造成的重复卡。
-  const visibleTaskParts = task
-    ? dedupeVisibleSubagentTaskParts(group.parts)
-    : group.parts;
-  if (task && visibleTaskParts.length === 0) return null;
-  // 空抽取（寒暄轮等）不出卡：没有写入也没有失败，这条事件对用户无信息量。
-  if (memory && !memoryHasRunning && !memoryWrote && !memoryFailed) return null;
-
-  // 与「已探索 2次搜索」同形：回忆/查询类数字与量词紧贴，避免「1 次」多出空格
-  const countCompact = recall || web || browser;
-  const countLabel = countCompact
-    ? `${visibleTaskParts.length}${noun}`
-    : `${visibleTaskParts.length} ${noun}`;
-
-  // 子任务组摘要：运行中显示当前活跃标题，完成态显示计数即可。
-  const taskDetail = (() => {
-    if (!task) return "";
-    const runningPart = visibleTaskParts.find((part) => {
-      const status = String((part as { status?: string }).status || "").toLowerCase();
-      const sub = String((part as { subagentStatus?: string }).subagentStatus || "").toLowerCase();
-      return status === "running" || status === "pending" || sub === "running" || sub === "pending";
-    });
-    if (!runningPart || !running) return "";
-    return resolveTaskCardTitle(runningPart, group.parts) || extractTaskDescription(runningPart);
-  })();
-
-  const memoryDetail = (() => {
-    if (!memory) return "";
-    const entities = visibleTaskParts.reduce(
-      (sum, part) => sum + (Number((part as { entityCount?: number }).entityCount) || 0),
-      0
-    );
-    const relations = visibleTaskParts.reduce(
-      (sum, part) => sum + (Number((part as { relationCount?: number }).relationCount) || 0),
-      0
-    );
-    if (entities > 0 || relations > 0) {
-      return `${entities} 个实体 · ${relations} 条关系`;
+  // 段头按「原子调用数最多的 kind」取名（合并后一个 shell 批可能含多次命令）：
+  // 对齐官方 Task 的"主导动作"语义——一段里运行了 5 条命令 + 顺手读了 2 个文件，
+  // 段名应叫「已运行」而不是末尾的「已探索/已读取」。
+  const segmentLabel = (() => {
+    const counts = new Map<string, number>();
+    const bump = (label: string, weight: number) =>
+      counts.set(label, (counts.get(label) || 0) + weight);
+    for (const step of steps) {
+      if (step.kind === "reasoning") bump("思考", 1);
+      else if (step.kind === "context") bump("探索", step.parts.length || 1);
+      else if (step.kind === "tool-batch") {
+        const batchLabels: Record<string, string> = {
+          shell: "运行",
+          edit: "编辑",
+          web: "查询",
+          browser: "浏览",
+          task: "执行子任务",
+          memory: "记录",
+          recall: "回忆",
+          office: "操作文件"
+        };
+        bump(batchLabels[step.batchKind] || "运行", step.parts.length || 1);
+      } else if (step.kind === "part") {
+        const type = String((step.part as { type?: string }).type || "");
+        if (type === "runtime.memory") bump("记录", 1);
+        else if (type === "text") continue;
+        else bump("运行", 1);
+      }
     }
-    const intent = visibleTaskParts
-      .map((part) => String((part as { intent?: string }).intent || "").trim())
-      .find(Boolean);
-    return intent || "";
+    let best = "";
+    let bestCount = 0;
+    for (const [label, count] of counts) {
+      if (count > bestCount) {
+        best = label;
+        bestCount = count;
+      }
+    }
+    return best || "执行";
   })();
+  const titles = SEGMENT_TITLES[segmentLabel] || SEGMENT_TITLES["执行"];
+  // 计数按合并前的原子调用数（含探索 part 数）：段头显示真实工作量，
+  // 而不是合并后的卡片数（合并后 steps.length=2 但原子调用可能是 6）。
+  const stepCount = steps.reduce((sum, step) => {
+    if (step.kind === "context" || step.kind === "tool-batch") return sum + (step.parts.length || 1);
+    return sum + 1;
+  }, 0);
 
-  const recallDetail = (() => {
-    if (!recall || !running) return "";
-    const runningPart = visibleTaskParts.find((part) => {
-      const status = String((part as { status?: string }).status || "").toLowerCase();
-      return status === "running" || status === "pending";
-    });
-    const part = runningPart || visibleTaskParts[visibleTaskParts.length - 1];
-    if (!part) return "";
-    const tool = String((part as { toolName?: string }).toolName || "");
-    const input = ((part as { input?: Record<string, unknown> }).input || {}) as Record<string, unknown>;
-    const taskText = String(input.task || input.query || input.error || "").trim();
-    const short = taskText.length > 48 ? `${taskText.slice(0, 48).trimEnd()}…` : taskText;
-    if (tool === "asset_context") return short ? `上下文 · ${short}` : "上下文";
-    if (tool === "asset_search") return short ? `检索 · ${short}` : "检索";
-    if (tool === "asset_precedents") return short ? `先例 · ${short}` : "先例";
-    return short;
-  })();
-
-  // Chain of Thought 官方形状:摘要行(running=spinner+shimmer,done=绿勾,
-  // 失败=红叹号)+ 官方左缩进步骤区;开放状态仍由 timelineOpenState 托管
   return (
     <Trace>
-      <TraceCollapsible open={resolvedOpen} onOpenChange={setUserOpen}>
+      <TraceCollapsible open={isOpen} onOpenChange={setOpen}>
         <TraceCollapsibleTrigger className="min-w-0 max-w-full">
-          <TraceLine status={memoryFailed && !memoryWrote ? "error" : running ? "running" : undefined}>
+          <TraceLine status={setError ? "error" : anyRunning ? "running" : undefined}>
             <TraceIcon>
-              {memoryFailed && !memoryWrote ? (
+              {setError ? (
                 <CircleAlertIcon />
-              ) : running ? (
+              ) : anyRunning ? (
                 <LoaderCircleIcon className="animate-spin" />
               ) : (
                 <CircleCheckIcon />
               )}
             </TraceIcon>
-            <TraceTitle className="text-sm">
-              {running ? activeLabel : doneLabel}
-              {!memory || memoryWrote ? ` ${countLabel}` : ""}
-            </TraceTitle>
-            {taskDetail || memoryDetail || recallDetail ? (
-              <TraceDescription className="max-w-[240px] shrink truncate">
-                {taskDetail || memoryDetail || recallDetail}
-              </TraceDescription>
-            ) : null}
+            <TraceTitle className="text-sm">{anyRunning ? titles.active : titles.done}</TraceTitle>
+            <TraceDescription className="max-w-[240px] shrink truncate">
+              {`${stepCount} 个步骤`}
+            </TraceDescription>
           </TraceLine>
         </TraceCollapsibleTrigger>
         <TraceCollapsibleContent>
-          {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
-          <div className={cn("flex flex-col gap-0.5 pb-1.5", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
-            {visibleTaskParts.map((part, partIndex) => {
-              const timelineKeyItem = `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`;
-              if (memory || String((part as { type?: string }).type || "") === "runtime.memory") {
-                return <MemoryExtractionPart key={timelineKeyItem} part={part} listItem />;
+          <div className="flex flex-col gap-0.5 pb-1.5">
+            {steps.map((step, stepIndex) => {
+              const stepKey = `${timelineKey}:step:${step.kind}:${String((step as { key?: string }).key || stepIndex)}`;
+              if (step.kind === "context") {
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5">
+                    {step.parts.map((part, partIndex) =>
+                      renderTimelineToolPart({
+                        timelineKey: `${stepKey}:${String((part as { id?: string }).id || partIndex)}`,
+                        part,
+                        listItem: true,
+                        shellToolPartsExpanded,
+                        editToolPartsExpanded,
+                        onOpenTaskSession,
+                        onOpenToolFile
+                      })
+                    )}
+                  </div>
+                );
               }
-              return renderTimelineToolPart({
-                timelineKey: timelineKeyItem,
-                part,
-                listItem: true,
-                siblingParts: group.parts,
-                settled: forceInactive,
-                shellToolPartsExpanded,
-                editToolPartsExpanded,
-                onOpenTaskSession,
-                onOpenToolFile,
-                onOpenBrowserUrl
-              });
+              if (step.kind === "tool-batch") {
+                // 官方 Task 只有段头一层折叠：展开后必须是扁平缩进步骤行，
+                // 不再在段内渲染第二个可折叠层（旧 ToolBatchGroup 头）。
+                // office 操作卡与记忆卡本身不是折叠层，保留卡片形态。
+                const isOfficeBatch = step.batchKind === "office";
+                if (isOfficeBatch) {
+                  const officeRunning =
+                    !forceInactive
+                    && step.parts.some((part) => {
+                      const status = String((part as { status?: string }).status || "").toLowerCase();
+                      return status === "running" || status === "pending" || status === "deciding";
+                    });
+                  return (
+                    <OfficeOperationCard
+                      key={stepKey}
+                      parts={step.parts}
+                      running={officeRunning}
+                      onOpenFile={(path) => onOpenToolFile({ filePath: path })}
+                    />
+                  );
+                }
+                const visibleParts = step.batchKind === "task"
+                  ? dedupeVisibleSubagentTaskParts(step.parts)
+                  : step.parts;
+                if (visibleParts.length === 0) return null;
+                const isMemoryBatch = step.batchKind === "memory";
+                if (isMemoryBatch) {
+                  const memoryHasRunning = visibleParts.some(
+                    (part) => String((part as { phase?: string }).phase || "").trim() === "started"
+                  );
+                  const memoryHasFailed = visibleParts.some(
+                    (part) => String((part as { phase?: string }).phase || "").trim() === "failed"
+                  );
+                  const memoryWrote = visibleParts.some(
+                    (part) =>
+                      (Number((part as { entityCount?: number }).entityCount) || 0) > 0
+                      || (Number((part as { relationCount?: number }).relationCount) || 0) > 0
+                      || Boolean(String((part as { intent?: string }).intent || "").trim())
+                  );
+                  if (!memoryHasRunning && !memoryWrote && !memoryHasFailed) return null;
+                }
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5 overflow-visible">
+                    {visibleParts.map((part, partIndex) => {
+                      const partType = String((part as { type?: string }).type || "");
+                      const itemKey = `${stepKey}:${String((part as { id?: string }).id || partIndex)}`;
+                      if (isMemoryBatch || partType === "runtime.memory") {
+                        return <MemoryExtractionPart key={itemKey} part={part} listItem />;
+                      }
+                      return renderTimelineToolPart({
+                        timelineKey: itemKey,
+                        part,
+                        listItem: true,
+                        siblingParts: step.parts,
+                        settled: forceInactive,
+                        shellToolPartsExpanded,
+                        editToolPartsExpanded,
+                        onOpenTaskSession,
+                        onOpenToolFile,
+                        onOpenBrowserUrl
+                      });
+                    })}
+                  </div>
+                );
+              }
+              if (step.kind === "reasoning") {
+                // 思考在官方 Task 里是普通步骤行（不可再点开二级折叠），
+                // 展开段头后与命令/探索行平级，最多保留一句截断摘要。
+                const preview = step.parts
+                  .map((part) => String((part as { text?: string }).text || "").trim())
+                  .filter(Boolean)
+                  .slice(-1)[0]
+                  ?.split(/\r?\n+/)
+                  .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
+                  .filter(Boolean)
+                  .slice(-1)[0] || "整理推理摘要";
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5">
+                    <TraceLine>
+                      <TraceIcon>
+                        <CircleCheckIcon />
+                      </TraceIcon>
+                      <TraceTitle className="text-sm">已思考</TraceTitle>
+                      <TraceDescription className="max-w-[240px] shrink truncate">
+                        {preview}
+                      </TraceDescription>
+                    </TraceLine>
+                  </div>
+                );
+              }
+              if (step.kind === "part") {
+                const partType = String((step.part as { type?: string }).type || "");
+                // 工作类 part 已在 mergeAdjacentWorkSteps 并入同一个批组，这里只剩
+                // runtime 提示行与失败行这类真正需要独立展示的事件。
+                if (partType === "runtime.retry") {
+                  return <RuntimeRetryPart key={stepKey} part={step.part} />;
+                }
+                if (partType === "runtime.failure") {
+                  const message = String((step.part as { error?: string; text?: string }).error
+                    || (step.part as { error?: string; text?: string }).text
+                    || "任务未能完成。").trim();
+                  return <AgentErrorMessage key={stepKey} message={message} />;
+                }
+                return renderTimelineToolPart({
+                  timelineKey: stepKey,
+                  part: step.part,
+                  listItem: true,
+                  settled: forceInactive,
+                  shellToolPartsExpanded,
+                  editToolPartsExpanded,
+                  onOpenTaskSession,
+                  onOpenToolFile,
+                  onOpenBrowserUrl
+                });
+              }
+              return null;
             })}
           </div>
         </TraceCollapsibleContent>
@@ -989,16 +1129,11 @@ function ReasoningGroup({
 }
 
 /**
- * 流式 markdown 块 + 自绘光标。
+ * 流式 markdown 块。
  *
- * 为什么不用 Streamdown 自带 caret：它把光标渲染成最后一个 markdown 块之后的
- * 独立块级元素——光标永远落在「文本末尾的下一行」，独占一行；工具卡到达使
- * streaming 翻 false 时光标消失、那一行塌掉，下方内容整体上移（用户看到的
- * 「光标消失→列表变短→上下反复」抖动即来源于此）。
- *
- * 本组件的光标是 absolute 定位的叠层：测量最后一个文本节点**最后一个字符**
- * 的渲染矩形，把光标叠在它的右侧。它不参与文档流，出现/消失对布局的影响
- * 恒为零——无论后面来的是工具卡还是新文本，列表高度都不会动。
+ * 对齐官方 Chat demo：助手回复就是 <Markdown>{text}</Markdown>，不加任何
+ * 自定义尾部光标。Streamdown 的词级淡入动画（animated prop）已提供流式
+ * 视觉反馈，无需额外符号。
  */
 function StreamingMarkdownBlock({
   text,
@@ -1011,74 +1146,9 @@ function StreamingMarkdownBlock({
   renderMarkdown: RenderMarkdown;
   className?: string;
 }) {
-  // 流式期间裁掉尾部空白：空尾段落会让"最后一个文本节点"落在空行上。
-  const trimmed = streaming ? text.replace(/\s+$/, "") : text;
-  // 刚创建的空 part 裁剪后为空：补一个空格保住首个文本节点（首帧上方无内容，无跳动）。
-  const displayText = streaming && !trimmed ? " " : trimmed;
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [caretRect, setCaretRect] = useState<{ left: number; top: number; height: number } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!streaming) {
-      setCaretRect(null);
-      return;
-    }
-    const container = containerRef.current;
-    if (!container) return;
-
-    const measure = () => {
-      // 最后一个非空白文本节点。
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      let last: Text | null = null;
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if ((node as Text).data.replace(/\s+/g, "").length > 0) last = node as Text;
-      }
-      if (!last || last.data.length === 0) {
-        setCaretRect({ left: 0, top: 0, height: 20 });
-        return;
-      }
-      // 测最后一个字符的矩形：右缘即光标落点，高度随行框。
-      const range = document.createRange();
-      range.setStart(last, Math.max(0, last.data.length - 1));
-      range.setEnd(last, last.data.length);
-      const rect = range.getBoundingClientRect();
-      const host = container.getBoundingClientRect();
-      if (rect.height > 0) {
-        setCaretRect({ left: rect.right - host.left, top: rect.top - host.top, height: rect.height });
-      } else {
-        setCaretRect({ left: 0, top: 0, height: 20 });
-      }
-    };
-
-    // Streamdown 用 startTransition 延迟提交块：effect 时点的 DOM 还是上一帧，
-    // 只测一次会让光标滞留在旧文本中间（表现为"文字里莫名多个符号"）。
-    // 改为观察 DOM 实际变化后重测——光标永远贴住真实文本尾。
-    measure();
-    let raf = 0;
-    const rafMeasure = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(measure);
-    };
-    const observer = new MutationObserver(rafMeasure);
-    observer.observe(container, { childList: true, characterData: true, subtree: true });
-    window.addEventListener("resize", rafMeasure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", rafMeasure);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [displayText, streaming]);
-
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
-      {renderMarkdown(displayText, streaming)}
-      {streaming && caretRect ? (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inline-block w-[3px] animate-pulse rounded-[1px] bg-foreground/75"
-          style={{ left: caretRect.left, top: caretRect.top, height: caretRect.height }}
-        />
-      ) : null}
+    <div className={className}>
+      {renderMarkdown(text, streaming)}
     </div>
   );
 }
@@ -1086,10 +1156,13 @@ function StreamingMarkdownBlock({
 function AssistantTextBlock({
   text,
   streaming,
+  trailing,
   renderMarkdown
 }: {
   text: string;
   streaming: boolean;
+  /** 回复的最后一个可见块：下方紧贴操作行（复制按钮），需剥掉 markdown 尾部空段 margin。 */
+  trailing?: boolean;
   renderMarkdown: RenderMarkdown;
 }) {
   return (
@@ -1099,10 +1172,13 @@ function AssistantTextBlock({
       renderMarkdown={renderMarkdown}
       className={cn(
         "min-w-0 max-w-full select-text overflow-hidden break-words text-sm leading-7 text-foreground [overflow-wrap:anywhere]",
+        // Streamdown 根节点自带 space-y-4；正文上方是活动段卡（Trace 行高 ≈24px），
+        // 若不剥掉首段 mt-4，第一段正文会比 Trace 间多出 16px 空隙。
+        !streaming && "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        trailing && !streaming && "pb-1",
         // 流式期间预留 h-6：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
         // 不会出现「标签消失 → 列表上移」。结束后释放（仅单行回复收一次）。
-        streaming && "min-h-6",
-        streaming && "agent-stream-fade"
+        streaming && "min-h-6"
       )}
     />
   );
@@ -1135,174 +1211,87 @@ function AssistantTimeline({
   onOpenBrowserUrl?: (url: string) => void;
   renderMarkdown: RenderMarkdown;
 }) {
-  const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
-  const lastGroupIndex = displayTimelineGroups.length - 1;
-  // 稳定组 key：把每个组的 React key 与「会漂移的 batch[0]」彻底解耦，让标签绝对稳定。
-  // 流式中工具的 toolName 延迟填充（toolCall.started 常先于 tool.started、初始为空）：一组
-  // context 工具里最早到达的那条其 toolName 补齐时，会从不渲染（被 isAgentRenderablePart 过滤）
-  // 变成渲染、且成为 batch[0]，于是 context:firstId / part:pid 这类基于 batch[0] 的 key 逐帧
-  // 漂移 → React 卸载旧组挂载新组 → 标签显隐（多次工具调用反复触发，用户原话「会突然隐藏再显示
-  // 再隐藏」「分组标签显隐」）。用 ref 锁定每个组「首次出现时的锚点 part」：组内任一 part 已带
-  // 锚点则沿用、否则以当前首个 part 为锚点，并把锚点回写到组内所有 part。这样无论 batch[0] 怎么
-  // 补齐/合并/重排，组 key 永不变化，React 始终复用同一实例——标签从挂载起就不再卸载。
-  // Map 只增不减、幂等（strict mode 双渲染无害），组件重挂载时随 ref 重置、按当前结构重判。
-  const partAnchorRef = useRef(new Map<string, string>()).current;
-  const getGroupParts = (group: AgentDisplayTimelineGroup): AgentDetailedPart[] => {
-    switch (group.kind) {
-      case "part":
-        return [group.part];
-      case "tool-batch":
-      case "context":
-      case "reasoning":
-        return group.parts;
-      case "boundary":
-        return [];
+  const displayTimelineGroups = buildBatchedTimelineGroups(
+    // 隐藏思考生成的 boundary 只用于语义占位；段合并统一在批组后处理，这里先剥掉，
+    // 否则 buildBatchedTimelineGroups 会按 boundary flush，把同一工作流的多次 shell 拆成多张卡
+    // （截图里「已运行 2个步骤 → 已运行 1个步骤 ×3」连环卡片的直接来源）。
+    timelineGroups.filter((group) => group.kind !== "boundary")
+  );
+  const activityRows = buildAgentActivityRows(displayTimelineGroups, {
+    // 流式与完成态同一套划分：正文即段落锚，过程中段卡就在真实时序位置，结束不重排。
+    keyOf: (group) => `${stableKey}:${group.key}`,
+    textOf: (group) => {
+      // 正文 = text 类型的 part 组：两次正文之间的连续工作切为一个段；
+      // 其余组（context/reasoning/tool-batch/part）都归入当前段。
+      if (group.kind !== "part") return "";
+      const type = String((group.part as { type?: string }).type || "");
+      if (type !== "text") return "";
+      const raw = collapseDuplicatedAgentContent(
+        String((group.part as { text?: string }).text || "")
+      );
+      // 模型在工具间隙常输出「…/...」占位叙述：无信息量，不当正文、不切段。
+      if (!raw || /^[.…·\s]+$/.test(raw)) return "";
+      return raw;
     }
-  };
-  const stableGroupKeys = displayTimelineGroups.map((group) => {
-    const parts = getGroupParts(group);
-    let anchor = "";
-    for (const part of parts) {
-      const pid = String((part as { id?: string })?.id || "");
-      if (!pid) continue;
-      const existing = partAnchorRef.get(pid);
-      if (existing) { anchor = existing; break; }
-    }
-    if (!anchor) anchor = String((parts[0] as { id?: string })?.id || group.key);
-    for (const part of parts) {
-      const pid = String((part as { id?: string })?.id || "");
-      if (pid && !partAnchorRef.has(pid)) partAnchorRef.set(pid, anchor);
-    }
-    return `${stableKey}:anchor:${anchor}`;
   });
-  // 防回退：任一时间线组（reasoning/context/tool-batch/part）一旦后方出现过更新的组
-  // （index < lastGroupIndex）就永久「已完成态」。流式中末尾组可能因帧抖动/重挂载而瞬时消失，
-  // 令 index===lastGroupIndex 临时成立、forceInactive 回退、已完成的标签瞬时闪回「进行中」，
-  // 组恢复后又变回「已X」——即「已X→进行中→已X」的闪动（已思考/已探索/已运行均会触发）。用
-  // ref 记录所有已下台的组 key（只增不减、幂等，strict mode 双渲染无害；组件重挂载时随 ref
-  // 重置、按当前结构重新判定），forceInactive 与 reasoning active 都读它，从根上消除回退闪动。
-  const demotedGroupKeys = useRef(new Set<string>()).current;
-  for (let i = 0; i < lastGroupIndex; i += 1) {
-    demotedGroupKeys.add(stableGroupKeys[i]);
-  }
-  // 末尾组 active 直接派生自 isStreaming（末尾组恒满足 index===lastGroupIndex，故 lastGroupIndex
-  // 抖动不影响它）。注意：此处不对 isStreaming 做 UI 防抖（曾加的 streamingActive 已移除）——标签
-  // 闪动的真正根因在数据层：upsertAgentLivePart 合并时空 toolName 会覆盖已补全的工具名（"ls"/"read"
-  // →""），致 context 组工具数 3→2→3、整组短暂消失。已在 App.tsx 该函数内根治（空 toolName 不覆盖
-  // 已有非空值）。active 直接用 isStreaming 即稳，无需再叠防抖层。
-  // 「思考中」按「最后一个时间线组」判定：流式中且该推理组正是最后一个组时为思考态，
-  // 其后一旦追加任何工具/正文/新推理组，立即且永久固定为「已思考」。
-  // 不再用 reasoningActive（!renderParts.some(text|toolCall)）：多轮「思考↔探索」交替时，
-  // 工具 part 在 liveParts/renderParts 里的可见性会随帧变化（isAgentRenderablePart 对空
-  // reasoning 过滤、工具逐个下发），some() 随之抖动，导致末尾推理组在「思考中↔已思考」间
-  // 反复频闪；且首个工具出现后它永久 false，会让「探索后再思考」误显「已思考」。改看
-  // 「谁是最后一个组」（coalesce 后组结构 append-only、index 稳定），每个推理组的 active
-  // 都单调 true→false，从根上消除频闪。
-
+  // 段 key 首锚：段随流式逐帧追加步骤，key 取首步骤 id 保证段实例稳定复用
+  // （末尾段 active 随 isStreaming 推导，追加步骤不重挂载、不闪烁）。
+  // 运行态只属于「流式中最后一个 row」：历史段在流式中也保持完成态，不整体闪「运行中」。
+  // 段内所有穿插操作（探索/命令/编辑/思考…）在此合成一个 tool-batch step，
+  // 段内列表保持一个「已运行 N 个步骤」层级；最后一个可见 row 才是「运行中」。
+  const timelineRows = activityRows.map((row) =>
+    row.kind === "segment"
+      ? { ...row, steps: mergeAdjacentWorkSteps(row.steps) }
+      : row
+  );
+  const lastRowIndex = timelineRows.length - 1;
+  // 与 ToolBatchGroup 的空抽取判定一致：只有空记忆批组的段整段不可见（寒暄轮不出卡）。
+  const isSegmentRenderable = (steps: AgentDisplayTimelineGroup[]) =>
+    steps.some((step) => {
+      if (step.kind !== "tool-batch" || step.batchKind !== "memory") return true;
+      const phaseOf = (part: AgentDetailedPart) => String((part as { phase?: string }).phase || "").trim();
+      return step.parts.some((part) =>
+        phaseOf(part) === "started"
+        || phaseOf(part) === "failed"
+        || (Number((part as { entityCount?: number }).entityCount) || 0) > 0
+        || (Number((part as { relationCount?: number }).relationCount) || 0) > 0
+        || Boolean(String((part as { intent?: string }).intent || "").trim())
+      );
+    });
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1.5 overflow-hidden">
-      {displayTimelineGroups.map((group, index) => {
-        const timelineKey = stableGroupKeys[index];
-        // 非流式、或后方已有更新组（含「曾出现过」的防回退判定）→ 强制已完成态
-        const forceInactive = !isStreaming || index !== lastGroupIndex || demotedGroupKeys.has(timelineKey);
-        // 子任务批组运行中默认展开（对齐 Explored 下列表可见）；结束后仍可折叠
-        const isOpen = timelineOpenState[timelineKey]
-          ?? (group.kind === "tool-batch" && group.batchKind === "task" && !forceInactive);
-        const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
-
-        if (group.kind === "tool-batch") {
+    <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
+      {timelineRows.map((row, rowIndex) => {
+        if (row.kind === "segment") {
+          if (!isSegmentRenderable(row.steps)) return null;
+          const segmentKey = `${stableKey}:segment:${row.key}`;
           return (
-            <ToolBatchGroup
-              key={timelineKey}
-              timelineKey={timelineKey}
-              group={group}
-              open={isOpen}
-              onOpenChange={setOpen}
-              forceInactive={forceInactive}
+            <ActivitySegment
+              key={segmentKey}
+              timelineKey={segmentKey}
+              steps={row.steps}
+              forceInactive={!isStreaming || rowIndex !== lastRowIndex}
+              timelineOpenState={timelineOpenState}
+              setTimelineOpenState={setTimelineOpenState}
               shellToolPartsExpanded={shellToolPartsExpanded}
               editToolPartsExpanded={editToolPartsExpanded}
               onOpenTaskSession={onOpenTaskSession}
               onOpenToolFile={onOpenToolFile}
               onOpenBrowserUrl={onOpenBrowserUrl}
-            />
-          );
-        }
-
-        if (group.kind === "context") {
-          return (
-            <ContextGroup
-              key={timelineKey}
-              timelineKey={timelineKey}
-              group={group}
-              open={isOpen}
-              onOpenChange={setOpen}
-              forceInactive={forceInactive}
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-            />
-          );
-        }
-
-        if (group.kind === "reasoning") {
-          if (!showReasoningSummaries) return null;
-          const active =
-            isStreaming && index === lastGroupIndex && !demotedGroupKeys.has(timelineKey);
-          return (
-            <ReasoningGroup
-              key={timelineKey}
-              group={group}
-              active={active}
-              open={isOpen}
-              onOpenChange={setOpen}
               renderMarkdown={renderMarkdown}
             />
           );
         }
-
-        if (group.kind === "boundary") return null;
-
-        if (group.kind !== "part") return null;
-        const type = String((group.part as { type?: string }).type || "");
-        if (type === "runtime.retry") {
-          return <RuntimeRetryPart key={timelineKey} part={group.part} />;
-        }
-        if (type === "runtime.memory") {
-          return <MemoryExtractionPart key={timelineKey} part={group.part} />;
-        }
-        if (type === "runtime.failure") {
-          const message = String((group.part as { error?: string; text?: string }).error
-            || (group.part as { error?: string; text?: string }).text
-            || "任务未能完成。").trim();
-          return <AgentErrorMessage key={timelineKey} message={message} />;
-        }
-        if (type === "text") {
-          const text = collapseDuplicatedAgentContent(
-            String((group.part as { text?: string }).text || "")
-          );
-          if (!text) return null;
-          // 模型在工具间隙常输出「…/...」占位叙述：无信息量，不渲染成整行。
-          if (/^[.…·\s]+$/.test(text)) return null;
-          const last = index === displayTimelineGroups.length - 1;
-          return (
-            <AssistantTextBlock
-              key={timelineKey}
-              text={text}
-              streaming={isStreaming && last}
-              renderMarkdown={renderMarkdown}
-            />
-          );
-        }
-
-        return renderTimelineToolPart({
-          timelineKey,
-          part: group.part,
-          shellToolPartsExpanded,
-          editToolPartsExpanded,
-          onOpenTaskSession,
-          onOpenToolFile
-        });
+        const text = row.text;
+        const last = rowIndex === lastRowIndex;
+        return (
+          <AssistantTextBlock
+            key={`${stableKey}:text:${row.key}`}
+            text={text}
+            streaming={isStreaming && last}
+            trailing={last}
+            renderMarkdown={renderMarkdown}
+          />
+        );
       })}
     </div>
   );
@@ -1590,6 +1579,7 @@ function renderFileTreeNodes(
 
 function AssistantMessage({
   row,
+  isTurnLastRow,
   timelineOpenState,
   setTimelineOpenState,
   showReasoningSummaries,
@@ -1602,6 +1592,8 @@ function AssistantMessage({
   onOpenTurnDiff
 }: {
   row: AgentMessageRenderRow;
+  /** 本回合最后一个 assistant 行才显示回复级操作行（复制按钮），中间过程行不出现。 */
+  isTurnLastRow: boolean;
   onOpenTurnDiff?: (files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) => void;
   timelineOpenState: Record<string, boolean>;
   setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
@@ -1671,6 +1663,7 @@ function AssistantMessage({
         <AssistantTextBlock
           text={fallbackReply}
           streaming={Boolean(isStreaming && !timelineHasTextPart)}
+          trailing={isTurnLastRow}
           renderMarkdown={renderMarkdown}
         />
       ) : !hasTimeline && isStreaming && !errorMessage ? (
@@ -1692,8 +1685,9 @@ function AssistantMessage({
       {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
       {errorMessage && !renderPartsHasFailure(row.renderParts) ? <AgentErrorMessage message={errorMessage} /> : null}
       {/* 回复结束后的操作行(ai-elements MessageActions,官方 chat 交互:
-          hover 该条消息才浮现,左对齐跟随内容;仅当确有正文可复制时渲染)。 */}
-      {!isStreaming && !errorMessage && (timelineHasTextPart || Boolean(fallbackReply?.trim())) ? (
+          hover 该条消息才浮现,左对齐跟随内容;仅当确有正文可复制时渲染;
+          仅挂在回合最后一个 assistant 行——中间过程行(纯工具轮)不出复制按钮)。 */}
+      {!isStreaming && isTurnLastRow && !errorMessage && (timelineHasTextPart || Boolean(fallbackReply?.trim())) ? (
         <MessageActions className="justify-start opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-within:opacity-100">
           <CopyReplyAction
             text={
@@ -1741,7 +1735,9 @@ function collapseDuplicateFailureRows(
 
     const rebuild = (target: AgentMessageRenderRow) => {
       target.timelineGroups = buildDisplayTimelineGroups(
-        buildAgentAssistantRenderGroups(target.renderParts),
+        buildAgentAssistantRenderGroups(dedupeAgentChunkedTextParts(target.renderParts), {
+          liftProcessParts: target.isStreaming
+        }),
         showReasoningSummaries
       );
       target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
@@ -2246,6 +2242,11 @@ export function AgentMessageStream({
   /** 用户正在拖原生滚动条（pointer 落在 gutter/轨道上）；仅此时才允许因 scrollTop 下降取消 stick。 */
   const scrollbarDraggingRef = useRef(false);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
+  /**
+   * 成熟平滑方案 Lenis：库内 wheel 劫持 + 帧率无关 damp 动画 + 滚动条同步回写。
+   * 只负责滚轮平滑，不接管 touch/滚动条/键盘；钉底与程序定位继续走原生即时滚动。
+   */
+  const smoothWheelLenisRef = useRef<Lenis | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
   /** 是否允许钉底（与 rAF / followOutput / totalListHeightChanged 共用）。 */
@@ -2334,7 +2335,7 @@ export function AgentMessageStream({
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];
     const timelineGroups = buildDisplayTimelineGroups(
-      buildAgentAssistantRenderGroups(renderParts),
+      buildAgentAssistantRenderGroups(renderParts, { liftProcessParts: isStreaming }),
       showReasoningSummaries
     );
     // 时间线已有 text part 时 fallbackReply 直接为空：msg.content 与 text part 是同一内容的
@@ -2379,10 +2380,14 @@ export function AgentMessageStream({
     if (row.isAssistant && last?.isAssistant && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
       const rebuildTimeline = (target: AgentMessageRenderRow) => {
         target.renderParts = dedupeAgentDuplicateTextParts(
-          coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts))
+          dedupeAgentChunkedTextParts(
+            coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts))
+          )
         );
         target.timelineGroups = buildDisplayTimelineGroups(
-          buildAgentAssistantRenderGroups(target.renderParts),
+          buildAgentAssistantRenderGroups(target.renderParts, {
+            liftProcessParts: target.isStreaming
+          }),
           showReasoningSummaries
         );
         target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
@@ -2435,63 +2440,57 @@ export function AgentMessageStream({
         rebuildTimeline(last);
         return out;
       }
-      // 相邻「仅工具时间线」assistant 合并成同一单元格，避免已探索/已回忆被消息 pb-4 拆开行距。
-      // 「工具轮 ↔ 正文轮」仍保持独立（任一侧含 text/fallback 则不合并）。
-      const lastTimelineOnly =
-        last.hasTimeline
-        && !last.fallbackReply.trim()
+      // 同一回合内（相邻 assistant 块）全部并入同一单元格：pi 把每轮工作/正文拆成
+      // 多条 assistant，若「工具轮 ↔ 正文轮」不合并，段卡会被中间 assistant 拆成
+      // 「已运行 → 正文 → 已运行 → 正文 → 已运行」的多组并列卡；活动段划分本身
+      // 已能按正文切段，这里只需保证这些段挂在同一个渲染单元里。
+      // 跨回合由 user 行天然隔开，不会误并入下一轮。
+      const lastText = (last.fallbackReply || last.msg.content || "").trim();
+      const rowText = (row.fallbackReply || row.msg.content || "").trim();
+      // 占位叙述（…/.../·）不是真实正文：不同消息恰好都只输出了同一个占位符时，
+      // 不能按「同一段正文重复」走替换式去重，否则替换行会丢掉此前累计的工具事件
+      // （表现为某次回复只剩后几轮工具）。只允许真实正文相同才进入该分支，
+      // 且替换行必须并集继承已有事件，保证去重只增不减。
+      if (
+        lastText
+        && rowText
+        && lastText === rowText
+        && !isBareEllipsisText(lastText)
+        && !last.isStreaming
+        && !row.isStreaming
         && !last.errorMessage
-        && !last.renderParts.some((part) => {
-          const type = String((part as { type?: string }).type || "");
-          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-        });
-      const rowTimelineOnly =
-        row.hasTimeline
-        && !row.fallbackReply.trim()
         && !row.errorMessage
-        && !row.renderParts.some((part) => {
-          const type = String((part as { type?: string }).type || "");
-          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-        });
-      if (lastTimelineOnly && rowTimelineOnly) {
+      ) {
+        const preferRow =
+          row.renderParts.length > last.renderParts.length
+          || (row.hasTimeline && !last.hasTimeline)
+          || row.msg.content.length >= last.msg.content.length;
+        if (preferRow) {
+          row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+          row.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
+          row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
+          row.isStreaming = last.isStreaming || row.isStreaming;
+          row.stableKey = last.stableKey;
+          rebuildTimeline(row);
+          out[out.length - 1] = row;
+        }
+        return out;
+      }
+      if (!row.errorMessage || !last.errorMessage) {
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
         last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         last.detailsLoading = last.detailsLoading || row.detailsLoading;
         if (row.todoItems.length > 0) last.todoItems = row.todoItems;
+        last.errorMessage = last.errorMessage || row.errorMessage;
+        last.detailsError = last.detailsError || row.detailsError;
         last.msg = {
           ...last.msg,
           id: `${last.msg.id}:${row.msg.id}`,
+          content: rowText || lastText,
           error: last.msg.error || row.msg.error
         };
         rebuildTimeline(last);
-        return out;
-      }
-      // 工具轮与正文轮保持独立单元格（Codex exec cell → agent cell）。
-      if (last.hasTimeline || row.hasTimeline || last.fallbackReply || row.fallbackReply) {
-        // 插话收尾常见：状态层残留两条同文 assistant（磁盘仅一条）。展示层折叠，保留较完整的一条。
-        const lastText = (last.fallbackReply || last.msg.content || "").trim();
-        const rowText = (row.fallbackReply || row.msg.content || "").trim();
-        if (
-          lastText
-          && rowText
-          && lastText === rowText
-          && !last.isStreaming
-          && !row.isStreaming
-          && !last.errorMessage
-          && !row.errorMessage
-        ) {
-          const preferRow =
-            row.renderParts.length > last.renderParts.length
-            || (row.hasTimeline && !last.hasTimeline)
-            || row.msg.content.length >= last.msg.content.length;
-          if (preferRow) {
-            row.stableKey = last.stableKey;
-            out[out.length - 1] = row;
-          }
-          return out;
-        }
-        out.push(row);
         return out;
       }
       last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
@@ -2630,6 +2629,18 @@ export function AgentMessageStream({
     }
     return result;
   }, [visibleRenderRows, turnManifest]);
+  // 每段「连续 assistant 块」的末行（下一行是 user/列表尾）：只有这一行挂回复级操作行
+  // （复制按钮）。中间过程行（工具轮拆出的 assistant）hover 不再浮出按钮；
+  // system 行不打断回合判定。
+  const turnLastAssistantKeys = new Set<string>();
+  for (let index = 0; index < visibleRenderRows.length; index += 1) {
+    const row = visibleRenderRows[index];
+    if (!row.isAssistant) continue;
+    let probe = index + 1;
+    while (probe < visibleRenderRows.length && visibleRenderRows[probe].isSystem) probe += 1;
+    const next = visibleRenderRows[probe];
+    if (!next || !next.isAssistant) turnLastAssistantKeys.add(row.stableKey);
+  }
   // scope=sent 只保留「我发送」的 user 消息；originalIndex 仍指向 visibleRenderRows 真实下标，跳转/active 匹配正确。
   const navigatorMarkers: NavigatorMarker[] =
     navigatorScope === "sent" ? allNavigatorMarkers.filter((m) => m.role === "user") : allNavigatorMarkers;
@@ -2690,14 +2701,43 @@ export function AgentMessageStream({
   );
   // 取消 stick 只认用户手势；Virtuoso 重测/锚点补偿造成的 scrollTop 变化一律忽略。
   // @see https://github.com/petyosi/react-virtuoso/issues/195
-  const attachScrollerListeners = useCallback((el: HTMLElement) => {
+  const attachScrollerListeners = useCallback(
+    (el: HTMLElement) => {
     if (scrollerListenersRef.current?.el === el) return; // Virtuoso 可能多次回传同一 el
     scrollerListenersRef.current?.clean();
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) stickToBottomRef.current = false;
+    const content = el.firstElementChild instanceof HTMLElement ? el.firstElementChild : el;
+    smoothWheelLenisRef.current?.destroy();
+    // Lenis 官方姿势：只接管滚轮（smoothWheel）；touch/滚动条/键盘保持原生节奏。
+    // duration 与 lerp 官方互斥，这里用 lerp damp 模式，连续 wheel 是“改目标”而非“重启动画”。
+    // allowNestedScroll 是官方嵌套滚动方案，展开卡片/代码块等内层可滚动区优先消费 wheel。
+    const lenis = new Lenis({
+      wrapper: el,
+      content,
+      eventsTarget: el,
+      lerp: SMOOTH_WHEEL_LENIS_LERP,
+      smoothWheel: true,
+      syncTouch: false,
+      wheelMultiplier: 1,
+      allowNestedScroll: true,
+      autoRaf: true
+    });
+    smoothWheelLenisRef.current = lenis;
+    // 用户滚轮向上离开底部时立即取消贴底意图；否则持续 rAF 钉底会和 Lenis 平滑动画互相写 scrollTop。
+    const onLenisScroll = (instance: Lenis) => {
+      if (instance.isScrolling === "smooth" && instance.direction === -1) {
+        stickToBottomRef.current = false;
+      }
+    };
+    lenis.on("scroll", onLenisScroll);
+    const endSmoothWheel = () => {
+      const lenis = smoothWheelLenisRef.current;
+      if (!lenis) return;
+      lenis.stop();
+      lenis.start();
     };
     let lastTouchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
+      endSmoothWheel();
       lastTouchY = e.touches[0]?.clientY ?? null;
     };
     const onTouchMove = (e: TouchEvent) => {
@@ -2708,6 +2748,7 @@ export function AgentMessageStream({
     // 原生滚动条拖拽：落点在 clientWidth 右侧 gutter（scrollbar-gutter:stable）才算。
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      endSmoothWheel();
       if (e.offsetX >= el.clientWidth - 1) {
         scrollbarDraggingRef.current = true;
       }
@@ -2717,10 +2758,12 @@ export function AgentMessageStream({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
+        endSmoothWheel();
         stickToBottomRef.current = false;
+      } else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End") {
+        endSmoothWheel();
       }
     };
-    el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("pointerdown", onPointerDown, { passive: true });
@@ -2731,7 +2774,10 @@ export function AgentMessageStream({
     scrollerListenersRef.current = {
       el,
       clean: () => {
-        el.removeEventListener("wheel", onWheel);
+        endSmoothWheel();
+        lenis.off("scroll", onLenisScroll);
+        smoothWheelLenisRef.current?.destroy();
+        smoothWheelLenisRef.current = null;
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("pointerdown", onPointerDown);
@@ -2741,8 +2787,9 @@ export function AgentMessageStream({
         el.removeEventListener("keydown", onKeyDown);
       }
     };
-  }, []);
-
+    },
+    []
+  );
   // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂手势。
   const handleScrollerRef = useCallback(
     (node: HTMLElement | Window | null) => {
@@ -2764,6 +2811,13 @@ export function AgentMessageStream({
       if (sc) {
         const max = sc.scrollHeight - sc.clientHeight;
         const top = sc.scrollTop;
+        // Lenis 正在做平滑 wheel 动画时必须让路：官方动画已经负责写 scrollTop，
+        // 此处再物理钉底会形成快滚抖动；上滚时 onLenisScroll 已取消贴底意图。
+        if (smoothWheelLenisRef.current?.isScrolling === "smooth") {
+          lastTop = sc.scrollTop;
+          raf = requestAnimationFrame(tick);
+          return;
+        }
         if (canStickPin() && max >= 0) {
           // 仅当用户正在拖滚动条、且明确离开底部时取消——Virtuoso 重测造成的 top 下降不取消。
           if (
@@ -3100,7 +3154,7 @@ export function AgentMessageStream({
                 {row.isAssistant ? (
                   <AssistantMessage
                     row={row}
-
+                    isTurnLastRow={turnLastAssistantKeys.has(row.stableKey)}
                     timelineOpenState={timelineOpenState}
                     setTimelineOpenState={setTimelineOpenState}
                     showReasoningSummaries={showReasoningSummaries}
