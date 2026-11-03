@@ -5,7 +5,7 @@ import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, R
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED, MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 import { UI_ZOOM_RANGE, CODE_FONT_RANGE } from "../../lib/useAppearanceFontSize";
-import { CheckIcon, AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
+import { AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ButtonGroup } from "../ui/button-group";
@@ -13,7 +13,6 @@ import { Card, CardContent } from "../ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "../ui/item";
-import { ScrollArea } from "../ui/scroll-area";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Slider } from "../ui/slider";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -343,7 +342,7 @@ const THEME_PRESETS = {
 function ThemePreview(props: { variant: "light" | "dark" }) {
   const c = THEME_PRESETS[props.variant];
   return (
-    <div className="flex h-full w-full overflow-hidden rounded-[5px]" style={{ background: c.bg }}>
+    <div className="flex h-11 w-full overflow-hidden rounded-[5px]" style={{ background: c.bg }}>
       <div
         className="flex w-[34%] flex-col gap-[3px] px-[5px] pt-[6px]"
         style={{ background: c.sidebar, borderRight: `1px solid ${c.divider}` }}
@@ -383,23 +382,18 @@ function ThemePicker(props: {
         if (value === "light" || value === "dark") props.onSelect(value);
       }}
       variant="outline"
-      className="gap-2"
     >
       {options.map((option) => {
-        const accent = THEME_PRESETS[option.value].accent;
         return (
           <ToggleGroupItem
             key={option.value}
             value={option.value}
             aria-label={option.label}
             title={option.label}
-            className="w-[88px] flex-col gap-1 rounded-lg border-border/70 p-1 data-[state=on]:border-foreground/40"
+            className="h-auto w-[88px] flex-col gap-1 p-1"
           >
             <ThemePreview variant={option.value} />
-            <span className="flex w-full items-center justify-center gap-1 text-center text-[11px] leading-[14px] text-muted-foreground data-[state=on]:font-semibold data-[state=on]:text-foreground">
-              {props.value === option.value ? <CheckIcon className="size-2.5" style={{ color: accent }} /> : null}
-              {option.label}
-            </span>
+            <span className="text-[11px] leading-[14px]">{option.label}</span>
           </ToggleGroupItem>
         );
       })}
@@ -1660,7 +1654,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <span className="text-sm leading-5 font-medium">返回应用</span>
           </Button>
         </div>
-        <ScrollArea className="min-h-0">
+        <div className="gt-subtle-scrollbar min-h-0 overflow-y-auto">
           <SidebarMenu className="gap-0.5">
             {sections.map((section) => {
               const Icon = SETTINGS_SECTION_ICONS[section.id];
@@ -1681,35 +1675,33 @@ export function SettingsDialog(props: SettingsDialogProps) {
               );
             })}
           </SidebarMenu>
-        </ScrollArea>
+        </div>
       </aside>
 
-      <section className="min-h-0 bg-background">
-        <ScrollArea className="h-full min-h-0">
-          <div
-            className={cn(
-              "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
-              active.id === "models" || active.id === "mobile"
-                ? "max-w-[1120px]"
-                : active.id === "plugins"
-                  ? "max-w-[760px]"
-                  : "max-w-[680px]"
-            )}
-          >
-            {active.title && !active.embedHeader ? (
-              <header className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
-                  {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
-                </div>
-              </header>
-            ) : null}
-            <div className="flex flex-col gap-6">
-              {active.content ? active.content : null}
-              {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
-            </div>
+      <section className="gt-subtle-scrollbar min-h-0 overflow-y-auto bg-background">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
+            active.id === "models" || active.id === "mobile"
+              ? "max-w-[1120px]"
+              : active.id === "plugins"
+                ? "max-w-[760px]"
+                : "max-w-[680px]"
+          )}
+        >
+          {active.title && !active.embedHeader ? (
+            <header className="flex items-center justify-between gap-4">
+              <div>
+                <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
+                {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
+              </div>
+            </header>
+          ) : null}
+          <div className="flex flex-col gap-6">
+            {active.content ? active.content : null}
+            {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
           </div>
-        </ScrollArea>
+        </div>
       </section>
     </div>,
     document.body

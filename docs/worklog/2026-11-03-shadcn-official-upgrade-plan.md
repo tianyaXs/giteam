@@ -50,3 +50,6 @@ AI 会话流已对齐官方 ai-elements（Task/Trace/活动段时序、MessageSc
 - A2 完成：`ActivitySegment` 内识别单条 bash 测试命令（命令正则 + 输出 JSONL/✓✗ 文本解析），命中后渲染官方 TestResultsRow（Trace 套件 → 用例行，失败默认展开并内嵌官方 CodeBlock）；解析失败或非测试命令继续原终端块。
 - 验证：`npx tsc --noEmit` ✅、`npm run build` ✅、agentParts vitest 10/10 ✅、desktop node tests 全绿 ✅。
 - 待办：A3（Context 用量条）、A4（Checkpoint 回合还原点）仍依赖 pi SDK / Rust 服务端能力侧就绪。
+- B3/B4 回归修复：上一轮 ToggleGroup 接入后主题选中态变丑，根因是 vendored `toggle.tsx` 为旧版官方 API（选中态 `data-[state=on]:bg-accent` 蓝底），与 radix-rhea 新版组件不匹配，叠加手写 `border-foreground/40`/`font-semibold`/CheckIcon 角标后视觉更差。已将 `toggle.tsx` 重新 vendor 为 radix-rhea 官方版（选中态 `aria-pressed:bg-muted`），`ThemePicker` 删除全部手写选中态，只保留布局类（`h-auto w-[88px] flex-col gap-1 p-1`），选中态完全交由组件。
+- 设置页滚动条修复：Radix `ScrollArea` 在设置 portal 容器里只渲染 thumb 不渲染轨道，两处（侧边导航 + 主内容）改为原生 `overflow-y-auto` + 会话流已在用的 `gt-subtle-scrollbar` 类；`scroll-area.tsx` 本身不动（其 viewport 扩展 props 在 AgentMessageStream 等处仍被使用）。
+- 验证：`npx tsc --noEmit` ✅、`npm run build` ✅、desktop node tests ✅。
