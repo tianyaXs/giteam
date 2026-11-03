@@ -13,8 +13,8 @@ AI 会话流已对齐官方 ai-elements（Task/Trace/活动段时序、MessageSc
 
 | # | 项目 | 现状 | 目标 | 状态 |
 |---|------|------|------|------|
-| A1 | Chain of Thought 摘要条 | 活动段卡片各自独立折叠 | 回合级官方 Chain-of-Thought 摘要 + 展开全部段卡，复用既有 Trace/活动段时序 | 待办 |
-| A2 | Test Results 卡片 | bash 测试输出渲染为普通文本 | 官方 test-results 模式：识别测试命令输出 → 套件/用例/失败用例 CodeBlock | 待办 |
+| A1 | Chain of Thought 摘要条 | 活动段卡片各自独立折叠 | 回合级官方 Trace 摘要行（执行中 / 已执行 N 步），展开区内按正文时序铺开段卡；段卡流式落位不变 | ✅ 完成 |
+| A2 | Test Results 卡片 | bash 测试输出渲染为普通文本 | bash 测试命令（npm/pnpm/yarn/vitest/jest/cargo/pytest/go/node test）输出解析为官方 Trace 套件/用例卡，失败默认展开并内嵌官方 CodeBlock；不可解析仍走终端块 | ✅ 完成 |
 | A3 | Context 用量条 | `ai-elements/context.tsx` 已 vendored 但会话视图未接 | pi SDK 暴露 token 用量时挂到 composer 工具条 | 待办（依赖能力侧） |
 | A4 | Checkpoint 回合还原点 | Entire/Git 已有 checkpointId，会话内无 UI 入口 | 会话行级 checkpoint 标记 + 回滚入口；需先定 Rust 回滚语义 | 待办（依赖服务端语义） |
 
@@ -46,3 +46,7 @@ AI 会话流已对齐官方 ai-elements（Task/Trace/活动段时序、MessageSc
 - 新增依赖：`@radix-ui/react-slider@^1.3.0`；新增 `src/components/ui/slider.tsx`（radix-rhea vendor，import 路径适配）。
 - 移除 `src/styles/base.css` 中 `.gt-range` 全局滑块样式。
 - 待办：A1（Chain of Thought 摘要条）、A2（Test Results 卡片）为下一步。
+- A1 完成：`AssistantTimeline` 在回合含活动段时改渲染一条官方 Trace 摘要行（TraceCollapsible），展开区按正文时序铺开既有段卡；段卡仅在回合折叠态下默认展开（`collapsedWhenIdle`），用户点过的段卡/回合状态优先，流式段落仍为末行 running、不重排。
+- A2 完成：`ActivitySegment` 内识别单条 bash 测试命令（命令正则 + 输出 JSONL/✓✗ 文本解析），命中后渲染官方 TestResultsRow（Trace 套件 → 用例行，失败默认展开并内嵌官方 CodeBlock）；解析失败或非测试命令继续原终端块。
+- 验证：`npx tsc --noEmit` ✅、`npm run build` ✅、agentParts vitest 10/10 ✅、desktop node tests 全绿 ✅。
+- 待办：A3（Context 用量条）、A4（Checkpoint 回合还原点）仍依赖 pi SDK / Rust 服务端能力侧就绪。

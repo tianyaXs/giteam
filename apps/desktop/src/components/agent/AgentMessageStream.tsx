@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
+import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, FlaskConicalIcon, LoaderCircleIcon, XCircleIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -64,6 +64,7 @@ import {
   TraceLine,
   TraceTitle,
 } from "../ui/trace";
+import { CodeBlock, CodeBlockContent } from "../ai-elements/code-block";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -688,6 +689,225 @@ function MessageShell({
   );
 }
 
+const TEST_RUN_COMMAND_PATTERN = /(^|\s|;&|&&|\|\|)(npm|pnpm|yarn|bun|vitest|jest|cargo|pytest|go|node)(\s|\.\/)\S*(test|vitest|jest|pytest|spec)/i;
+
+/** 官方 Test Results 卡片的单个用例（解析 bash 输出 JSONL / 测试框架文本所得）。 */
+type AgentTestResult = {
+  name: string;
+  status: "passed" | "failed" | "skipped";
+  error?: string;
+};
+
+type AgentTestSuite = {
+  name: string;
+  tests: AgentTestResult[];
+};
+
+/**
+ * bash 输出 → 官方 Test Results 套件/用例结构：
+ * 1) JSONL 每行一条 {type:"test", name, status, suiteName?, error?}；
+ * 2) vitest/jest 文本（✓/✗ 用例行、PASS|FAIL 文件行）。
+ * 识别不到任何用例时返回 null（继续走原终端块渲染）。
+ */
+function parseAgentTestOutput(
+  command: string,
+  output: string
+): { suites: AgentTestSuite[]; failed: number; total: number; skipped: number } | null {
+  const text = String(output || "");
+  if (!text.trim() || !TEST_RUN_COMMAND_PATTERN.test(String(command || ""))) return null;
+  const suites = new Map<string, AgentTestSuite>();
+  const getSuite = (name: string): AgentTestSuite => {
+    const key = String(name || "").trim() || "tests";
+    let suite = suites.get(key);
+    if (!suite) {
+      suite = { name: key, tests: [] };
+      suites.set(key, suite);
+    }
+    return suite;
+  };
+  const asStatus = (value: unknown): AgentTestResult["status"] | undefined => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "passed" || raw === "pass" || raw === "ok" || raw === "success") return "passed";
+    if (raw === "failed" || raw === "fail" || raw === "error") return "failed";
+    if (raw === "skipped" || raw === "skip" || raw === "todo" || raw === "pending") return "skipped";
+    return undefined;
+  };
+  const isTestEvent = (row: Record<string, unknown>): boolean => {
+    const type = String(row.type || "").toLowerCase();
+    return type === "test" || type === "test_result" || type === "testresult"
+      || (type === "" && String(row.name || "").trim().length > 0 && Boolean(asStatus(row.status)));
+  };
+  const seen = new Set<string>();
+  const push = (suiteName: string, name: string, status: AgentTestResult["status"], error?: string) => {
+    const label = String(name || "").trim();
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    getSuite(suiteName).tests.push({ name: label, status, error: String(error || "").trim() || undefined });
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("{")) {
+      try {
+        const row = JSON.parse(trimmed) as Record<string, unknown>;
+        if (isTestEvent(row)) {
+          const status = asStatus(row.status) ?? asStatus(row.state);
+          if (status) {
+            push(
+              String(row.suiteName || row.suite || row.file || ""),
+              String(row.name || row.title || ""),
+              status,
+              String(row.error || row.message || "")
+            );
+            continue;
+          }
+        }
+      } catch {
+        // 非 JSONL 测试事件，继续文本解析
+      }
+    }
+    const iconMatch = trimmed.match(/^(?:✓|√|✗|×|✕)\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?$/);
+    if (iconMatch) {
+      const label = iconMatch[1].trim();
+      const failed = /^(✗|×|✕)/.test(trimmed);
+      push("", label, failed ? "failed" : "passed");
+      continue;
+    }
+    const suiteLine = trimmed.match(/^(?:PASS|FAIL)\s+(\S+)$/i);
+    if (suiteLine) {
+      getSuite(suiteLine[1]);
+    }
+  }
+  const list = Array.from(suites.values()).filter((suite) => suite.tests.length > 0);
+  if (list.length === 0) return null;
+  const tests = list.flatMap((suite) => suite.tests);
+  return {
+    suites: list,
+    total: tests.length,
+    failed: tests.filter((test) => test.status === "failed").length,
+    skipped: tests.filter((test) => test.status === "skipped").length
+  };
+}
+
+function formatTestCounts(counts: { total: number; failed: number; skipped: number }): string {
+  return [
+    `${counts.total} 个测试`,
+    counts.failed > 0 ? `${counts.failed} 个失败` : "",
+    counts.skipped > 0 ? `${counts.skipped} 个跳过` : ""
+  ].filter(Boolean).join("，");
+}
+
+/** 官方 TestResultsRow：失败默认展开、错误栈用官方 CodeBlock（sm 尺寸）。 */
+function AgentTestResultsRow({
+  timelineKey,
+  command,
+  result,
+  running,
+  failed
+}: {
+  timelineKey: string;
+  command: string;
+  result: { suites: AgentTestSuite[]; failed: number; total: number; skipped: number } | null;
+  running: boolean;
+  failed: boolean;
+}) {
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const open = userOpen ?? (failed || running);
+  if (!result) {
+    return (
+      <TraceLine status={running ? "running" : failed ? "error" : undefined}>
+        <TraceIcon>
+          {running ? <LoaderCircleIcon className="animate-spin" /> : <FlaskConicalIcon />}
+        </TraceIcon>
+        <TraceTitle className="text-sm">
+          {running ? `运行测试 ${command}` : failed ? `测试运行失败 ${command}` : command}
+        </TraceTitle>
+      </TraceLine>
+    );
+  }
+  return (
+    <TraceCollapsible open={open} onOpenChange={setUserOpen}>
+      <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+        <TraceLine status={failed ? "error" : undefined}>
+          <TraceIcon>
+            {running ? <LoaderCircleIcon className="animate-spin" /> : <FlaskConicalIcon />}
+          </TraceIcon>
+          <TraceTitle className="text-sm">
+            {running ? "运行测试中" : `已运行 ${formatTestCounts(result)}`}
+          </TraceTitle>
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="flex flex-col gap-0.5">
+        <Trace>
+          {result.suites.map((suite) => {
+            const suiteFailed = suite.tests.some((test) => test.status === "failed");
+            const suiteKey = `${timelineKey}:suite:${suite.name}`;
+            return (
+              <TraceCollapsible key={suiteKey} defaultOpen={suiteFailed}>
+                <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+                  <TraceLine status={suiteFailed ? "error" : undefined}>
+                    <TraceIcon>
+                      <FlaskConicalIcon />
+                    </TraceIcon>
+                    <TraceTitle className="max-w-[320px] truncate">{suite.name}</TraceTitle>
+                    <TraceDescription className="max-w-[160px] shrink truncate">
+                      {formatTestCounts({
+                        total: suite.tests.length,
+                        failed: suite.tests.filter((test) => test.status === "failed").length,
+                        skipped: suite.tests.filter((test) => test.status === "skipped").length
+                      })}
+                    </TraceDescription>
+                  </TraceLine>
+                </TraceCollapsibleTrigger>
+                <TraceCollapsibleContent className="flex flex-col gap-0.5">
+                  <Trace>
+                    {suite.tests.map((test, testIndex) => {
+                      const testKey = `${timelineKey}:test:${testIndex}:${test.name}`;
+                      if (test.status === "failed") {
+                        return (
+                          <TraceCollapsible key={testKey} defaultOpen>
+                            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+                              <TraceLine status="error">
+                                <TraceIcon>
+                                  <XCircleIcon />
+                                </TraceIcon>
+                                <TraceTitle className="max-w-[360px] truncate">{test.name}</TraceTitle>
+                              </TraceLine>
+                            </TraceCollapsibleTrigger>
+                            <TraceCollapsibleContent>
+                              <CodeBlock
+                                language="json"
+                                code={test.error || "测试失败。"}
+                                className="max-h-64 [&_[data-slot=code-block-body]]:overflow-auto"
+                              >
+                                <CodeBlockContent code={test.error || "测试失败。"} language="json" />
+                              </CodeBlock>
+                            </TraceCollapsibleContent>
+                          </TraceCollapsible>
+                        );
+                      }
+                      return (
+                        <TraceLine key={testKey}>
+                          <TraceIcon>
+                            {test.status === "skipped" ? <CircleDashedIcon /> : <CircleCheckIcon />}
+                          </TraceIcon>
+                          <TraceTitle className="max-w-[360px] truncate">
+                            {test.status === "skipped" ? `跳过 ${test.name}` : test.name}
+                          </TraceTitle>
+                        </TraceLine>
+                      );
+                    })}
+                  </Trace>
+                </TraceCollapsibleContent>
+              </TraceCollapsible>
+            );
+          })}
+        </Trace>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  );
+}
+
 /**
  * 活动段：一段连续的 agent 工作（思考/探索/命令/编辑…）收进一张官方 Task 形态的
  * 折叠卡；可见正文之外的每两次正文之间至多一张卡（划分机制见 buildAgentActivityRows）。
@@ -712,6 +932,7 @@ function ActivitySegment({
   timelineKey,
   steps,
   forceInactive,
+  collapsedWhenIdle,
   timelineOpenState,
   setTimelineOpenState,
   shellToolPartsExpanded,
@@ -724,6 +945,7 @@ function ActivitySegment({
   timelineKey: string;
   steps: AgentDisplayTimelineGroup[];
   forceInactive: boolean;
+  collapsedWhenIdle?: boolean;
   timelineOpenState: Record<string, boolean>;
   setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
   shellToolPartsExpanded: boolean;
@@ -741,7 +963,7 @@ function ActivitySegment({
   );
   // 只有含「子任务」的段默认展开运行态；思考/探索/命令/编辑段保持收起的摘要行（默认值仅
   // 在用户未点过时生效，timelineOpenState 优先）。
-  const autoOpenRunning = hasTask;
+  const autoOpenRunning = hasTask || !collapsedWhenIdle;
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
   const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
   const setError = steps.some((step) =>
@@ -749,7 +971,7 @@ function ActivitySegment({
     && String((step.part as { error?: string }).error || "").trim()
   );
   const openKey = `${timelineKey}:segment`;
-  const isOpen = timelineOpenState[openKey] ?? resolvedOpen;
+  const isOpen = timelineOpenState[openKey] ?? (collapsedWhenIdle ? resolvedOpen : true);
   const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [openKey]: open }));
 
   // 段头按「原子调用数最多的 kind」取名（合并后一个 shell 批可能含多次命令）：
@@ -799,6 +1021,40 @@ function ActivitySegment({
     return sum + 1;
   }, 0);
 
+  // 官方 Test Results 识别：同一段里 bash 命令 + 输出可解析出套件/用例时，
+  // 用官方 test-results 卡替代该次命令的普通终端行；其余命令仍走原渲染。
+  const bashTestRows = steps.flatMap((step) => {
+    if (step.kind !== "tool-batch") return [] as {
+      key: string;
+      command: string;
+      part: AgentDetailedPart;
+      result: { suites: AgentTestSuite[]; failed: number; total: number; skipped: number };
+      failed: boolean;
+    }[];
+    const commands = step.parts.filter(
+      (part) => String((part as { toolName?: string }).toolName || "") === "bash"
+    );
+    if (commands.length !== 1) return [];
+    const part = commands[0];
+    const command = String((part as { input?: { command?: unknown } }).input?.command || "").trim();
+    const output = String((part as { output?: unknown }).output || "");
+    const result = parseAgentTestOutput(command, output);
+    return result ? [{
+      key: String((part as { id?: string }).id || `${timelineKey}:bash:${command}`),
+      command,
+      part,
+      result,
+      failed: result.failed > 0
+        || String((part as { status?: string }).status || "").toLowerCase() === "error"
+        || Boolean((part as { isError?: unknown }).isError)
+    }] : [];
+  });
+  const testRowByPartId = new Map<string, (typeof bashTestRows)[number]>();
+  for (const row of bashTestRows) {
+    for (const id of [row.key, String(row.part.id || "")]) {
+      if (id) testRowByPartId.set(id, row);
+    }
+  }
   return (
     <Trace>
       <TraceCollapsible open={isOpen} onOpenChange={setOpen}>
@@ -823,6 +1079,23 @@ function ActivitySegment({
           <div className="flex flex-col gap-0.5 pb-1.5">
             {steps.map((step, stepIndex) => {
               const stepKey = `${timelineKey}:step:${step.kind}:${String((step as { key?: string }).key || stepIndex)}`;
+              const testRow = step.kind === "tool-batch"
+                ? step.parts
+                    .map((part) => testRowByPartId.get(String((part as { id?: string }).id || "")))
+                    .find(Boolean)
+                : undefined;
+              if (step.kind === "tool-batch" && testRow) {
+                return (
+                  <AgentTestResultsRow
+                    key={`${stepKey}:test-results`}
+                    timelineKey={timelineKey}
+                    command={testRow.command}
+                    result={testRow.result}
+                    running={!forceInactive && !testRow.failed}
+                    failed={testRow.failed}
+                  />
+                );
+              }
               if (step.kind === "context") {
                 return (
                   <div key={stepKey} className="flex flex-col gap-0.5">
@@ -1245,6 +1518,8 @@ function AssistantTimeline({
       : row
   );
   const lastRowIndex = timelineRows.length - 1;
+  // 官方 Chain of Thought：回合里穿插了活动段时，整回合收进一条摘要行（默认展开），
+  // 展开区内按正文时序铺开各段卡；流式中的段卡仍在真实时序位置，结束后不重排。
   // 与 ToolBatchGroup 的空抽取判定一致：只有空记忆批组的段整段不可见（寒暄轮不出卡）。
   const isSegmentRenderable = (steps: AgentDisplayTimelineGroup[]) =>
     steps.some((step) => {
@@ -1258,41 +1533,95 @@ function AssistantTimeline({
         || Boolean(String((part as { intent?: string }).intent || "").trim())
       );
     });
+  const segmentRowIndexes = timelineRows
+    .map((row, index) => (row.kind === "segment" && isSegmentRenderable(row.steps) ? index : -1))
+    .filter((index) => index >= 0);
+  const hasActivitySegments = segmentRowIndexes.length > 0;
+  const activityCollapsedKey = `${stableKey}:activity`;
+  const activityOpen = timelineOpenState[activityCollapsedKey] ?? true;
+  const setActivityOpen = (open: boolean) =>
+    setTimelineOpenState((prev) => ({ ...prev, [activityCollapsedKey]: open }));
+  const renderActivitySegment = (row: Extract<(typeof timelineRows)[number], { kind: "segment" }>, rowIndex: number) => {
+    if (!isSegmentRenderable(row.steps)) return null;
+    const segmentKey = `${stableKey}:segment:${row.key}`;
+    return (
+      <ActivitySegment
+        key={segmentKey}
+        timelineKey={segmentKey}
+        steps={row.steps}
+        forceInactive={!isStreaming || rowIndex !== lastRowIndex}
+        collapsedWhenIdle={hasActivitySegments}
+        timelineOpenState={timelineOpenState}
+        setTimelineOpenState={setTimelineOpenState}
+        shellToolPartsExpanded={shellToolPartsExpanded}
+        editToolPartsExpanded={editToolPartsExpanded}
+        onOpenTaskSession={onOpenTaskSession}
+        onOpenToolFile={onOpenToolFile}
+        onOpenBrowserUrl={onOpenBrowserUrl}
+        renderMarkdown={renderMarkdown}
+      />
+    );
+  };
+  const renderTimelineRow = (row: (typeof timelineRows)[number], rowIndex: number) => {
+    if (row.kind === "segment") return renderActivitySegment(row, rowIndex);
+    const text = row.text;
+    const last = rowIndex === lastRowIndex;
+    return (
+      <AssistantTextBlock
+        key={`${stableKey}:text:${row.key}`}
+        text={text}
+        streaming={isStreaming && last}
+        trailing={last}
+        renderMarkdown={renderMarkdown}
+      />
+    );
+  };
+  if (!hasActivitySegments) {
+    return (
+      <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
+        {timelineRows.map((row, rowIndex) => renderTimelineRow(row, rowIndex))}
+      </div>
+    );
+  }
+  const activityError = timelineRows.some(
+    (row) => row.kind === "segment"
+    && row.steps.some(
+      (step) => step.kind === "part"
+      && String((step.part as { error?: string }).error || "").trim()
+    )
+  );
+  const activityStepCount = timelineRows.reduce((sum, row) => {
+    if (row.kind !== "segment") return sum;
+    return sum + row.steps.reduce((stepSum, step) => {
+      if (step.kind === "context" || step.kind === "tool-batch") return stepSum + (step.parts.length || 1);
+      return stepSum + 1;
+    }, 0);
+  }, 0);
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
-      {timelineRows.map((row, rowIndex) => {
-        if (row.kind === "segment") {
-          if (!isSegmentRenderable(row.steps)) return null;
-          const segmentKey = `${stableKey}:segment:${row.key}`;
-          return (
-            <ActivitySegment
-              key={segmentKey}
-              timelineKey={segmentKey}
-              steps={row.steps}
-              forceInactive={!isStreaming || rowIndex !== lastRowIndex}
-              timelineOpenState={timelineOpenState}
-              setTimelineOpenState={setTimelineOpenState}
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-              onOpenBrowserUrl={onOpenBrowserUrl}
-              renderMarkdown={renderMarkdown}
-            />
-          );
-        }
-        const text = row.text;
-        const last = rowIndex === lastRowIndex;
-        return (
-          <AssistantTextBlock
-            key={`${stableKey}:text:${row.key}`}
-            text={text}
-            streaming={isStreaming && last}
-            trailing={last}
-            renderMarkdown={renderMarkdown}
-          />
-        );
-      })}
+      <Trace>
+        <TraceCollapsible open={activityOpen} onOpenChange={setActivityOpen}>
+          <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+            <TraceLine status={activityError ? "error" : isStreaming ? "running" : undefined}>
+              <TraceIcon>
+                {activityError ? (
+                  <CircleAlertIcon />
+                ) : isStreaming ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : (
+                  <CircleCheckIcon />
+                )}
+              </TraceIcon>
+              <TraceTitle className="text-sm">
+                {isStreaming ? "执行中" : `已执行 ${activityStepCount} 个步骤`}
+              </TraceTitle>
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <TraceCollapsibleContent className="flex flex-col gap-2">
+            {timelineRows.map((row, rowIndex) => renderTimelineRow(row, rowIndex))}
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      </Trace>
     </div>
   );
 }
