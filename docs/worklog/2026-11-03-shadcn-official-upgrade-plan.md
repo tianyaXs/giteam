@@ -15,8 +15,8 @@ AI 会话流已对齐官方 ai-elements（Task/Trace/活动段时序、MessageSc
 |---|------|------|------|------|
 | A1 | Chain of Thought 摘要条 | 活动段卡片各自独立折叠 | 回合级官方 Trace 摘要行（执行中 / 已执行 N 步），展开区内按正文时序铺开段卡；段卡流式落位不变 | ✅ 完成 |
 | A2 | Test Results 卡片 | bash 测试输出渲染为普通文本 | bash 测试命令（npm/pnpm/yarn/vitest/jest/cargo/pytest/go/node test）输出解析为官方 Trace 套件/用例卡，失败默认展开并内嵌官方 CodeBlock；不可解析仍走终端块 | ✅ 完成 |
-| A3 | Context 用量条 | `ai-elements/context.tsx` 已 vendored 但会话视图未接 | pi SDK 暴露 token 用量时挂到 composer 工具条 | 待办（依赖能力侧） |
-| A4 | Checkpoint 回合还原点 | Entire/Git 已有 checkpointId，会话内无 UI 入口 | 会话行级 checkpoint 标记 + 回滚入口；需先定 Rust 回滚语义 | 待办（依赖服务端语义） |
+| A3 | Context 用量条 | `ai-elements/context.tsx` 已 vendored 但会话视图未接 | pi SDK 暴露 token 用量时挂到 composer 工具条 | 🚧 阻塞（2026-11-03 复核：desktop `agentSessions`/`types` 与 Rust core 均无 token/usage 数据源，需先做能力侧） |
+| A4 | Checkpoint 回合还原点 | Entire/Git 已有 checkpointId，会话内无 UI 入口 | 会话行级 checkpoint 标记 + 回滚入口；需先定 Rust 回滚语义 | 🚧 阻塞（2026-11-03 复核：`src-tauri/src/commands/entire.rs` 仅 `explain`，无 restore/rollback 命令，需服务端先定语义） |
 
 不引入：web-preview / actions / artifact（radix-rhea registry 无此条目）；inline-citation / sources 已 vendored，
 等模型侧引用元数据接入。
