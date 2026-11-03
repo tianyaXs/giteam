@@ -932,7 +932,6 @@ function ActivitySegment({
   timelineKey,
   steps,
   forceInactive,
-  collapsedWhenIdle,
   timelineOpenState,
   setTimelineOpenState,
   shellToolPartsExpanded,
@@ -945,7 +944,6 @@ function ActivitySegment({
   timelineKey: string;
   steps: AgentDisplayTimelineGroup[];
   forceInactive: boolean;
-  collapsedWhenIdle?: boolean;
   timelineOpenState: Record<string, boolean>;
   setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
   shellToolPartsExpanded: boolean;
@@ -963,7 +961,7 @@ function ActivitySegment({
   );
   // 只有含「子任务」的段默认展开运行态；思考/探索/命令/编辑段保持收起的摘要行（默认值仅
   // 在用户未点过时生效，timelineOpenState 优先）。
-  const autoOpenRunning = hasTask || !collapsedWhenIdle;
+  const autoOpenRunning = hasTask;
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
   const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
   const setError = steps.some((step) =>
@@ -971,7 +969,7 @@ function ActivitySegment({
     && String((step.part as { error?: string }).error || "").trim()
   );
   const openKey = `${timelineKey}:segment`;
-  const isOpen = timelineOpenState[openKey] ?? (collapsedWhenIdle ? resolvedOpen : true);
+  const isOpen = timelineOpenState[openKey] ?? resolvedOpen;
   const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [openKey]: open }));
 
   // 段头按「原子调用数最多的 kind」取名（合并后一个 shell 批可能含多次命令）：
@@ -1533,95 +1531,41 @@ function AssistantTimeline({
         || Boolean(String((part as { intent?: string }).intent || "").trim())
       );
     });
-  const segmentRowIndexes = timelineRows
-    .map((row, index) => (row.kind === "segment" && isSegmentRenderable(row.steps) ? index : -1))
-    .filter((index) => index >= 0);
-  const hasActivitySegments = segmentRowIndexes.length > 0;
-  const activityCollapsedKey = `${stableKey}:activity`;
-  const activityOpen = timelineOpenState[activityCollapsedKey] ?? true;
-  const setActivityOpen = (open: boolean) =>
-    setTimelineOpenState((prev) => ({ ...prev, [activityCollapsedKey]: open }));
-  const renderActivitySegment = (row: Extract<(typeof timelineRows)[number], { kind: "segment" }>, rowIndex: number) => {
-    if (!isSegmentRenderable(row.steps)) return null;
-    const segmentKey = `${stableKey}:segment:${row.key}`;
-    return (
-      <ActivitySegment
-        key={segmentKey}
-        timelineKey={segmentKey}
-        steps={row.steps}
-        forceInactive={!isStreaming || rowIndex !== lastRowIndex}
-        collapsedWhenIdle={hasActivitySegments}
-        timelineOpenState={timelineOpenState}
-        setTimelineOpenState={setTimelineOpenState}
-        shellToolPartsExpanded={shellToolPartsExpanded}
-        editToolPartsExpanded={editToolPartsExpanded}
-        onOpenTaskSession={onOpenTaskSession}
-        onOpenToolFile={onOpenToolFile}
-        onOpenBrowserUrl={onOpenBrowserUrl}
-        renderMarkdown={renderMarkdown}
-      />
-    );
-  };
-  const renderTimelineRow = (row: (typeof timelineRows)[number], rowIndex: number) => {
-    if (row.kind === "segment") return renderActivitySegment(row, rowIndex);
-    const text = row.text;
-    const last = rowIndex === lastRowIndex;
-    return (
-      <AssistantTextBlock
-        key={`${stableKey}:text:${row.key}`}
-        text={text}
-        streaming={isStreaming && last}
-        trailing={last}
-        renderMarkdown={renderMarkdown}
-      />
-    );
-  };
-  if (!hasActivitySegments) {
-    return (
-      <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
-        {timelineRows.map((row, rowIndex) => renderTimelineRow(row, rowIndex))}
-      </div>
-    );
-  }
-  const activityError = timelineRows.some(
-    (row) => row.kind === "segment"
-    && row.steps.some(
-      (step) => step.kind === "part"
-      && String((step.part as { error?: string }).error || "").trim()
-    )
-  );
-  const activityStepCount = timelineRows.reduce((sum, row) => {
-    if (row.kind !== "segment") return sum;
-    return sum + row.steps.reduce((stepSum, step) => {
-      if (step.kind === "context" || step.kind === "tool-batch") return stepSum + (step.parts.length || 1);
-      return stepSum + 1;
-    }, 0);
-  }, 0);
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
-      <Trace>
-        <TraceCollapsible open={activityOpen} onOpenChange={setActivityOpen}>
-          <TraceCollapsibleTrigger className="min-w-0 max-w-full">
-            <TraceLine status={activityError ? "error" : isStreaming ? "running" : undefined}>
-              <TraceIcon>
-                {activityError ? (
-                  <CircleAlertIcon />
-                ) : isStreaming ? (
-                  <LoaderCircleIcon className="animate-spin" />
-                ) : (
-                  <CircleCheckIcon />
-                )}
-              </TraceIcon>
-              <TraceTitle className="text-sm">
-                {isStreaming ? "执行中" : `已执行 ${activityStepCount} 个步骤`}
-              </TraceTitle>
-            </TraceLine>
-          </TraceCollapsibleTrigger>
-          <TraceCollapsibleContent className="flex flex-col gap-2">
-            {timelineRows.map((row, rowIndex) => renderTimelineRow(row, rowIndex))}
-          </TraceCollapsibleContent>
-        </TraceCollapsible>
-      </Trace>
+      {timelineRows.map((row, rowIndex) => {
+        if (row.kind === "segment") {
+          if (!isSegmentRenderable(row.steps)) return null;
+          const segmentKey = `${stableKey}:segment:${row.key}`;
+          return (
+            <ActivitySegment
+              key={segmentKey}
+              timelineKey={segmentKey}
+              steps={row.steps}
+              forceInactive={!isStreaming || rowIndex !== lastRowIndex}
+              timelineOpenState={timelineOpenState}
+              setTimelineOpenState={setTimelineOpenState}
+              shellToolPartsExpanded={shellToolPartsExpanded}
+              editToolPartsExpanded={editToolPartsExpanded}
+              onOpenTaskSession={onOpenTaskSession}
+              onOpenToolFile={onOpenToolFile}
+              onOpenBrowserUrl={onOpenBrowserUrl}
+              renderMarkdown={renderMarkdown}
+            />
+          );
+        }
+        const text = row.text;
+        const last = rowIndex === lastRowIndex;
+        return (
+          <AssistantTextBlock
+            key={`${stableKey}:text:${row.key}`}
+            text={text}
+            streaming={isStreaming && last}
+            trailing={last}
+            renderMarkdown={renderMarkdown}
+          />
+        );
+      })}
     </div>
   );
 }
