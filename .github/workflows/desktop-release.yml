@@ -45,17 +45,17 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.2.52）
+            const body = `## 本版重点（0.2.54）
 
-            - 插件设置：Codex 式插件 / 技能 / MCP 管理，MCP 添加弹窗更精致
-            - 运行时依赖改为安装 / 更新（不再提供卸载开关）
-            - 会话贴底跟随与中断渲染更稳，工具事件行减少抖动
+            - 输入框：模型 / 推理等级合并为 DSH 式摘要菜单，权限开关提到一级，菜单上弹不贴底
+            - 推理等级：取消「自动」档，默认「关闭」，显式档位直达引擎
+            - 消息流：流式输出不再闪横向滚动条；回滚加载与「拉到最新」更稳
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.2.52.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.2.54.md\``;
 
             let release;
             try {
