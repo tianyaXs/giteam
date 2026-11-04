@@ -577,7 +577,7 @@ type AgentMessageStreamProps = {
   navigatorSide?: "left" | "right";
   /** 概览标尺范围：all=全部消息（默认）；sent=仅「我发送」。 */
   navigatorScope?: "sent" | "all";
-  /** 外部强制恢复贴底跟随（发送时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
+  /** 外部强制恢复贴底跟随（发送/拉到最新时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
   stickResetSignal?: number;
 };
 
@@ -609,6 +609,24 @@ AgentMessageListContainer.displayName = "AgentMessageListContainer";
 function AgentMessageRowFrame({ children }: { children: ReactNode }) {
   return <div className="pb-3">{children}</div>;
 }
+
+// Virtuoso 官方 Item 协议：外壳透传 style/data-*，仅追加横向裁剪。
+// 流式 text/表格瞬时超宽时默认 item 不裁剪，会把 scroller 顶出横向滚动条；
+// overflow-x:clip 不生成滚动容器、不改变测高，滚动条恢复纵向专用。
+// @see https://virtuoso.dev/virtuoso-item/
+const AgentMessageListItem = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
+  ({ children, style, ...rest }, ref) => (
+    <div
+      ref={ref}
+      style={style}
+      {...rest}
+      className="min-w-0 overflow-x-clip"
+    >
+      {children}
+    </div>
+  )
+);
+AgentMessageListItem.displayName = "AgentMessageListItem";
 
 /** 首条消息与顶部分隔线之间的呼吸留白（参考 ChatGPT 首条消息的顶部间距）。 */
 function AgentMessageListHeader() {
@@ -2515,13 +2533,19 @@ export function AgentMessageStream({
   /** 用户正在拖原生滚动条（pointer 落在 gutter/轨道上）；仅此时才允许因 scrollTop 下降取消 stick。 */
   const scrollbarDraggingRef = useRef(false);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
+  /** Virtuoso 官方 prepend 协议状态：基准索引 + 上一帧头部 keys。 */
+  const firstItemIndexSessionRef = useRef("");
+  const firstItemIndexRef = useRef(1_000_000);
+  const firstItemIndexRowsRef = useRef<{ prefixLength: number; keys: string[] }>({ prefixLength: 0, keys: [] });
   /**
    * 成熟平滑方案 Lenis：库内 wheel 劫持 + 帧率无关 damp 动画 + 滚动条同步回写。
-   * 只负责滚轮平滑，不接管 touch/滚动条/键盘；钉底与程序定位继续走原生即时滚动。
+   * 只负责滚轮平滑与官方 scrollTo；touch/滚动条/键盘保持原生节奏。
    */
   const smoothWheelLenisRef = useRef<Lenis | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
+  /** Lenis 正在接管 wheel 动画：官方动画期间不得用其他滚动源争写 scrollTop。 */
+  const isSmoothWheelAnimating = () => smoothWheelLenisRef.current?.isScrolling === "smooth";
   /** 是否允许钉底（与 rAF / followOutput / totalListHeightChanged 共用）。 */
   const canStickPin = () =>
     stickToBottomRef.current
@@ -2535,6 +2559,7 @@ export function AgentMessageStream({
    *   - center：消息中线对齐视口中线（真居中，标尺跳转用）
    *   - end：消息底部对齐视口底部（真贴底，切会话唤醒 / 流式钉底用）
    * 返回校正函数；调用方在多个 setTimeout/raf 上重试，覆盖 Virtuoso 异步渲染与测量收敛。
+   * 所有写入都经由 Lenis 官方 scrollTo(immediate)，保证 wheel 坐标系不被绕过。
    */
   const adjustToMessage = useCallback((stableKey: string, align: "start" | "center" | "end") => {
     const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
@@ -2550,8 +2575,22 @@ export function AgentMessageStream({
           : align === "end"
             ? e.bottom - s.bottom
             : e.top + e.height / 2 - (s.top + s.height / 2);
-      if (Math.abs(delta) >= 8) sc.scrollBy({ top: delta, behavior: "auto" });
+      if (Math.abs(delta) >= 8) {
+        // 官方 Lenis 提供的 API：程序化滚动绕过实例后，必须经由 scrollTo 重新进入它的坐标系；
+        // 这也天然处理了 Virtuoso 异步测量后的后续校正，不会把实例留在旧坐标系里。
+        smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, { immediate: true });
+      }
     };
+  }, []);
+  /**
+   * Lenis 坐标系重置：stop() 内部 reset() 会终止在途动画并把 animatedScroll/targetScroll
+   * 对齐实际 scrollTop，随后 start() 恢复官方 wheel 响应。这是 Lenis 对「程序化滚动绕过
+   * 实例」的规范处理：标尺跳转/搜索定位走 Virtuoso scrollToIndex，收尾必须同步一次，
+   * 否则滚轮目标滞留旧坐标系会被旧 limit 钳住。
+   */
+  const syncSmoothWheelToNative = useCallback(() => {
+    smoothWheelLenisRef.current?.stop();
+    smoothWheelLenisRef.current?.start();
   }, []);
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
   const openLocalFile = (absolutePath: string) => {
@@ -2902,6 +2941,38 @@ export function AgentMessageStream({
     }
     return result;
   }, [visibleRenderRows, turnManifest]);
+
+  /**
+   * Virtuoso 官方 inverse-scrolling 协议：`firstItemIndex` 只承载「头部新增 N 条」的信号。
+   * 协议要点：
+   * 1. 非头部新增（流式追加、末行变高、重测）绝不改变该值；
+   * 2. 头部新增 N 条时值必须精确减 N，Virtuoso 会据此在内部平移已量测尺寸表并保持视觉锚点；
+   * 3. 会话切换时重置基准，两个会话互不继承索引。
+   * 这样历史加载不再依赖 Virtuoso 的兜底锚定，也不会在加载后改写 scrollTop。
+   * @see https://virtuoso.dev/prepend-items/
+   */
+  {
+    const mountKey = locateStickyMountKeyRef.current || activeSessionId || "agent-thread";
+    if (firstItemIndexSessionRef.current !== mountKey) {
+      firstItemIndexSessionRef.current = mountKey;
+      firstItemIndexRef.current = 1_000_000;
+    }
+    const previous = firstItemIndexRowsRef.current;
+    const count = rowsWithTurnSummary.length;
+    const prepended = previous.prefixLength > 0
+      && count > previous.prefixLength
+      && rowsWithTurnSummary
+        .slice(0, count - previous.prefixLength)
+        .every((row, index) => row.stableKey === previous.keys[index]);
+    if (prepended) {
+      firstItemIndexRef.current -= count - previous.prefixLength;
+    }
+    firstItemIndexRowsRef.current = {
+      prefixLength: count,
+      keys: rowsWithTurnSummary.map((row) => row.stableKey)
+    };
+  }
+  const firstItemIndex = firstItemIndexRef.current;
   // 每段「连续 assistant 块」的末行（下一行是 user/列表尾）：只有这一行挂回复级操作行
   // （复制按钮）。中间过程行（工具轮拆出的 assistant）hover 不再浮出按钮；
   // system 行不打断回合判定。
@@ -2933,8 +3004,8 @@ export function AgentMessageStream({
       const el = document.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(stableKey)}"]`
       );
-      // 已在渲染范围内：直接 DOM 实测 scrollBy 一步到位——绕过 Virtuoso defaultItemHeight 估算，
-      // 既准又无「smooth 动画被校正打断」的二次上下偏移。behavior 透传（点击 smooth / 拖动 auto）。
+      // 已在渲染范围内：用 DOM 实测位置构造官方 scrollTo 目标——绕过 Virtuoso defaultItemHeight
+      // 估算；behavior 透传（点击 smooth / 拖动 auto）。
       if (el && sc) {
         const e = el.getBoundingClientRect();
         const s = sc.getBoundingClientRect();
@@ -2944,12 +3015,18 @@ export function AgentMessageStream({
             : target === "end"
               ? e.bottom - s.bottom
               : e.top + e.height / 2 - (s.top + s.height / 2);
-        sc.scrollBy({ top: delta, behavior });
+        if (Math.abs(delta) >= 8) {
+          // 已渲染目标走官方 Lenis scrollTo；smooth 交给它的 damp 动画，auto 立即落位。
+          smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, {
+            immediate: behavior === "auto"
+          });
+        }
+        syncSmoothWheelToNative();
         return;
       }
       // 不在渲染范围（远处跳转）：scrollToIndex 先把目标拉进视口，立即 + rAF 连续校正到目标对齐。
       // scrollToIndex(auto) 与首帧校正同步执行、浏览器合并渲染 → 用户只见一次到位；后续 rAF
-      // 兜底 Virtuoso 异步测量收敛，到位后 adjustToMessage 内 |delta|<8 不再 scrollBy，不反复偏移。
+      // 经官方 Lenis scrollTo 收敛，到位后 |delta|<8 不再写入，不反复偏移。
       virtuosoRef.current?.scrollToIndex({ index, align: target, behavior: "auto" });
       const adjust = adjustToMessage(stableKey, target);
       const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
@@ -2959,18 +3036,20 @@ export function AgentMessageStream({
         adjust();
         if (++frames < 6) {
           requestAnimationFrame(step);
-        } else if (target === "start") {
-          // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
-          // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
-          const sc = scrollerElRef.current;
-          if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
-            sc.scrollTo({ top: 0, behavior: "auto" });
+        } else {
+          if (target === "start") {
+            // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
+            // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
+            if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
+              smoothWheelLenisRef.current?.scrollTo(0, { immediate: true });
+            }
           }
+          syncSmoothWheelToNative();
         }
       };
       requestAnimationFrame(step);
     },
-    [visibleRenderRows, adjustToMessage]
+    [visibleRenderRows, adjustToMessage, syncSmoothWheelToNative]
   );
   // 取消 stick 只认用户手势；Virtuoso 重测/锚点补偿造成的 scrollTop 变化一律忽略。
   // @see https://github.com/petyosi/react-virtuoso/issues/195
@@ -2992,10 +3071,15 @@ export function AgentMessageStream({
       syncTouch: false,
       wheelMultiplier: 1,
       allowNestedScroll: true,
-      autoRaf: true
+      autoRaf: true,
+      // Virtuoso 渲染窗口是连续位移（可视窗口外高度持续增减），不是静态文档。
+      // 官方缓存的 scrollHeight 会滞后于真实容器；开启官方提供的实时尺寸读取，
+      // 每次 wheel 计算目标都用当前 limit，避免上滑到顶后目标被旧 limit 钳住。
+      naiveDimensions: true
     });
     smoothWheelLenisRef.current = lenis;
     // 用户滚轮向上离开底部时立即取消贴底意图；否则持续 rAF 钉底会和 Lenis 平滑动画互相写 scrollTop。
+    // 该回调也可能由原生 scroll 联动触发，必须只认官方 smooth wheel 动画里的 direction=-1。
     const onLenisScroll = (instance: Lenis) => {
       if (instance.isScrolling === "smooth" && instance.direction === -1) {
         stickToBottomRef.current = false;
@@ -3075,7 +3159,7 @@ export function AgentMessageStream({
   );
 
   // 持续 rAF 钉底：同 row 变高（工具事件）时 followOutput 无效（官方 issue #195），
-  // 必须靠物理钉 scrollTop；取消 stick 只在「正在拖滚动条且离开底部」时发生。
+  // 由这里补一次官方 scrollTo(immediate)；smooth wheel 上滚时整段让路，不与官方动画争写。
   useEffect(() => {
     let raf = 0;
     let lastTop = -1;
@@ -3086,7 +3170,7 @@ export function AgentMessageStream({
         const top = sc.scrollTop;
         // Lenis 正在做平滑 wheel 动画时必须让路：官方动画已经负责写 scrollTop，
         // 此处再物理钉底会形成快滚抖动；上滚时 onLenisScroll 已取消贴底意图。
-        if (smoothWheelLenisRef.current?.isScrolling === "smooth") {
+        if (isSmoothWheelAnimating()) {
           lastTop = sc.scrollTop;
           raf = requestAnimationFrame(tick);
           return;
@@ -3101,7 +3185,8 @@ export function AgentMessageStream({
           ) {
             stickToBottomRef.current = false;
           } else if (top < max) {
-            sc.scrollTop = max;
+            // 程序化贴底必须走官方 Lenis API：直接写 scrollTop 会让 wheel 实例与容器分叉。
+            smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
           }
         }
         lastTop = sc.scrollTop;
@@ -3112,12 +3197,16 @@ export function AgentMessageStream({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // 外部（发送）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
+  // 外部（发送/拉到最新）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
+  // “拉到最新”是明确的 live-edge 指令：即使本会话曾搜索定位过，也要释放定位保护，
+  // 否则 canStickPin 仍为 false，按钮看起来只是把视口往上送一段而到不了最新。
   const prevStickResetRef = useRef(stickResetSignal);
   useEffect(() => {
     if (stickResetSignal === prevStickResetRef.current) return;
     prevStickResetRef.current = stickResetSignal;
     stickToBottomRef.current = true;
+    locatedThisSessionRef.current = false;
+    locateStickyMountKeyRef.current = null;
   }, [stickResetSignal]);
 
   /** 列表总高度变化（含同 row 工具卡变高）：官方建议配合 followOutput 调 autoscrollToBottom。 */
@@ -3127,7 +3216,7 @@ export function AgentMessageStream({
     const sc = scrollerElRef.current;
     if (sc) {
       const max = sc.scrollHeight - sc.clientHeight;
-      if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+      if (max >= 0 && sc.scrollTop < max) smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
     }
   }, [virtuosoRef]);
 
@@ -3198,7 +3287,7 @@ export function AgentMessageStream({
   }, [pendingLocateId, pendingLocateIndex, sessionLoading, visibleRenderRows.length, activeSessionId, locateNonce]);
 
   // remount 后校正定位：与标尺跳转同一套路——Virtuoso initialTopMostItemIndex / scrollToIndex
-  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧 scrollBy 收敛。
+  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧校正收敛。
   // 流程：① 把命中消息拉进视口并对齐 start ② 等关键词 <mark> 出现后居中（对齐 highlight 重试节奏）。
   useEffect(() => {
     if (!pendingLocateId || sessionLoading) return;
@@ -3217,6 +3306,7 @@ export function AgentMessageStream({
     const finish = () => {
       if (cancelled || finished) return;
       finished = true;
+      syncSmoothWheelToNative();
       onPendingScrollDone?.();
     };
 
@@ -3342,6 +3432,8 @@ export function AgentMessageStream({
         align: "end",
         behavior: "auto"
       });
+      const lenis = smoothWheelLenisRef.current;
+      if (lenis && lenis.targetScroll > lenis.actualScroll) lenis.scrollTo(lenis.actualScroll, { immediate: true });
     };
     wake();
     const stickTimers: number[] = [];
@@ -3383,6 +3475,7 @@ export function AgentMessageStream({
         key={virtuosoMountKey}
         ref={virtuosoRef}
         data={rowsWithTurnSummary}
+        firstItemIndex={firstItemIndex}
         computeItemKey={(_index, row) => row.stableKey}
         scrollerRef={handleScrollerRef}
         className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
@@ -3408,7 +3501,7 @@ export function AgentMessageStream({
         }}
         increaseViewportBy={{ top: 600, bottom: 600 }}
         defaultItemHeight={160}
-        components={{ List: AgentMessageListContainer, Header: AgentMessageListHeader }}
+        components={{ List: AgentMessageListContainer, Item: AgentMessageListItem, Header: AgentMessageListHeader }}
         itemContent={(_index, row) =>
           row.isSystem ? (
             <AgentMessageRowFrame>

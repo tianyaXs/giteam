@@ -113,7 +113,7 @@ const EMPTY_DRAFT: DraftForm = {
   sessionMode: "new",
   sessionId: "",
   modelRef: "",
-  thinkingLevel: "auto",
+  thinkingLevel: "off",
   schedulePreset: "daily",
   time: "09:00",
   intervalMinutes: "60",
@@ -148,7 +148,6 @@ function parseModelRef(ref: string): { provider: string | null; model: string | 
 
 function toStoredThinkingLevel(level: AgentThinkingLevel): string | null {
   const normalized = normalizeThinkingLevel(level);
-  if (normalized === "auto") return null;
   if (normalized === "off" || normalized === "none") return "off";
   if (normalized === "max") return "xhigh";
   return normalized;
@@ -271,7 +270,7 @@ function taskToDraft(task: AutomationTask): DraftForm {
     sessionMode: task.sessionMode,
     sessionId: task.sessionId || "",
     modelRef,
-    thinkingLevel: normalizeThinkingLevel(task.thinkingLevel || "auto"),
+    thinkingLevel: normalizeThinkingLevel(task.thinkingLevel || "off"),
     schedulePreset,
     time,
     intervalMinutes,

@@ -60,8 +60,13 @@ export const ModelSelectorList = ({
   className,
   ...props
 }: ModelSelectorListProps) => (
+  // 官方下拉菜单形态不露出滚动条：保留滚动能力但隐藏滚动条 UI，
+  // 滚轮 / 键盘上下键仍可浏览长列表。
   <div
-    className={cn("max-h-72 overflow-y-auto overscroll-contain", className)}
+    className={cn(
+      "scrollbar-none max-h-72 overflow-y-auto overscroll-contain",
+      className
+    )}
     {...props}
   />
 );

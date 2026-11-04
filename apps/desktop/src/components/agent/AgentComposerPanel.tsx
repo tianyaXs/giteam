@@ -28,17 +28,10 @@ import { QuestionDock } from "../QuestionDock";
 import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { QueueItem, QueueItemContent } from "../ai-elements/queue";
 import {
-  ModelSelector,
-  ModelSelectorContent,
-  ModelSelectorEmpty,
   ModelSelectorGroup,
-  ModelSelectorInput,
   ModelSelectorItem,
   ModelSelectorList,
-  ModelSelectorLogo,
-  ModelSelectorName,
-  ModelSelectorSeparator,
-  ModelSelectorTrigger
+  ModelSelectorSeparator
 } from "../ai-elements/model-selector";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
 import { PromptInputSubmit, PromptInputTextarea } from "../ai-elements/prompt-input";
@@ -49,6 +42,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "../ui/dropdown-menu";
 import { Badge } from "../ui/badge";
@@ -63,6 +59,7 @@ import { cn } from "../../lib/utils";
 import { CheckIcon, CloseIcon } from "../icons";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   ImagePlus,
   PlusIcon,
   Sparkles,
@@ -84,6 +81,7 @@ type SlashCommandOption = {
 type AgentModelDisplay = {
   label: string;
   provider: string;
+  providerLabel?: string;
 };
 
 type AgentComposerPanelProps = {
@@ -128,11 +126,6 @@ type AgentComposerPanelProps = {
   attachmentInputAccept: string;
   onOpenAttachmentPicker: () => void;
   onAttachmentInputChange: ChangeEventHandler<HTMLInputElement>;
-  modelPickerRef: RefObject<HTMLDivElement | null>;
-  showModelPicker: boolean;
-  onToggleModelPicker: () => void;
-  modelPickerSearch: string;
-  onModelPickerSearchChange: (value: string) => void;
   activeAgent: ComposerAgentName | string;
   onApplyAgent: (agentName: string) => void;
   activeThinkingLevel: AgentThinkingLevel;
@@ -222,11 +215,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     attachmentInputAccept,
     onOpenAttachmentPicker,
     onAttachmentInputChange,
-    modelPickerRef,
-    showModelPicker,
-    onToggleModelPicker,
-    modelPickerSearch,
-    onModelPickerSearchChange,
     activeAgent: _activeAgent,
     onApplyAgent: _onApplyAgent,
     activeThinkingLevel,
@@ -259,11 +247,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const hasComposerPreviews = attachments.length > 0 || graphRefs.length > 0;
   // 旧会话空输入始终「继续跟进」；贴图不应改成「要做什么？」。
   const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
-  const configSummaryLabel = (activeModel || "").trim()
-    ? `${modelValueLabel} ${thinkingValueLabel}`.trim()
-    : hasConfiguredModel
-      ? "选择模型"
-      : labels.configureModels;
   const visiblePermissions = permissions.slice(0, 2);
   const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
   const previewStripRef = useRef<HTMLDivElement | null>(null);
@@ -306,25 +289,17 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           : "输入内容后发送"
         : "请先配置并选择模型";
 
-  const search = modelPickerSearch.trim().toLowerCase();
   const groups = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const modelRef of configuredModelCandidates) {
       const display = getModelDisplay(modelRef);
-      if (
-        search
-        && !(modelRef.toLowerCase().includes(search)
-          || (display.label || "").toLowerCase().includes(search)
-          || (display.provider || "").toLowerCase().includes(search))
-      ) {
-        continue;
-      }
-      const provider = display.provider || "其他";
+      // openai-compatible.* 等内部 id 由 catalog 解析成用户填写的供应商名，避免分组标题带前缀。
+      const provider = display.providerLabel || display.provider || "其他";
       if (!map.has(provider)) map.set(provider, []);
       map.get(provider)!.push(modelRef);
     }
     return [...map.entries()];
-  }, [configuredModelCandidates, getModelDisplay, search]);
+  }, [configuredModelCandidates, getModelDisplay]);
 
   const slashOverlay = slashOpen && slashSuggestions.length > 0 ? (
     <div className="absolute bottom-full left-0 z-[2600] mb-2 grid max-h-72 w-[min(520px,calc(100vw-48px))] gap-1 overflow-auto rounded-xl border border-border/70 bg-background p-1 shadow-xl">
@@ -429,12 +404,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     </AnimatePresence>
   );
 
-  // ── Official aria-rhea Model Selector composition
-  //    (https://ui.shadcn.com/docs/ai-elements/aria/model-selector):
+  // ── Composer config trigger（DSH 风格）
   //    InputGroup + InputGroupTextarea(p-3) + block-end addon:
-  //    [⊕ outline rounded-full] … ml-auto [model ▾][effort ▾] … [↑ default rounded-full].
-  //    Spacing comes from aria-rhea baked values; composer.css aligns the local
-  //    (default-shadcn) primitives to those values in this isolated scope.
+  //    [⊕ outline rounded-full] … ml-auto [模型 推理等级 ▾(ghost)] … [↑ contrast rounded-full].
+  //    摘要按钮展开「模型 › / 推理等级 ›」两行子菜单；子菜单复用官方
+  //    DropdownMenuSub 与 ModelSelector 列表基线，不引入自定义样式。
   const composerCard = (
     <InputGroup className="giteam-composer rounded-2xl border-transparent bg-input/50">
       {previewStrip}
@@ -475,116 +449,108 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           className="hidden"
           onChange={onAttachmentInputChange}
         />
-        <ModelSelector
-          open={showModelPicker}
-          onOpenChange={(open) => {
-            if (open !== showModelPicker) onToggleModelPicker();
-          }}
-        >
-          <ModelSelectorTrigger asChild>
-            <InputGroupButton
-              size="sm"
-              variant="outline"
-              className="ml-auto min-w-0"
-              aria-label="选择模型"
-              title="选择模型"
-            >
-              <span className="min-w-0 truncate">
-                {hasConfiguredModel ? modelValueLabel || "选择模型" : "选择模型"}
-              </span>
-              <ChevronDownIcon />
-            </InputGroupButton>
-          </ModelSelectorTrigger>
-          <ModelSelectorContent
-            title={labels.model}
-            className="giteam-composer-menu w-48"
-            sideOffset={4}
-          >
-            <ModelSelectorList>
-              {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
-                <Fragment key={provider}>
-                  {groupIndex > 0 ? <ModelSelectorSeparator /> : null}
-                  <ModelSelectorGroup heading={provider}>
-                    {refs.map((modelRef) => {
-                      const display = getModelDisplay(modelRef);
-                      const selected = modelRef === activeModel;
-                      return (
-                        <ModelSelectorItem
-                          key={modelRef}
-                          onSelect={() => onApplyModel(modelRef)}
-                          title={modelRef}
-                        >
-                          <span className="min-w-0 flex-1 truncate">{display.label || modelRef}</span>
-                          {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
-                        </ModelSelectorItem>
-                      );
-                    })}
-                  </ModelSelectorGroup>
-                </Fragment>
-              )) : null}
-              {hasConfiguredModel ? null : (
-                <ModelSelectorGroup heading="未配置模型">
-                  <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
-                    <span className="min-w-0 flex-1">打开设置配置模型…</span>
-                  </ModelSelectorItem>
-                </ModelSelectorGroup>
-              )}
-            </ModelSelectorList>
-          </ModelSelectorContent>
-        </ModelSelector>
-        <DropdownMenu>
+        <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <InputGroupButton
               size="sm"
-              variant="outline"
-              className="min-w-0"
-              aria-label="推理强度与自动权限"
-              title="推理强度与自动权限"
+              variant="ghost"
+              className="ml-auto min-w-0 border-0 bg-transparent px-2 shadow-none hover:bg-transparent data-[state=open]:bg-transparent"
+              aria-label="模型与推理强度"
+              title="模型与推理强度"
             >
-              <span className="text-muted-foreground">强度</span>
-              <span className="min-w-0 truncate">{thinkingValueLabel || "自动"}</span>
+              <span className="min-w-0 truncate font-medium">{modelValueLabel}</span>
+              <span className="min-w-0 truncate text-muted-foreground">{thinkingValueLabel}</span>
               <ChevronDownIcon />
             </InputGroupButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
-            className="giteam-composer-menu w-36"
-            sideOffset={4}
+            side="top"
+            className="giteam-composer-menu w-52"
+            sideOffset={6}
           >
-            <DropdownMenuLabel>推理强度</DropdownMenuLabel>
-            <DropdownMenuGroup>
-              {thinkingLevelOptions.map((level) => {
-                const meta = thinkingLevelMeta(level);
-                const active = activeThinkingLevel === level;
-                return (
-                  <DropdownMenuItem
-                    key={level}
-                    onSelect={() => onApplyThinkingLevel(level)}
-                    className="justify-between gap-2"
-                  >
-                    <span>{meta.label}</span>
-                    {active ? <CheckIcon width={14} height={14} /> : null}
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.preventDefault();
-                onToggleAutoAcceptPermissions();
-              }}
-              className="justify-between gap-2"
-            >
-              <span>自动接受权限</span>
-              <Switch
-                size="sm"
-                checked={autoAcceptPermissions}
-                aria-label="自动接受权限"
-                tabIndex={-1}
-                className="pointer-events-none"
-              />
-            </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="gap-2">
+                  <span>模型</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-muted-foreground">{modelValueLabel}</span>
+                  <ChevronRightIcon />
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="giteam-composer-menu w-56" sideOffset={6}>
+                  <ModelSelectorList className="max-h-64">
+                    {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
+                      <Fragment key={provider}>
+                        {groupIndex > 0 ? <ModelSelectorSeparator /> : null}
+                        <ModelSelectorGroup heading={provider}>
+                          {refs.map((modelRef) => {
+                            const display = getModelDisplay(modelRef);
+                            const selected = modelRef === activeModel;
+                            return (
+                              <ModelSelectorItem
+                                key={modelRef}
+                                onSelect={() => onApplyModel(modelRef)}
+                                title={modelRef}
+                              >
+                                <span className="min-w-0 flex-1 truncate">{display.label || modelRef}</span>
+                                {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
+                              </ModelSelectorItem>
+                            );
+                          })}
+                        </ModelSelectorGroup>
+                      </Fragment>
+                    )) : (
+                      <ModelSelectorGroup heading="未配置模型">
+                        <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
+                          <span className="min-w-0 flex-1">打开设置配置模型…</span>
+                        </ModelSelectorItem>
+                      </ModelSelectorGroup>
+                    )}
+                  </ModelSelectorList>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="gap-2">
+                  <span>推理等级</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-muted-foreground">
+                    {thinkingLevelMeta(activeThinkingLevel).label}
+                  </span>
+                  <ChevronRightIcon />
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="giteam-composer-menu w-40" sideOffset={6}>
+                  <DropdownMenuGroup>
+                    {thinkingLevelOptions.map((level) => {
+                      const meta = thinkingLevelMeta(level);
+                      const active = activeThinkingLevel === level;
+                      return (
+                        <DropdownMenuItem
+                          key={level}
+                          onSelect={() => onApplyThinkingLevel(level)}
+                          className="justify-between gap-2"
+                        >
+                          <span>{meta.label}</span>
+                          {active ? <CheckIcon width={14} height={14} /> : null}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              onToggleAutoAcceptPermissions();
+            }}
+            className="justify-between gap-2"
+          >
+            <span>自动接受权限</span>
+            <Switch
+              size="sm"
+              checked={autoAcceptPermissions}
+              aria-label="自动接受权限"
+              tabIndex={-1}
+              className="pointer-events-none"
+            />
+          </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         {/* 官方 demo 发送键是深色圆（aria-rhea primary ≈ near-black）；本项目 --primary
