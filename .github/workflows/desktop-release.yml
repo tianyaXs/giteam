@@ -45,18 +45,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.2.55）
+            const body = `## 本版重点（0.2.56）
 
-            - 修复 macOS 正式包无法访问局域网模型服务的问题
-            - 局域网 provider（如 http://192.168.x.x）此前立即报 No route to host
-            - 根因是打包后缺少本地网络权限声明，dev 模式因继承终端授权所以正常
-            - 本次补齐声明，首次使用时系统会请求本地网络授权
+            - 修复 macOS 正式包本地网络授权不能跨版本保持的问题
+            - 正式包改用稳定的 Giteam Desktop 代码签名身份，不再使用每次构建漂移的 ad-hoc 签名
+            - 安装新版本后首次访问局域网模型服务时授权一次，后续升级通常保持授权
+            - 若系统仍拒绝，请在 系统设置 → 隐私与安全性 → 本地网络 中手动允许 Giteam
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.2.55.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.2.56.md\``;
 
             let release;
             try {
@@ -175,11 +175,38 @@ jobs:
           VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
         run: npm run build
 
+      # macOS 本地网络隐私按稳定代码签名身份记录授权。
+      # ad-hoc/linker 签名每次构建 UUID 都会漂移，用户授权无法跨版本保持，
+      # 会导致正式包访问局域网模型服务时被系统静默拒绝（EHOSTUNREACH/No route to host）。
+      - name: Import stable macOS codesign identity
+        if: matrix.name == 'macos-aarch64'
+        shell: bash
+        env:
+          MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
+          MACOS_CODESIGN_PASSWORD: ${{ secrets.MACOS_CODESIGN_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CODESIGN_P12" ] || [ -z "$MACOS_CODESIGN_PASSWORD" ]; then
+            echo "::error::Missing macOS codesign secrets (MACOS_CODESIGN_P12 / MACOS_CODESIGN_PASSWORD)."
+            exit 1
+          fi
+          KEYCHAIN=build.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN"
+          echo "$MACOS_CODESIGN_P12" | base64 --decode > /tmp/giteam-codesign.p12
+          security import /tmp/giteam-codesign.p12 -k "$KEYCHAIN" -P "$MACOS_CODESIGN_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
           # 优先用 PAT，避免仓库把 GITHUB_TOKEN 锁成只读
           GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
+          MACOS_CODESIGN_PASSWORD: ${{ secrets.MACOS_CODESIGN_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
@@ -194,4 +221,4 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           # inline JSON，避免 tauri-action 把文件路径先当 JSON 解析
-          args: ${{ matrix.args }} --config {"build":{"beforeBuildCommand":""}}
+          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""}}' ${{ matrix.name == 'macos-aarch64' && '--config bundle.macOS.signingIdentity="Giteam Desktop"' || '' }}
