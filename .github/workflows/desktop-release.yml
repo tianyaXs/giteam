@@ -45,17 +45,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.2.54）
+            const body = `## 本版重点（0.2.55）
 
-            - 输入框：模型 / 推理等级合并为 DSH 式摘要菜单，权限开关提到一级，菜单上弹不贴底
-            - 推理等级：取消「自动」档，默认「关闭」，显式档位直达引擎
-            - 消息流：流式输出不再闪横向滚动条；回滚加载与「拉到最新」更稳
+            - 修复 macOS 正式包无法访问局域网模型服务的问题
+            - 局域网 provider（如 http://192.168.x.x）此前立即报 No route to host
+            - 根因是打包后缺少本地网络权限声明，dev 模式因继承终端授权所以正常
+            - 本次补齐声明，首次使用时系统会请求本地网络授权
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.2.54.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.2.55.md\``;
 
             let release;
             try {
