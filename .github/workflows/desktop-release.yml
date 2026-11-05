@@ -196,7 +196,10 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -t 3600 -u "$KEYCHAIN"
           echo "$MACOS_CODESIGN_P12" | base64 --decode > /tmp/giteam-codesign.p12
+          # 使用 OpenSSL 传统 PKCS12 算法，避免 macOS security 不识别 AES PBES2。
           security import /tmp/giteam-codesign.p12 -k "$KEYCHAIN" -P "$MACOS_CODESIGN_PASSWORD" -T /usr/bin/codesign
+          # 自签身份没有外部 CA 链，必须标记信任，否则 codesign 无法使用“valid identity”。
+          security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" /tmp/giteam-codesign.crt
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
@@ -221,4 +224,4 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           # inline JSON，避免 tauri-action 把文件路径先当 JSON 解析
-          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""}}' ${{ matrix.name == 'macos-aarch64' && '--config bundle.macOS.signingIdentity="Giteam Desktop"' || '' }}
+          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""}${{ matrix.name == 'macos-aarch64' && ', "bundle":{"macOS":{"signingIdentity":"Giteam Desktop"}}' || '' }}'}
