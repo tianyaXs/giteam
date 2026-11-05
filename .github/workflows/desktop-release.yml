@@ -48,9 +48,9 @@ jobs:
             const body = `## 本版重点（0.2.56）
 
             - 修复 macOS 正式包本地网络授权不能跨版本保持的问题
-            - 正式包改用稳定的 Giteam Desktop 代码签名身份，不再使用每次构建漂移的 ad-hoc 签名
+            - macOS 正式包改用稳定的 Giteam Desktop 代码签名身份，不再使用每次构建漂移的 ad-hoc 签名
             - 安装新版本后首次访问局域网模型服务时授权一次，后续升级通常保持授权
-            - 若系统仍拒绝，请在 系统设置 → 隐私与安全性 → 本地网络 中手动允许 Giteam
+            - Windows 本版仅同步版本更新；如安装器上传中断，请用上方旧安装器或重新触发发布
 
             ## 说明
 
@@ -196,11 +196,17 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -t 3600 -u "$KEYCHAIN"
           echo "$MACOS_CODESIGN_P12" | base64 --decode > /tmp/giteam-codesign.p12
-          # 使用 OpenSSL 传统 PKCS12 算法，避免 macOS security 不识别 AES PBES2。
+          # 从 legacy PKCS12 中导出证书；自签身份必须显式标记信任。
+          openssl pkcs12 -in /tmp/giteam-codesign.p12 -passin "pass:$MACOS_CODESIGN_PASSWORD" -nokeys -clcerts -out /tmp/giteam-codesign.crt
           security import /tmp/giteam-codesign.p12 -k "$KEYCHAIN" -P "$MACOS_CODESIGN_PASSWORD" -T /usr/bin/codesign
-          # 自签身份没有外部 CA 链，必须标记信任，否则 codesign 无法使用“valid identity”。
           security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" /tmp/giteam-codesign.crt
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          IDENTITY_COUNT=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c '"Giteam Desktop"' || true)
+          if [ "$IDENTITY_COUNT" -lt 1 ]; then
+            echo "::error::Stable macOS signing identity was not trusted."
+            security find-identity -v -p codesigning "$KEYCHAIN"
+            exit 1
+          fi
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Build and publish
@@ -224,4 +230,4 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           # inline JSON，避免 tauri-action 把文件路径先当 JSON 解析
-          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""}${{ matrix.name == 'macos-aarch64' && ', "bundle":{"macOS":{"signingIdentity":"Giteam Desktop"}}' || '' }}'}
+          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""},"bundle":{"macOS":{"signingIdentity":"Giteam Desktop"}}}'
