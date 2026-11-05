@@ -80,6 +80,7 @@ jobs:
   publish:
     name: Build ${{ matrix.name }}
     needs: create-release
+    timeout-minutes: 70
     permissions:
       contents: write
     strategy:
@@ -200,7 +201,7 @@ jobs:
           openssl pkcs12 -in /tmp/giteam-codesign.p12 -passin "pass:$MACOS_CODESIGN_PASSWORD" -nokeys -clcerts -out /tmp/giteam-codesign.crt
           security import /tmp/giteam-codesign.p12 -k "$KEYCHAIN" -P "$MACOS_CODESIGN_PASSWORD" -T /usr/bin/codesign
           # add-trusted-cert 可能触发 GUI 授权卡死；CI 用 partitions + codesign 指定 keychain 即可。
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           IDENTITY_COUNT=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c '"Giteam Desktop"' || true)
           if [ "$IDENTITY_COUNT" -lt 1 ]; then
             echo "::warning::Stable macOS signing identity is not marked valid yet."
