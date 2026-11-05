@@ -439,21 +439,26 @@ export function dedupeAgentDuplicateTextParts(
 }
 
 /**
- * 过程 part（思考/工具/运行时）始终排在正文 text 之前。
- * 迟到的 toolCall 若 append 到已有 text 后面，UI 会把「已查询」画到最终回复下面。
+ * 流式瞬态保护：只把「有序流式正文块（text:0/text:1…）之前」迟到的工具/思考提到
+ * 正文前——这些工具若留在末尾会渲染成「正文下面挂工具卡」。首块正文之后到达的
+ * 操作保持原生 JSONL 时序（跟随正文穿插），段卡合并由 buildAgentActivityRows 处理。
+ * 完成/history 的时序本身就是权威的，不应整体重排。
  */
 export function liftAgentProcessPartsBeforeText(
   parts: AgentDetailedPart[] | undefined | null
 ): AgentDetailedPart[] {
   const rows = Array.isArray(parts) ? parts : [];
-  const process: AgentDetailedPart[] = [];
-  const rest: AgentDetailedPart[] = [];
+  const lifted: AgentDetailedPart[] = [];
+  const tail: AgentDetailedPart[] = [];
+  let seenOrderedText = false;
+  let changed = false;
   for (const part of rows) {
     if (!part) continue;
     const type = String((part as { type?: string }).type || "");
     const isText = type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
     if (isText) {
-      rest.push(part);
+      seenOrderedText = true;
+      tail.push(part);
       continue;
     }
     if (
@@ -462,14 +467,19 @@ export function liftAgentProcessPartsBeforeText(
       || type === "runtime.failure"
       || type === "runtime.retry"
     ) {
-      process.push(part);
+      if (!seenOrderedText) {
+        lifted.push(part);
+        changed = true;
+      } else {
+        tail.push(part);
+      }
       continue;
     }
-    if (rest.length > 0) rest.push(part);
-    else process.push(part);
+    (seenOrderedText ? tail : lifted).push(part);
+    if (!seenOrderedText) changed = true;
   }
-  if (process.length === 0 || rest.length === 0) return rows;
-  return [...process, ...rest];
+  if (!changed) return rows;
+  return [...lifted, ...tail];
 }
 
 export function buildAgentReplyMarkdownFromParts(parts: AgentDetailedPart[] | undefined | null): string {
@@ -498,8 +508,70 @@ export function hasVisibleTimelineGroups(groups: AgentAssistantRenderGroup[]): b
   return groups.some((group) => group.kind !== "boundary");
 }
 
-export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | undefined | null): AgentAssistantRenderGroup[] {
-  const rows = liftAgentProcessPartsBeforeText(parts);
+/**
+ * 活动段（Activity Segment）划分——对齐官方 aria Task 语义：
+ * 一段连续的 agent 工作（思考/探索/命令/编辑…）收进一个可折叠卡片；
+ * 每个可见正文（text）都是段落锚：正文前的连续工作切段，正文成为正文行，
+ * 正文之后的新工作再开新段。
+ * 流式与完成态使用同一套划分——过程中穿插的段卡就在真实时序位置，
+ * 结束时不发生「堆顶 → 重排」跳变；steps 里的 tool-batch 合并、
+ * anchor 稳定 key 由调用方先行处理。
+ */
+export type AgentActivityRow<TGroup> =
+  | { kind: "segment"; key: string; steps: TGroup[] }
+  | { kind: "text"; key: string; text: string };
+
+export function buildAgentActivityRows<TGroup extends { kind: string }>(
+  groups: TGroup[],
+  options: {
+    keyOf: (group: TGroup) => string;
+    textOf: (group: TGroup) => string;
+  }
+): AgentActivityRow<TGroup>[] {
+  const rows: AgentActivityRow<TGroup>[] = [];
+  let steps: TGroup[] = [];
+  let firstKey = "";
+  const flush = () => {
+    if (steps.length > 0) {
+      rows.push({ kind: "segment", key: firstKey, steps });
+    }
+    steps = [];
+    firstKey = "";
+  };
+  const isTextLike = (group: TGroup): string => {
+    if (group.kind !== "part") return "";
+    return options.textOf(group);
+  };
+  for (const group of groups) {
+    // 隐藏思考产生的不可见 boundary 不再切开段落（它是旧分组间距混乱的来源之一）。
+    if (group.kind === "boundary") continue;
+    const text = isTextLike(group);
+    if (text) {
+      // 正文 = 段落锚。流式中增长中的末尾正文同样作为正文行渲染在真实时序位置，
+      // 后续工具会在它下面开新段——与完成态逐帧同构，结束时不重排。
+      flush();
+      rows.push({ kind: "text", key: options.keyOf(group), text });
+      continue;
+    }
+    if (steps.length === 0) firstKey = options.keyOf(group);
+    steps.push(group);
+  }
+  flush();
+  return rows;
+}
+
+export function buildAgentAssistantRenderGroups(
+  parts: AgentDetailedPart[] | undefined | null,
+  options: { liftProcessParts?: boolean } = {}
+): AgentAssistantRenderGroup[] {
+  // streaming 只修「正文块之前迟到工具」这一种瞬态乱序；正文块之后的操作保持
+  // 原生时序，跟着正文穿插。完成态/history 不做任何重排——“工具 → 正文 → 工具
+  // → 正文”必须原样保留，段卡按穿插时序切开。
+  const rows = options.liftProcessParts
+    ? liftAgentProcessPartsBeforeText(parts)
+    : Array.isArray(parts)
+      ? parts
+      : [];
   const out: AgentAssistantRenderGroup[] = [];
   let i = 0;
   while (i < rows.length) {
@@ -560,6 +632,78 @@ export function buildAgentAssistantRenderGroups(parts: AgentDetailedPart[] | und
  * 同一轮多次 runtime.retry 只留最后一条；failure 最多一条。
  * 成功的重试不保留——否则会一直挂在最新正文下面。
  */
+/**
+ * 回合结束后 live parts 与全量 history details 的合并。
+ * live 只有流式期收到的部分工具（断线/漏事件常见），history 是 JSONL 权威快照；
+ * 二者并集合并：缺失的 history 工具/正文补进来，重复的按内容取更长的一份。
+ * 身份规则：toolCall 按 toolCallId（跨来源稳定）；text/reasoning 的 live id
+ * （`reasoning:{index}`/`text:{index}`）与 history id（`{mid}-reasoning-{n}`）不同源，
+ * 必须按内容互相包含判重，否则同一段思考会渲染两遍。
+ */
+export function unionAgentParts(
+  liveParts: AgentDetailedPart[] | undefined | null,
+  historyParts: AgentDetailedPart[] | undefined | null
+): AgentDetailedPart[] {
+  const live = Array.isArray(liveParts) ? liveParts.filter(Boolean) : [];
+  const history = Array.isArray(historyParts) ? historyParts.filter(Boolean) : [];
+  if (live.length === 0) return history;
+  if (history.length === 0) return live;
+  const keyOf = (part: AgentDetailedPart): string => {
+    const row = part as { id?: string; toolCallId?: string; type?: string };
+    if (String(row.type || "") === "toolCall") {
+      return `tool:${String(row.toolCallId || row.id || "").trim()}`;
+    }
+    return "";
+  };
+  // text/reasoning 按内容身份索引：同一 type 内互相包含视为同一段内容。
+  const liveKeys = new Set<string>();
+  const contentIndex = new Map<string, number[]>();
+  const contentOf = (part: AgentDetailedPart): string =>
+    String((part as { text?: string }).text || "").trim();
+  const typeOf = (part: AgentDetailedPart): string => String((part as { type?: string }).type || "");
+  live.forEach((part, index) => {
+    const key = keyOf(part);
+    if (key) liveKeys.add(key);
+    const text = contentOf(part);
+    if (!text) return;
+    const type = typeOf(part);
+    if (type !== "text" && type !== "reasoning") return;
+    const bucket = contentIndex.get(type) || [];
+    bucket.push(index);
+    contentIndex.set(type, bucket);
+  });
+  const out = [...live];
+  const contents = live.map(contentOf);
+  const absorbDuplicate = (type: string, text: string): boolean => {
+    const bucket = contentIndex.get(type);
+    if (!bucket) return false;
+    for (const index of bucket) {
+      const existing = contents[index];
+      if (!existing) continue;
+      if (existing !== text && !existing.startsWith(text) && !text.startsWith(existing)) continue;
+      if (text.length > existing.length) {
+        contents[index] = text;
+        out[index] = { ...(out[index] as object), type, text } as AgentDetailedPart;
+      }
+      return true;
+    }
+    return false;
+  };
+  for (const part of history) {
+    const key = keyOf(part);
+    if (key && liveKeys.has(key)) continue;
+    const type = typeOf(part);
+    if (type === "text" || type === "reasoning") {
+      const text = contentOf(part);
+      if (!text) continue;
+      if (absorbDuplicate(type, text)) continue;
+    }
+    out.push(part);
+    contents.push(contentOf(part));
+  }
+  return out;
+}
+
 export function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedPart[] {
   let latestRetry: AgentDetailedPart | null = null;
   let failure: AgentDetailedPart | null = null;

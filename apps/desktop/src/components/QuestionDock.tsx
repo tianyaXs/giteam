@@ -14,7 +14,6 @@ import {
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Input } from "./ui/input";
 import { Separator } from "./ui/separator";
-import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group";
 import { cn } from "../lib/utils";
 
 /** 多选答案的硬上限，与后端 question 工具 options≤4 校验对齐。 */
@@ -86,21 +85,22 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
     setSelectedOption(0);
   }, [currentTab, disabledReason, onReply, request.id, singleQuestion, updateCustomInputForCurrent]);
 
-  const handleMultiChange = useCallback((values: string[]) => {
+  // 逐选项切换,语义同 ai-elements QuestionOption(multiple 模式)。
+  const handleMultiToggle = useCallback((label: string) => {
     if (disabledReason) return;
-
     const optionLabels = new Set(options.map((option) => option.label));
-    const next = values.filter((value) => optionLabels.has(value));
+    let next = currentAnswers.filter((value) => optionLabels.has(value));
+    if (next.includes(label)) {
+      next = next.filter((value) => value !== label);
+    } else {
+      next = [...next, label];
+    }
     if (currentCustomValue && currentAnswers.includes(currentCustomValue)) {
       next.push(currentCustomValue);
     }
-
-    // 多选上限：超过 MAX_MULTI_SELECT 时阻止本次新增（保留当前选择）；
-    // 取消选择会让 next 变短，不受此限制影响。
     if (next.length > MAX_MULTI_SELECT) {
       return;
     }
-
     updateAnswersForCurrent(next);
   }, [currentAnswers, currentCustomValue, disabledReason, options, updateAnswersForCurrent]);
 
@@ -238,50 +238,40 @@ export function QuestionDock({ request, onReply, onDismiss, disabledReason }: Qu
                   <CardDescription>{isMultiSelect ? `选择多个答案（最多 ${MAX_MULTI_SELECT} 项）` : "选择一个答案"}</CardDescription>
                 </div>
 
-                {isMultiSelect ? (
-                  <ToggleGroup
-                    type="multiple"
-                    variant="outline"
-                    value={currentAnswers.filter((answer) => options.some((option) => option.label === answer))}
-                    onValueChange={handleMultiChange}
-                    className="flex-col items-stretch gap-2"
-                  >
-                    {options.map((option, index) => (
-                      <ToggleGroupItem
+                {/* 选项交互与视觉对齐 ai-elements QuestionOption(选中→default 变体、
+                    aria-checked),但保留我们的向导契约:单选点选即自动前进。 */}
+                <div
+                  className="flex flex-col items-stretch gap-2"
+                  role={isMultiSelect ? "group" : "radiogroup"}
+                >
+                  {options.map((option, index) => {
+                    const picked = currentAnswers.includes(option.label);
+                    return (
+                      <Button
                         key={option.label}
-                        value={option.label}
+                        type="button"
+                        variant="outline"
+                        role={isMultiSelect ? "checkbox" : "radio"}
+                        aria-checked={picked}
                         disabled={!!disabledReason}
-                        className="h-auto w-full justify-start rounded-lg px-3 py-2 data-[state=on]:border-primary/35"
-                        onClick={() => setSelectedOption(index)}
+                        className={cn(
+                          "h-auto w-full justify-start rounded-lg border px-3 py-2 text-left font-normal",
+                          picked && "border-primary/35 bg-primary text-primary-foreground hover:bg-primary/90"
+                        )}
+                        onClick={() => {
+                          setSelectedOption(index);
+                          if (isMultiSelect) {
+                            handleMultiToggle(option.label);
+                          } else {
+                            handlePick(option.label);
+                          }
+                        }}
                       >
-                        {renderOptionContent(option, currentAnswers.includes(option.label))}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                ) : (
-                  <ToggleGroup
-                    type="single"
-                    variant="outline"
-                    value={currentAnswers[0] || ""}
-                    onValueChange={(value) => {
-                      if (!value) return;
-                      handlePick(value);
-                    }}
-                    className="flex-col items-stretch gap-2"
-                  >
-                    {options.map((option, index) => (
-                      <ToggleGroupItem
-                        key={option.label}
-                        value={option.label}
-                        disabled={!!disabledReason}
-                        className="h-auto w-full justify-start rounded-lg px-3 py-2 data-[state=on]:border-primary/35"
-                        onClick={() => setSelectedOption(index)}
-                      >
-                        {renderOptionContent(option, currentAnswers.includes(option.label))}
-                      </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                )}
+                        {renderOptionContent(option, picked)}
+                      </Button>
+                    );
+                  })}
+                </div>
 
                 {allowCustom ? (
                   <div

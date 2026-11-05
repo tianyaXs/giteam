@@ -17,10 +17,12 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-9 px-4 py-2",
+        xs: "h-6 gap-1 rounded-md px-2 text-xs",
         sm: "h-8 rounded-md px-3 text-xs",
         lg: "h-10 rounded-lg px-5",
         inline: "h-auto min-w-0 max-w-full shrink whitespace-normal rounded-none px-0 py-0 align-baseline leading-[inherit] text-[inherit]",
-        icon: "size-9"
+        icon: "size-9",
+        "icon-sm": "size-7"
       }
     },
     defaultVariants: {

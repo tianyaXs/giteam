@@ -264,6 +264,7 @@ import {
   pickPreferredAgentContent,
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
+  unionAgentParts,
   dedupeAgentDuplicateTextParts,
   hasVisibleTimelineGroups,
   isPauseFailureText,
@@ -1235,8 +1236,6 @@ export function App() {
     rememberSavedModel: rememberAgentSavedModel,
     selectDraftModel: selectAgentDraftModel
   } = useAgentModelSelection(`${AGENT_MODEL_SELECTION_KEY}:global`);
-  const [showAgentModelPicker, setShowAgentModelPicker] = useState(false);
-  const [agentModelPickerSearch, setAgentModelPickerSearch] = useState("");
   const [showAgentProviderPicker, setShowAgentProviderPicker] = useState(false);
   const [agentProviderPickerSearch, setAgentProviderPickerSearch] = useState("");
   const [agentProviderPickerProvider, setAgentProviderPickerProvider] = useState("");
@@ -1293,7 +1292,7 @@ export function App() {
   const [agentDraftAgent, setAgentDraftAgent] = useState<ComposerAgentName>(() => normalizeComposerAgentName(loadLocalString(AGENT_COMPOSER_SELECTION_KEY, "build")));
   const [agentSessionAgent, setAgentSessionAgent] = useState<Record<string, string>>({});
   const [showAgentThinkingPicker, setShowAgentThinkingPicker] = useState(false);
-  const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "auto")));
+  const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "off")));
   const [agentSessionThinkingLevel, setAgentSessionThinkingLevel] = useState<Record<string, AgentThinkingLevel>>({});
   const [agentAutoAcceptPermissions, setAgentAutoAcceptPermissions] = useState(() => loadLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, false));
   const [agentPermissionLoading, setAgentPermissionLoading] = useState(false);
@@ -1410,7 +1409,6 @@ export function App() {
   const agentRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
-  const agentModelPickerRef = useRef<HTMLDivElement | null>(null);
   const agentLoadingOlderRef = useRef(false);
   const agentSessionsRepoIdRef = useRef("");
   const agentMessageCache = useAgentMessageCache();
@@ -2504,12 +2502,6 @@ export function App() {
     selectAgentSession("", "draft-clear", { draft: true });
     setAgentPromptInput("");
   }
-  const agentSavedModelCandidates = useMemo(() => {
-    const q = agentModelPickerSearch.trim().toLowerCase();
-    if (!q) return agentSavedModels;
-    return agentSavedModels.filter((m) => m.toLowerCase().includes(q));
-  }, [agentSavedModels, agentModelPickerSearch]);
-
   const agentConfiguredModelCandidates = useMemo(() => {
     // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
     return buildConfiguredModelCandidates({
@@ -2521,13 +2513,11 @@ export function App() {
       hiddenModels: agentHiddenModels,
       connectedProviders: agentConnectedProviders,
       liveModelsByProvider: agentModelsByProvider,
-      providerNames: agentProviderNames,
-      search: agentModelPickerSearch
+      providerNames: agentProviderNames
     });
   }, [
     agentConfiguredProviders,
     agentConfiguredModelsByProvider,
-    agentModelPickerSearch,
     agentHiddenModels,
     agentEnabledModels,
     agentConnectedProviders,
@@ -3924,9 +3914,16 @@ export function App() {
           const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
           const incomingParts = Array.isArray(detail.parts) ? detail.parts : [];
           const liveParts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
-          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）。
-          // 有 live 或已有更丰富 details 时不要用瘦 history 盖掉。
-          if (liveParts.length > 0 || existingParts.length > incomingParts.length) {
+          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）：
+          // 有 live 时用并集补齐缺失工具而不是让瘦 history 独占；无 live 时 history 直接盖掉。
+          if (liveParts.length > 0) {
+            next[messageId] = {
+              ...detail,
+              parts: unionAgentParts(liveParts, detail.parts)
+            };
+            continue;
+          }
+          if (existingParts.length > incomingParts.length) {
             if (!existing) next[messageId] = detail;
             continue;
           }
@@ -4099,7 +4096,7 @@ export function App() {
     } catch (e) {
       appendAgentDebugLog(`session.messages load more ${id} failed: ${e}`);
     } finally {
-      // virtuoso 在 data 前部插入时自动保持视觉锚点，无需手动 scrollTop 调整。
+      // 头部插入由 AgentMessageStream 的 Virtuoso firstItemIndex 官方协议保持视觉锚点。
       agentLoadingOlderRef.current = false;
     }
   }
@@ -7785,17 +7782,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             const touchedIdSet = new Set(touchedAssistantIds);
             const detailsPatch: Record<string, AgentDetailedMessage> = {};
             for (const agentMsg of agentMessages) {
-              if (agentMsg.role !== "assistant" || !touchedIdSet.has(agentMsg.id)) continue;
+              if (agentMsg.role !== "assistant") continue;
+              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
+              const isTouched = touchedIdSet.has(agentMsg.id);
+              // 本回合有 live 的行即使正文没变化也要 union：流式漏事件的工具
+              // （如 review 回合只收到部分 toolCall）在结束后由 JSONL 补齐。
+              if (liveParts.length === 0 && !isTouched) continue;
               const textBlocks = agentMsg.parts
                 .filter(
                   (part): part is Extract<AgentPart, { type: "text" }> =>
                     part.type === "text" && Boolean(part.text.trim())
                 )
                 .map((part) => part.text);
-              let liveHasText = livePartsHaveTextPart(
-                agentLivePartsByServerMessageIdRef.current[agentMsg.id]
-              );
-              if (textBlocks.length > 0) {
+              let liveHasText = livePartsHaveTextPart(liveParts);
+              if (textBlocks.length > 0 && isTouched) {
                 commitAgentLiveParts((prev) => {
                   const current = prev[agentMsg.id] || [];
                   const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
@@ -7804,13 +7804,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   return { ...prev, [agentMsg.id]: parts };
                 });
               }
-              // live 已有 text part 时不再写 details：避免 fetched text:0 与 live text:soft 双轨。
-              if (liveHasText) continue;
+              // live 已有 text part 时不再用 history 独占盖掉：union 补齐缺失工具，
+              // 正文/思考按「更长的一份」去重，避免 fetched 与 live 双轨。
               const incoming = agentMessageToDetailedMessage(agentMsg, toolResults);
-              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
               if (liveParts.length === 0) {
-                detailsPatch[agentMsg.id] = incoming;
+                if (!liveHasText) detailsPatch[agentMsg.id] = incoming;
+                continue;
               }
+              detailsPatch[agentMsg.id] = {
+                info: incoming.info,
+                parts: unionAgentParts(liveParts, incoming.parts)
+              };
             }
             if (Object.keys(detailsPatch).length > 0) {
               setAgentDetailsByMessageId((prev) => {
@@ -7822,6 +7826,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   if (existingParts.length > incomingParts.length) continue;
                   next[messageId] = incoming;
                 }
+                agentDetailsByMessageIdRef.current = next;
                 return next;
               });
             }
@@ -8072,7 +8077,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         return;
       }
       if (trigger === "model") {
-        setShowAgentModelPicker(true);
+        setSettingsInitialSection("models");
+        setShowSettings(true);
         return;
       }
       if (trigger === "agent") {
@@ -9849,12 +9855,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [activeAgentModel]);
 
   useEffect(() => {
-    if (!showAgentModelPicker) return;
-    // Keep previous list until refresh resolves to avoid open-time flicker.
-    void refreshAgentServerConfig();
-  }, [showAgentModelPicker]);
-
-  useEffect(() => {
     if (rightPaneTab !== "terminal") return;
     if (!selectedRepo?.path) {
       setTerminalTabs((prev) => prev.map((tab) => ({ ...tab, output: "", seq: 0, alive: false })));
@@ -10276,7 +10276,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   function jumpAgentToLatest() {
     locateInFlightRef.current = false;
     setAgentAutoFollowLatest(true);
-    agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+    setAgentShowJumpLatest(false);
+    // 官方 Chat 的按钮是“切回 live edge”而非只做一次滚动：这里同样切到钉底跟随。
+    // rAF 循环在 Virtuoso 补测量、DOM 实测校正后继续钉到当前最新 max；一次性 scrollToIndex
+    // 只算一次落点，长消息补测后会停在旧 max，表现为“要点多次”。
+    setAgentStickResetSignal((value) => value + 1);
   }
 
   useEffect(() => {
@@ -10934,6 +10938,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onActivateSlashCommand={activateAgentSlashCommand}
               promptInputRef={agentInputRef}
               promptInput={agentPromptInput}
+              onFillPrompt={(text) => {
+                captureAgentPromptHistoryDraft(text);
+                setAgentPromptInput(text);
+                agentInputRef.current?.focus();
+              }}
               onPromptCompositionStart={() => {
                 agentInputComposingRef.current = true;
               }}
@@ -11052,11 +11061,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 appendAgentAttachments(attachments.filter(Boolean) as AgentAttachment[]);
                 event.currentTarget.value = "";
               }}
-              modelPickerRef={agentModelPickerRef}
-              showModelPicker={showAgentModelPicker}
-              onToggleModelPicker={() => setShowAgentModelPicker((prev) => !prev)}
-              modelPickerSearch={agentModelPickerSearch}
-              onModelPickerSearchChange={setAgentModelPickerSearch}
               activeAgent={activeAgentAgent}
               onApplyAgent={applyAgentAgent}
               activeThinkingLevel={activeAgentThinkingLevel}
@@ -11074,7 +11078,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               getModelDisplay={getAgentModelDisplay}
               onApplyModel={(modelRef) => {
                 void applyAgentModel(modelRef);
-                setShowAgentModelPicker(false);
               }}
               onOpenModelSettings={() => {
                 setSettingsInitialSection("models");
@@ -11082,7 +11085,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 setAgentProviderPickerSearch("");
                 setAgentProviderPickerProvider(agentModelProvider);
                 setAgentProviderPickerModelSearch("");
-                setShowAgentModelPicker(false);
               }}
               labels={{
                 model: appText.model,
@@ -11599,8 +11601,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       await fetchAgentModels(pid).catch(() => [] as string[]);
       ensureProviderExists(pid);
       setShowAgentCustomProvider(false);
-      setShowAgentModelPicker(true);
-      setAgentModelPickerSearch("");
       setMessage(`Saved configuration: ${full}`);
     } catch (e) {
       setError(String(e));
