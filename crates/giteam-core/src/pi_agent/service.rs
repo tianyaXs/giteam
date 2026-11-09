@@ -211,7 +211,7 @@ pub struct PiSessionSummary {
     pub repo_path: PathBuf,
     pub provider: String,
     pub model: String,
-    pub message_count: usize,
+    pub message_count: Option<usize>,
     /// 最近一次活动（创建/prompt/模型切换）的毫秒时间戳，供侧栏排序展示。
     pub updated_at_ms: u64,
     /// 会话标题（首条用户消息摘要）；pi SessionHeader 无标题字段，
@@ -702,7 +702,7 @@ impl PiAgentService {
             repo_path: repo_path.clone(),
             provider: state.provider,
             model: state.model_id,
-            message_count: state.message_count,
+            message_count: Some(state.message_count),
             updated_at_ms: now_ms(),
             title: None,
             session_kind: session_kind.clone(),
@@ -779,7 +779,7 @@ impl PiAgentService {
             repo_path: session.repo_path.clone(),
             provider: state.provider,
             model: state.model_id,
-            message_count: state.message_count,
+            message_count: Some(state.message_count),
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
@@ -796,16 +796,48 @@ impl PiAgentService {
             .keys()
             .cloned()
             .collect();
-        // 恢复失败分类：文件已丢失（Session not found）→ 记录是陈旧残留，
-        // 自动清出 catalog（否则每次列表都刷一条错误）；provider/model 失效
-        // → 保留记录，降级为 catalog 元数据行，会话不因 provider 暂时不可用
-        // 而从列表消失。
+        // 列表 = 索引，详情 = 按需恢复（索引/详情分离的成熟模式）：已驻留会话走
+        // get_session 拿新鲜数据并分类恢复失败；未驻留会话不再为列表做完整 restore
+        // （MCP runtime 重建 + pi SDK open 是冷启动列表的最大成本），直接以 catalog
+        // 元数据入列，仅做轻量的 session 文件存在性检查来清理陈旧记录。
         let mut catalog_dirty = false;
-        let mut degraded_session_ids: Vec<String> = Vec::new();
+        let mut catalog_only_session_ids: Vec<String> = Vec::new();
         for session_id in record_ids {
             // 冷却期内跳过 restore：仍以 catalog 元数据入列，避免反复打 Pi SDK / 刷日志。
             if self.has_restore_failure_cooldown(&session_id) {
-                degraded_session_ids.push(session_id);
+                catalog_only_session_ids.push(session_id);
+                continue;
+            }
+            let resident = self
+                .sessions
+                .lock()
+                .map(|sessions| sessions.contains_key(&session_id))
+                .unwrap_or(false);
+            if !resident {
+                // 未驻留：session 文件已被外部删除的记录直接清出 catalog（原逻辑
+                // 寄生在 restore 报错上，懒恢复后改由存在性检查承担）。
+                let session_path = self.records.lock().ok().and_then(|records| {
+                    records
+                        .get(&session_id)
+                        .map(|record| record.session_path.clone())
+                });
+                let missing = match session_path {
+                    Some(path) => !path.is_file(),
+                    None => false,
+                };
+                if missing {
+                    if let Ok(mut records) = self.records.lock() {
+                        if records.remove(&session_id).is_some() {
+                            catalog_dirty = true;
+                            eprintln!(
+                                "[pi-agent] pruned stale catalog record (session file missing): {session_id}"
+                            );
+                        }
+                    }
+                    self.clear_restore_failure(&session_id);
+                    continue;
+                }
+                catalog_only_session_ids.push(session_id);
                 continue;
             }
             match self.get_session(&session_id).await {
@@ -830,7 +862,7 @@ impl PiAgentService {
                                 "[pi-agent] list_sessions restore degraded for {session_id}: {message}"
                             );
                         }
-                        degraded_session_ids.push(session_id);
+                        catalog_only_session_ids.push(session_id);
                     }
                 }
             }
@@ -918,7 +950,7 @@ impl PiAgentService {
                 repo_path: session.repo_path.clone(),
                 provider: state.provider,
                 model: state.model_id,
-                message_count: state.message_count,
+                message_count: Some(state.message_count),
                 updated_at_ms: self.record_updated_at_ms(&session_id),
                 title,
                 session_kind,
@@ -940,9 +972,10 @@ impl PiAgentService {
         // （桌面/移动/Web）都是「取前 N 条」分页：按 id 字典序返回会让
         // 字母序靠后的最新会话永远进不了第一页（表现为「重启后看不到
         // 刚聊过的会话」）。
-        // provider/model 失效的会话：以 catalog 元数据降级入列（kind/parent
-        // 过滤照常），记录保留——provider 修复后 get_session 恢复完整能力。
-        for session_id in &degraded_session_ids {
+        // catalog 元数据行入列（kind/parent 过滤照常），记录保留。两个来源：
+        // restore 失败（provider/model 失效，修复后 get_session 恢复完整能力）；
+        // 懒恢复的未驻留会话（列表只需元数据，点开时才完整恢复）。
+        for session_id in &catalog_only_session_ids {
             let Some(record) = self.records.lock().ok().and_then(|records| records.get(session_id).cloned()) else {
                 continue;
             };
@@ -954,7 +987,7 @@ impl PiAgentService {
                 repo_path: record.repo_path.clone(),
                 provider: record.provider.clone(),
                 model: record.model.clone(),
-                message_count: 0,
+                message_count: None,
                 updated_at_ms: record.updated_at_ms,
                 title: record.title.clone().filter(|t| !t.trim().is_empty()),
                 session_kind: record.session_kind.clone(),
@@ -1018,7 +1051,7 @@ impl PiAgentService {
             repo_path,
             provider,
             model,
-            message_count: snap.len(),
+            message_count: Some(snap.len()),
             updated_at_ms: self.record_updated_at_ms(session_id),
             title,
             session_kind: self.record_session_kind(session_id),
@@ -1902,7 +1935,7 @@ impl PiAgentService {
             repo_path: session.repo_path.clone(),
             provider: state.provider,
             model: state.model_id,
-            message_count: state.message_count,
+            message_count: Some(state.message_count),
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
@@ -1967,7 +2000,7 @@ impl PiAgentService {
                 repo_path: session.repo_path.clone(),
                 provider: state.provider,
                 model: state.model_id,
-                message_count: state.message_count,
+                message_count: Some(state.message_count),
                 updated_at_ms: self.record_updated_at_ms(session_id),
                 title: self.record_title(session_id),
                 session_kind: self.record_session_kind(session_id),
@@ -2010,7 +2043,7 @@ impl PiAgentService {
             repo_path: session.repo_path.clone(),
             provider: state.provider,
             model: state.model_id,
-            message_count: state.message_count,
+            message_count: Some(state.message_count),
             updated_at_ms: self.record_updated_at_ms(session_id),
             title: self.record_title(session_id),
             session_kind: self.record_session_kind(session_id),
@@ -2127,7 +2160,7 @@ impl PiAgentService {
                 repo_path: record.repo_path.clone(),
                 provider: record.provider.clone(),
                 model: record.model.clone(),
-                message_count: 0,
+                message_count: None,
                 updated_at_ms: record.updated_at_ms,
                 title: record.title.clone(),
                 session_kind: record.session_kind.clone(),
@@ -3866,7 +3899,7 @@ mod tests {
             repo_path: PathBuf::from("/tmp/repo"),
             provider: "openai".to_string(),
             model: "gpt-5".to_string(),
-            message_count: 2,
+            message_count: Some(2),
             updated_at_ms: 1_700_000_000_000,
             title: Some("审查改动".to_string()),
             session_kind: "primary".to_string(),

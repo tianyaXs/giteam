@@ -9961,7 +9961,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       refreshTimer = null;
       void refresh();
     }, activeAgentSessionBusy ? 1200 : 600);
-    const interval = window.setInterval(() => void refresh(), activeAgentSessionBusy ? 1500 : 5000);
+    // 空闲低频兜底：busy/idle 状态已由 giteam://agent-event 事件实时驱动（含手机端
+    // 发起的会话），列表轮询只为标题/排序兜底；间隔从 5s 放宽到 30s 降低空闲 IPC。
+    const interval = window.setInterval(() => void refresh(), activeAgentSessionBusy ? 1500 : 30000);
     return () => {
       stopped = true;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
