@@ -135,7 +135,11 @@ fn resolve_session_tty_name(script_pid: u32) -> Option<String> {
     }
 }
 
-fn apply_session_winsize(session: &mut ManagedRepoTerminalSession, cols: u16, rows: u16) -> Result<(), String> {
+fn apply_session_winsize(
+    session: &mut ManagedRepoTerminalSession,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
     let (cols, rows) = clamp_terminal_size(cols, rows);
     if session.cols == cols && session.rows == rows {
         return Ok(());
@@ -586,8 +590,9 @@ fn spawn_interactive_shell_command(repo_path: &str) -> Result<Command, String> {
     #[cfg(windows)]
     {
         // 尚无 ConPTY：用管道挂交互壳。优先 Git Bash，其次 pwsh / powershell / cmd。
-        let shell = command_runner::resolve_login_shell()
-            .ok_or_else(|| "no usable Windows shell found (install Git Bash or use PowerShell)".to_string())?;
+        let shell = command_runner::resolve_login_shell().ok_or_else(|| {
+            "no usable Windows shell found (install Git Bash or use PowerShell)".to_string()
+        })?;
         let stem = Path::new(&shell)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -880,7 +885,14 @@ fn is_untracked_worktree_path(repo_path: &str, path: &str) -> bool {
         return false;
     }
     let output = Command::new("git")
-        .args(["ls-files", "-z", "--others", "--exclude-standard", "--", path])
+        .args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            path,
+        ])
         .current_dir(repo_path)
         .output();
     let Ok(output) = output else {
@@ -1089,12 +1101,22 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
 }
 
 fn parse_numstat_totals(raw: &str) -> (u32, u32) {
-    raw.lines().fold((0u32, 0u32), |(added_total, deleted_total), line| {
-        let mut parts = line.split_whitespace();
-        let added = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        let deleted = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        (added_total.saturating_add(added), deleted_total.saturating_add(deleted))
-    })
+    raw.lines()
+        .fold((0u32, 0u32), |(added_total, deleted_total), line| {
+            let mut parts = line.split_whitespace();
+            let added = parts
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            let deleted = parts
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            (
+                added_total.saturating_add(added),
+                deleted_total.saturating_add(deleted),
+            )
+        })
 }
 
 fn sanitize_branch_for_dir(branch: &str) -> String {
@@ -1544,7 +1566,12 @@ pub fn run_git_worktree_status_stat(repo_path: &str) -> Result<Vec<GitStatusStat
             // 运行中删除的文件：无 meta 仍列出（size 0），前端按需过滤。
             Err(_) => (0, 0),
         };
-        out.push(GitStatusStatEntry { path, status, mtime_ms, size });
+        out.push(GitStatusStatEntry {
+            path,
+            status,
+            mtime_ms,
+            size,
+        });
     }
     Ok(out)
 }

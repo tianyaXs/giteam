@@ -5,8 +5,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use tauri::{AppHandle, Manager, Theme, Window};
 use tauri::utils::config::Color;
+use tauri::{AppHandle, Manager, Theme, Window};
 
 const ATTACHMENT_SAMPLE_BYTES: usize = 4096;
 
@@ -464,7 +464,8 @@ fn prompt_attachment_dir(repo_path: &str) -> Result<PathBuf, String> {
     }
     giteam_core::pi_agent::ensure_workspace_giteam_gitignore(&root);
     let dir = root.join(".giteam").join("prompt-attachments");
-    fs::create_dir_all(&dir).map_err(|error| format!("failed to create attachment dir: {error}"))?;
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("failed to create attachment dir: {error}"))?;
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
         let _ = fs::write(ignore, "*\n!.gitignore\n");
@@ -665,7 +666,11 @@ pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
         use std::io::Write as _;
         let log_path = base.join("ui-debug.log");
         rotate_ui_debug_log_if_needed(&log_path);
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
             let _ = file.write_all(text.as_bytes());
         }
         Ok(())
@@ -690,7 +695,9 @@ pub async fn office_restore_previous_version(path: String) -> Result<bool, Strin
 pub async fn office_previous_version_count(path: String) -> Result<usize, String> {
     let target = std::path::PathBuf::from(path.trim());
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(giteam_core::pi_agent::office_previous_version_count(&target))
+        Ok(giteam_core::pi_agent::office_previous_version_count(
+            &target,
+        ))
     })
     .await
     .unwrap_or_else(|e| Err(format!("查询版本数失败：{e}")))

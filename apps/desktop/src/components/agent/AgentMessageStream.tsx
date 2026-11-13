@@ -408,9 +408,19 @@ function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web
 }
 
 function isEmptyAssistantPlaceholder(row: AgentMessageRenderRow): boolean {
+  if (!(row.isAssistant && !row.hasTimeline && !row.fallbackReply && !row.detailsError && !row.errorMessage)) {
+    return false;
+  }
+  // 只有思考（reasoning）流、暂无正文的行不算空占位：暂停后 isStreaming 翻 false，
+  // 若按空占位过滤会把用户已经看到的思考内容整段隐藏（2026-11-10 实证：
+  // 模型长思考期间点停止，已渲染的 reasoning 正文随占位一起消失）。
+  const hasReasoning = (row.renderParts || []).some((part) => {
+    if (String((part as { type?: string }).type || "") !== "reasoning") return false;
+    return Boolean(String((part as { text?: string }).text || "").trim());
+  });
   // 忽略 detailsLoading：新 assistant 一创建就会被拉详情，若把 loading 当成非空，
   // 会无法并入上一条，从而在时间线里插入多余的「思考中」占位。
-  return row.isAssistant && !row.hasTimeline && !row.fallbackReply && !row.detailsError && !row.errorMessage;
+  return !hasReasoning;
 }
 
 function runFailureText(message: AgentChatMessage): string {

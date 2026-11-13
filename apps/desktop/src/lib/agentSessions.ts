@@ -304,6 +304,82 @@ export function dropQueuedFollowUpsAlreadyInTranscript(
 }
 
 /**
+ * history 与 live（本地时间线）归并，以 live 顺序为骨架输出。
+ *
+ * history 比 live 短时（JSONL write-behind 未落盘 / 暂停回滚），服务端缺失的
+ * assistant 必须保留在它在本地时间线中的原位——尾部追加会把「暂停保留的行」
+ * 挪到暂停后新发消息之后，时序错乱（2026-11-12 实证：暂停后发「继续」，重进
+ * 会话后保留行跑到两条「继续」后面）。
+ *
+ * 规则：
+ * - live 行有 history 对应（id 直接匹配或 serverIdByLocalId 映射）→ 输出
+ *   history 版本；assistant 正文经 pickContent 取更长方（保护流式已见内容）；
+ *   error 是本地通道字段（服务端历史不回传失败事件），history 无而 live 有时补上；
+ *   **id 保留 live 行的本地 id**——输出行即将替换本地数组，若改用 history 的
+ *   服务端 id，Virtuoso computeItemKey 视为换行 → 卸载重挂（列表闪动）；
+ *   local→server 对应关系由 serverIdByLocalId 持续承担；
+ * - live assistant 无对应 → 原位保留（需内容或 hasLiveParts 可见）；
+ * - live user 等其他 role 无对应 → 丢弃（防与 history 版本成双气泡）；
+ * - history 未被消费的行（映射断裂的新行）按 history 顺序尾随兜底。
+ */
+export function mergeHistoryWithLiveTimeline(
+  history: AgentChatMessage[],
+  live: AgentChatMessage[],
+  options?: {
+    hasLiveParts?: (messageId: string) => boolean;
+    pickContent?: (historyContent: string, liveContent: string) => string;
+    serverIdByLocalId?: Record<string, string>;
+  }
+): AgentChatMessage[] {
+  if (!Array.isArray(live) || live.length === 0) return history;
+  if (!Array.isArray(history) || history.length === 0) {
+    return live.filter((row) => {
+      if (row.role !== "assistant") return false;
+      return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+    });
+  }
+
+  const historyById = new Map(history.map((row) => [row.id, row]));
+  const serverIdByLocalId = options?.serverIdByLocalId || {};
+  const consumed = new Set<string>();
+  const out: AgentChatMessage[] = [];
+  for (const liveRow of live) {
+    const mappedId = String(serverIdByLocalId[liveRow.id] || "").trim();
+    const historyRow = historyById.get(liveRow.id)
+      || (mappedId ? historyById.get(mappedId) : undefined);
+    if (historyRow) {
+      consumed.add(historyRow.id);
+      let merged = historyRow;
+      if (
+        liveRow.role === "assistant"
+        && String(liveRow.content || "").length > String(historyRow.content || "").length
+      ) {
+        const content = options?.pickContent?.(historyRow.content || "", liveRow.content || "")
+          || liveRow.content;
+        merged = { ...historyRow, content };
+      }
+      // error 是本地通道字段（服务端历史不回传失败事件）：finalize 已写入的
+      // 「已暂停」等终态若被 history 版本冲掉，暂停标记会闪现后消失（抖动感）。
+      if (liveRow.error && !merged.error) merged = { ...merged, error: liveRow.error };
+      // id 保留 live 行的本地 id：输出将整表替换本地数组，换 id 即换 stableKey
+      // → Virtuoso 卸载重挂（高度重测整列跳动 + 动画重播 = 消息闪动）。
+      if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
+      out.push(merged);
+      continue;
+    }
+    if (liveRow.role !== "assistant") continue;
+    const visible =
+      Boolean(String(liveRow.content || "").trim())
+      || Boolean(options?.hasLiveParts?.(liveRow.id));
+    if (visible) out.push(liveRow);
+  }
+  for (const row of history) {
+    if (!consumed.has(row.id)) out.push(row);
+  }
+  return out;
+}
+
+/**
  * history 比 live 短（JSONL 未落盘 / 同步过早）时，保留 live 末尾尚未入库的 assistant 气泡，
  * 避免最终回复闪过后被残缺 history 整表替换抹掉。
  */

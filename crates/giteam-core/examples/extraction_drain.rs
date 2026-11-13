@@ -68,7 +68,10 @@ async fn main() {
             break;
         }
         if jobs.pending == 0 && jobs.claimed == 0 && jobs.failed > 0 {
-            eprintln!("[warn] {failed} jobs failed (LLM/provider); stopping", failed = jobs.failed);
+            eprintln!(
+                "[warn] {failed} jobs failed (LLM/provider); stopping",
+                failed = jobs.failed
+            );
             break;
         }
         if std::time::Instant::now() >= deadline {
@@ -200,7 +203,9 @@ fn print_sem_summary(db_path: &PathBuf) {
     ) else {
         return;
     };
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)));
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    });
     if let Ok(rows) = rows {
         for row in rows.flatten() {
             println!("  {}: {}", row.0, row.1);

@@ -130,7 +130,9 @@ impl TauriBrowserController {
             Ok(Err(_)) => BrowserActionResult::err("浏览器操作回传通道关闭"),
             Err(_) => {
                 registry.cancel(&req_id);
-                BrowserActionResult::err("浏览器操作超时（15s）——页面可能未注入 IPC bridge 或已不可用")
+                BrowserActionResult::err(
+                    "浏览器操作超时（15s）——页面可能未注入 IPC bridge 或已不可用",
+                )
             }
         }
     }
@@ -153,9 +155,10 @@ impl BrowserController for TauriBrowserController {
                     };
                 }
                 // 无 active webview（右侧浏览器面板未开 tab）→ 发事件让前端自动新建 tab。
-                let _ = self
-                    .app
-                    .emit("giteam://browser-agent-open", serde_json::json!({ "url": url }));
+                let _ = self.app.emit(
+                    "giteam://browser-agent-open",
+                    serde_json::json!({ "url": url }),
+                );
                 BrowserActionResult::ok_text(format!("已在内置浏览器打开 {url}"))
             }
             BrowserAction::Click { selector } => {

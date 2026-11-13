@@ -6,6 +6,7 @@
 #![recursion_limit = "256"]
 
 mod commands;
+mod os_overlay;
 mod remote_repo;
 
 use tauri::{Emitter, Manager};
@@ -48,8 +49,7 @@ mod macos_context_menu {
         let Some(close) = native_window.standardWindowButton(NSWindowButton::CloseButton) else {
             return;
         };
-        let Some(mini) =
-            native_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
+        let Some(mini) = native_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
         else {
             return;
         };
@@ -256,6 +256,12 @@ fn main() {
             .plugin(tauri_plugin_deep_link::init());
     }
 
+    // agent 覆盖层（os_overlay）：NSPanel 转换经插件完成，仅 macOS。
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_nspanel::init());
+    }
+
     let app = builder
         .setup(|app| {
             // 统一权威数据根（~/.giteam），并迁入旧 Application Support / Tauri bundle 残留。
@@ -274,8 +280,14 @@ fn main() {
             // 在热切/恢复后失效（旧 session 报「内置浏览器仅在桌面端可用」）。
             // CDP 版：chromiumoxide 经 Chrome DevTools Protocol 操作真实 Chrome，绕开 Tauri
             // 外部 URL 子 webview 的 IPC 断链（旧 TauriBrowserController 保留作 fallback，不再注入）。
-            giteam_core::pi_agent::PiAgentService::global().set_browser_controller(Some(
-                commands::chromiumoxide_controller::new_controller(),
+            giteam_core::pi_agent::PiAgentService::global()
+                .set_browser_controller(Some(commands::chromiumoxide_controller::new_controller()));
+            // 电脑操作 controller（desktop 全局注入）：computer_use 工具的
+            // 执行层（enigo 键鼠 + xcap 截屏 + os_overlay 引导标记）。与 browser
+            // controller 同构，跨 session 热切/重建复用；CLI/control 路径无注入，
+            // 工具返回「仅桌面端可用」。
+            giteam_core::pi_agent::PiAgentService::global().set_os_controller(Some(
+                commands::os_controller::new_controller(app.handle().clone()),
             ));
             // browser_use action 的 requestId 配对注册表（app state 共享）：
             // controller 注册 sender + eval JS，browser_event command 按 request_id 唤醒。
@@ -355,6 +367,10 @@ fn main() {
             commands::env::check_runtime_dependency,
             commands::env::start_runtime_dependency_action,
             commands::env::get_runtime_dependency_action,
+            commands::os_permissions::get_os_permissions,
+            commands::os_permissions::request_os_permission,
+            commands::os_permissions::open_os_permission_settings,
+            os_overlay::os_overlay_ready,
             commands::release_notes::fetch_latest_release,
             commands::ui::pick_agent_attachments,
             commands::ui::read_agent_attachments_from_paths,
@@ -584,7 +600,14 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let show = tauri::menu::MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
     let quit = tauri::menu::MenuItem::with_id(app, "tray_quit", "退出 Giteam", true, None::<&str>)?;
-    let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
+    let demo_marker = tauri::menu::MenuItem::with_id(
+        app,
+        "tray_guide_demo",
+        "演示覆盖层标记",
+        true,
+        None::<&str>,
+    )?;
+    let menu = tauri::menu::Menu::with_items(app, &[&show, &demo_marker, &quit])?;
     let icon = app.default_window_icon().cloned();
     let mut builder = tauri::tray::TrayIconBuilder::new()
         .tooltip("Giteam")
@@ -592,6 +615,11 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "tray_show" => show_main_window(app),
+            "tray_guide_demo" => {
+                if let Err(err) = os_overlay::demo_guide_marker(app) {
+                    eprintln!("覆盖层标记演示失败：{err}");
+                }
+            }
             "tray_quit" => app.exit(0),
             _ => {}
         })
@@ -599,7 +627,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             // 左键单击恢复窗口（menu_on_left_click=false 让左键不弹菜单，改由这里处理）。
             if matches!(
                 event,
-                tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. }
+                tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    ..
+                }
             ) {
                 show_main_window(tray.app_handle());
             }

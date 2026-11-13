@@ -36,7 +36,11 @@ pub struct AgentPromptImage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentPart {
     Text {
         text: String,
@@ -216,8 +220,7 @@ mod tests {
         assert_eq!(parts[2]["mimeType"], "image/png");
         assert_eq!(parts[3]["customType"], "widget");
         // 反序列化同样走 camelCase（历史消息读取路径）。
-        let round_trip: AgentMessage =
-            serde_json::from_value(json).expect("deserialize message");
+        let round_trip: AgentMessage = serde_json::from_value(json).expect("deserialize message");
         assert_eq!(round_trip, message);
     }
 

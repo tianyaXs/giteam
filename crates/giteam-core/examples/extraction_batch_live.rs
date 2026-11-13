@@ -312,8 +312,7 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut provider =
-        std::env::var("GITEAM_RP_PROVIDER").unwrap_or_else(|_| "kimi-coding".into());
+    let mut provider = std::env::var("GITEAM_RP_PROVIDER").unwrap_or_else(|_| "kimi-coding".into());
     let mut model = std::env::var("GITEAM_RP_MODEL").unwrap_or_else(|_| "k3".into());
     let mut repo = PathBuf::from("/Users/tianya/Documents/project/test");
     let mut cases_dir = None;
@@ -325,9 +324,7 @@ fn parse_args() -> Args {
             "--provider" => provider = args.next().expect("--provider"),
             "--model" => model = args.next().expect("--model"),
             "--repo" => repo = PathBuf::from(args.next().expect("--repo")),
-            "--cases-dir" => {
-                cases_dir = Some(PathBuf::from(args.next().expect("--cases-dir")))
-            }
+            "--cases-dir" => cases_dir = Some(PathBuf::from(args.next().expect("--cases-dir"))),
             "--case" => cases.push(args.next().expect("--case")),
             "--reset" => reset = true,
             other => {
@@ -348,8 +345,7 @@ fn parse_args() -> Args {
 
 fn load_case(path: &Path) -> Result<Case, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(obj) = value.as_object_mut() {
         if !obj.contains_key("name") {
             if let Some(n) = obj.remove("title") {

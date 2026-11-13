@@ -81,7 +81,9 @@ impl SecretStore {
             ));
         }
         if key.trim().is_empty() {
-            return Err(PiAgentError::Secret("api key must not be empty".to_string()));
+            return Err(PiAgentError::Secret(
+                "api key must not be empty".to_string(),
+            ));
         }
         let mut file = self.read_file()?;
         remove_case_insensitive(&mut file.entries, &provider);
@@ -136,9 +138,8 @@ impl SecretStore {
         let Ok(bytes) = fs::read(&self.path) else {
             return Ok(SecretFile::default());
         };
-        serde_json::from_slice(&bytes).map_err(|error| {
-            PiAgentError::Secret(format!("secret vault is corrupted: {error}"))
-        })
+        serde_json::from_slice(&bytes)
+            .map_err(|error| PiAgentError::Secret(format!("secret vault is corrupted: {error}")))
     }
 
     fn write_file(&self, file: &SecretFile) -> Result<(), PiAgentError> {
@@ -232,7 +233,8 @@ pub fn ensure_pi_retry_settings(dir: &Path, max_retries: u32) {
     }
     let path = dir.join("settings.json");
     let mut root = match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| serde_json::json!({})),
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({})),
         Err(_) => serde_json::json!({}),
     };
     let Some(obj) = root.as_object_mut() else {
@@ -296,7 +298,11 @@ pub fn legacy_platform_data_dir() -> Option<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        return Some(home.join("Library").join("Application Support").join("giteam"));
+        return Some(
+            home.join("Library")
+                .join("Application Support")
+                .join("giteam"),
+        );
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -622,7 +628,9 @@ mod tests {
     #[test]
     fn api_key_round_trips_and_stays_out_of_debug_output() {
         let (store, path) = temp_store("roundtrip");
-        store.set_api_key("openai", "sk-test-secret").expect("set key");
+        store
+            .set_api_key("openai", "sk-test-secret")
+            .expect("set key");
 
         assert_eq!(
             store.api_key("openai").expect("read key"),
@@ -664,7 +672,9 @@ mod tests {
         file.entries.insert("anthropic".to_string(), oauth.clone());
         store.write_file(&file).expect("write oauth");
 
-        store.set_api_key("openai", "sk-other").expect("set api key");
+        store
+            .set_api_key("openai", "sk-other")
+            .expect("set api key");
 
         let reread = store.read_file().expect("reread");
         assert_eq!(reread.entries.get("anthropic"), Some(&oauth));
@@ -698,10 +708,7 @@ mod tests {
         let (store, path) = temp_store("perms");
         store.set_api_key("openai", "sk-perm").expect("set key");
 
-        let mode = fs::metadata(&path)
-            .expect("metadata")
-            .permissions()
-            .mode();
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
 
         let _ = fs::remove_file(path);
@@ -751,10 +758,8 @@ mod tests {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
-        let base = std::env::temp_dir().join(format!(
-            "giteam-migrate-{}-{stamp}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("giteam-migrate-{}-{stamp}", std::process::id()));
         let legacy = base.join("legacy");
         let canonical = base.join("canonical");
         let _ = fs::remove_dir_all(&base);

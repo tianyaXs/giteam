@@ -19,7 +19,8 @@ const GITEAM_MEMORY_FILE: &str = "GITEAM.md";
 const MAX_MEMORY_BYTES: usize = 32 * 1024;
 
 /// 截断标记：让模型知道内容被裁而非原文如此。
-const TRUNCATION_NOTICE: &str = "\n\n[GITEAM.md truncated — file exceeds the 32 KiB injection budget]";
+const TRUNCATION_NOTICE: &str =
+    "\n\n[GITEAM.md truncated — file exceeds the 32 KiB injection budget]";
 
 /// 从 `repo_path` 起向上逐级目录查找 GITEAM.md，返回其（去首尾空白后
 /// 非空的）内容。整条向上路径都未命中时返回 `None`。

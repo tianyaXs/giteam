@@ -91,7 +91,10 @@ impl McpServiceInput {
 /// local  { type, command: [program, ...args], environment }
 /// remote { type, url, headers }
 /// ```
-pub fn parse_opencode_entry(name: &str, value: &serde_json::Value) -> Result<McpServiceInput, McpError> {
+pub fn parse_opencode_entry(
+    name: &str,
+    value: &serde_json::Value,
+) -> Result<McpServiceInput, McpError> {
     let object = value
         .as_object()
         .ok_or_else(|| McpError::InvalidConfig(format!("服务 {name} 的配置不是对象")))?;
@@ -164,7 +167,10 @@ mod tests {
             enabled: true,
             url: None,
             command: Some("npx".into()),
-            args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into()],
+            args: vec![
+                "-y".into(),
+                "@modelcontextprotocol/server-filesystem".into(),
+            ],
             env: HashMap::from([("ROOT".to_string(), "/tmp".to_string())]),
             headers: HashMap::new(),
             description: None,

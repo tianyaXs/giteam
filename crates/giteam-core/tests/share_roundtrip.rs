@@ -59,9 +59,7 @@ fn start_mock_gateway() -> MockGateway {
                 handle(&blobs2, &method, &url, &body);
             let response = tiny_http::Response::from_data(payload)
                 .with_status_code(status)
-                .with_header(
-                    tiny_http::Header::from_bytes("Content-Type", content_type).unwrap(),
-                );
+                .with_header(tiny_http::Header::from_bytes("Content-Type", content_type).unwrap());
             let _ = request.respond(response);
         }
     });
@@ -126,7 +124,10 @@ fn handle(
             }
             ("GET", None) => {
                 let store = blobs.lock().unwrap();
-                let repo = store.get(&format!("{share_id}:repo")).cloned().unwrap_or_default();
+                let repo = store
+                    .get(&format!("{share_id}:repo"))
+                    .cloned()
+                    .unwrap_or_default();
                 let context = store
                     .get(&format!("{share_id}:context"))
                     .cloned()
@@ -273,7 +274,10 @@ fn share_roundtrip_export_upload_download_import() {
     let outcome = share::export_package(&repo, &share::ExportOptions::default()).unwrap();
     assert_eq!(outcome.manifest.context.session_count, 1);
     assert!(outcome.manifest.context.has_memory_db);
-    assert!(outcome.manifest.context.redactions >= 1, "secret must be redacted");
+    assert!(
+        outcome.manifest.context.redactions >= 1,
+        "secret must be redacted"
+    );
     assert_eq!(outcome.manifest.package.format, "git+context");
     assert!(outcome.repo_bundle_path.exists());
     assert!(outcome.context_package_path.exists());
@@ -365,10 +369,19 @@ fn share_roundtrip_export_upload_download_import() {
     let new_session = new_sessions_dir.join("session-1000-1.jsonl");
     assert!(new_session.exists());
     let content = fs::read_to_string(&new_session).unwrap();
-    let new_repo_str = fs::canonicalize(&target).unwrap().to_string_lossy().to_string();
-    assert!(content.contains(&new_repo_str), "session must reference new path");
+    let new_repo_str = fs::canonicalize(&target)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        content.contains(&new_repo_str),
+        "session must reference new path"
+    );
     assert!(!content.contains(&repo_str), "old path must be rewritten");
-    assert!(!content.contains("sk-aaaaaaaa"), "secret must stay redacted");
+    assert!(
+        !content.contains("sk-aaaaaaaa"),
+        "secret must stay redacted"
+    );
 
     // 全局 catalog 合并 + 重写（接收方数据根）
     let receiver_catalog = receiver_home.join("pi-sessions").join("catalog.json");
@@ -397,7 +410,9 @@ fn share_roundtrip_export_upload_download_import() {
         .unwrap();
     assert!(replay_path.starts_with(&new_sessions_dir.to_string_lossy().as_ref()));
     let input_json: String = conn
-        .query_row("SELECT input_json FROM extraction_jobs", [], |row| row.get(0))
+        .query_row("SELECT input_json FROM extraction_jobs", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert!(input_json.contains(&new_repo_str));
     let props: String = conn

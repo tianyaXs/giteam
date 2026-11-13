@@ -142,15 +142,18 @@ pub fn send_message(req: &SendMessageRequest) -> Result<SendMessageResult, Strin
         .map_err(|e| e.to_string())?;
     let status = resp.status();
     let value: Value = resp.json().unwrap_or_else(|_| json!({}));
-    let errcode = value.get("errcode").and_then(Value::as_i64).unwrap_or(if status.is_success() {
-        0
-    } else {
-        -1
-    });
+    let errcode = value
+        .get("errcode")
+        .and_then(Value::as_i64)
+        .unwrap_or(if status.is_success() { 0 } else { -1 });
     let errmsg = value
         .get("errmsg")
         .and_then(Value::as_str)
-        .unwrap_or(if status.is_success() { "ok" } else { "request failed" })
+        .unwrap_or(if status.is_success() {
+            "ok"
+        } else {
+            "request failed"
+        })
         .to_string();
     Ok(SendMessageResult {
         ok: errcode == 0,
@@ -159,7 +162,11 @@ pub fn send_message(req: &SendMessageRequest) -> Result<SendMessageResult, Strin
     })
 }
 
-pub fn send_text(content: &str, at_all: bool, at_mobiles: &[String]) -> Result<SendMessageResult, String> {
+pub fn send_text(
+    content: &str,
+    at_all: bool,
+    at_mobiles: &[String],
+) -> Result<SendMessageResult, String> {
     send_message(&SendMessageRequest {
         msgtype: "text".into(),
         content: content.to_string(),
@@ -206,15 +213,18 @@ pub fn post_robot_body(url: &str, body: &Value) -> Result<SendMessageResult, Str
         .map_err(|e| e.to_string())?;
     let status = resp.status();
     let value: Value = resp.json().unwrap_or_else(|_| json!({}));
-    let errcode = value.get("errcode").and_then(Value::as_i64).unwrap_or(if status.is_success() {
-        0
-    } else {
-        -1
-    });
+    let errcode = value
+        .get("errcode")
+        .and_then(Value::as_i64)
+        .unwrap_or(if status.is_success() { 0 } else { -1 });
     let errmsg = value
         .get("errmsg")
         .and_then(Value::as_str)
-        .unwrap_or(if status.is_success() { "ok" } else { "request failed" })
+        .unwrap_or(if status.is_success() {
+            "ok"
+        } else {
+            "request failed"
+        })
         .to_string();
     Ok(SendMessageResult {
         ok: errcode == 0 || status.is_success(),

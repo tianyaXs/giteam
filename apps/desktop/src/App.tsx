@@ -264,6 +264,7 @@ import {
   pickPreferredAgentContent,
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
+  livePartsHaveVisibleContent,
   unionAgentParts,
   dedupeAgentDuplicateTextParts,
   hasVisibleTimelineGroups,
@@ -321,7 +322,7 @@ import {
   type AgentMessagePageCacheEntry,
   type ChatSessionSummary,
   type AgentTodoItem,
-  mergeHistoryMessagesPreservingLive,
+  mergeHistoryWithLiveTimeline,
   reconcilePromptTailFromHistory
 } from "./lib/agentSessions";
 import {
@@ -615,6 +616,12 @@ function mergeCompletedUserChatMessage(
   const display = normalizeUserMessageForDisplay(mapped, previous);
   return {
     ...mapped,
+    // 替换乐观行时保留本地 id：服务端确认会把行 id 从 local 换成 server id，
+    // Virtuoso computeItemKey 视为「旧行删除+新行插入」→ 卸载重挂（尺寸缓存丢失
+    // 按 defaultItemHeight 估算再实测 → 整列跳动）+ React 子树全新（markdown
+    // 词级淡入重播）= 用户观感「每次发消息其他消息闪一下后变正常」。
+    // local→server 映射已由 serverIdByLocalId 承担，归并/对账路径不依赖行内 id。
+    id: previous?.id || mapped.id,
     content: display.content,
     graphRefs: display.graphRefs,
     attachments: previous?.attachments || mapped.attachments
@@ -2958,6 +2965,16 @@ export function App() {
       const title =
         clipAgentSessionTitle(firstUser?.content) ||
         `Session ${sid.slice(0, 8)}`;
+      const currentSession = agentSessionsRef.current.find((session) => session.id === sid);
+      if (currentSession && currentSession.messages.length > 0 && page.items.length === 0) {
+        // 服务端拉空但本地有消息：几乎必然是读取异常而非会话真空。空表替换会
+        // 把本地 user 消息全清掉（回补只保 assistant），表现为「暂停后只剩
+        // assistant 行」——跳过本次对账保留现状。
+        appendAgentDebugLog(
+          `session.remote.snapshot sid=${sid} server empty, keep local ${currentSession.messages.length}`
+        );
+        return;
+      }
       const nextSession: AgentChatSession = {
         id: sid,
         title,
@@ -2972,28 +2989,27 @@ export function App() {
       if (sameWorkspace) {
         setAgentSessions((prev) => {
           const existing = prev.find((session) => session.id === sid);
-          const bootstrap = opts?.reason === "remote-bootstrap";
           if (existing) {
-            let nextMessages = page.items;
-            if (bootstrap) {
-              // 启动快照可能还只有用户消息；保留本地已流式写入的 assistant，只补缺失 id。
-              const byId = new Map(existing.messages.map((item) => [item.id, item]));
-              nextMessages = page.items.map((item) => {
-                const live = byId.get(item.id);
-                if (
-                  live?.role === "assistant" &&
-                  String(live.content || "").length > String(item.content || "").length
-                ) {
-                  return { ...item, content: live.content };
-                }
-                return item;
-              });
-              for (const live of existing.messages) {
-                if (!page.items.some((item) => item.id === live.id)) {
-                  nextMessages.push(live);
-                }
+            // 终态/首包对账时服务端 JSONL 可能落后于本地流式状态（abort 回滚 /
+            // write-behind 未落盘）：以本地时间线为骨架归并——服务端缺失的
+            // assistant 原位保留（正文同 id 取更长方），否则 run.failed 对账会把
+            // 已输出内容清空、或把保留行挪到暂停后新发消息之后造成时序错乱
+            // （2026-11-10 / 2026-11-12 实证）。
+            const nextMessages = mergeHistoryWithLiveTimeline(
+              page.items,
+              existing.messages,
+              {
+                serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+                // 与 loadAgentSessionMessages 同判据：reasoning-only 保留行
+                // （长思考期间暂停）不算空白，不能被对账过滤掉。
+                hasLiveParts: (messageId) =>
+                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
               }
-            }
+            );
+            appendAgentDebugLog(
+              `session.remote.snapshot sid=${sid} reason=${opts?.reason || "event"} ` +
+              `server=${page.items.length} local=${existing.messages.length} merged=${nextMessages.length}`
+            );
             return prev.map((session) =>
               session.id === sid
                 ? {
@@ -3258,7 +3274,17 @@ export function App() {
           const bag = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
           const pendingId = bag.shift() || "";
           agentPendingLocalUserIdsBySessionRef.current[sid] = bag;
+          // 替换乐观行保留本地 id 后，必须补写 local→server 映射：归并对账
+          // （mergeHistoryWithLiveTimeline）按「行内 id 直配或映射」配对——user 行
+          // 没有 ensureLocalAssistant 式的常驻映射通道，漏写会让 load/snapshot 把
+          // user 行判「无对应」丢弃、history 版本尾随追加到保留行后面（时序错乱）。
+          if (pendingId && mapped.id) {
+            commitAgentServerMessageIdByLocalId((prev) => (
+              prev[pendingId] === mapped.id ? prev : { ...prev, [pendingId]: mapped.id }
+            ));
+          }
           let replacedOptimistic = false;
+          let fallbackReplacedLocalId = "";
           let messages = session.messages.flatMap((item) => {
             if (item.id === mapped.id) {
               replacedOptimistic = true;
@@ -3284,6 +3310,7 @@ export function App() {
               && String(item.content || "").trim() === userText
             ) {
               replacedOptimistic = true;
+              fallbackReplacedLocalId = item.id;
               return [mergeCompletedUserChatMessage(
                 { ...mapped, attachments: item.attachments || mapped.attachments },
                 item
@@ -3291,6 +3318,12 @@ export function App() {
             }
             return [item];
           });
+          // 兜底替换同样保留本地 id → 必须补映射（归并对账配对依据）。
+          if (fallbackReplacedLocalId && mapped.id) {
+            commitAgentServerMessageIdByLocalId((prev) => (
+              prev[fallbackReplacedLocalId] === mapped.id ? prev : { ...prev, [fallbackReplacedLocalId]: mapped.id }
+            ));
+          }
           if (!replacedOptimistic) {
             if (pendingId) {
               const restore = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
@@ -3985,20 +4018,15 @@ export function App() {
           }
           return item;
         });
-        // history 可能缺最终 assistant（JSONL 未落盘）：保留 live 末尾气泡，避免闪过后被抹掉。
-        mapped = mergeHistoryMessagesPreservingLive(mapped, currentSession.messages, {
-          hasLiveParts: (messageId) => {
-            const parts =
-              agentLivePartsByServerMessageIdRef.current[messageId]
-              || [];
-            return parts.some((part) => {
-              const type = String((part as { type?: string }).type || "");
-              if (type === "text") return Boolean(String((part as { text?: string }).text || "").trim());
-              return false;
-            });
-          },
+        // history 可能缺 assistant（JSONL write-behind 未落盘 / 暂停回滚）：以本地
+        // 时间线为骨架归并，保留行留在原位——尾部追加会把它们挪到暂停后新发消息
+        // 之后，时序错乱（2026-11-12 实证）。
+        mapped = mergeHistoryWithLiveTimeline(mapped, currentSession.messages, {
+          hasLiveParts: (messageId) =>
+            livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId]),
           pickContent: (historyContent, liveContent) =>
-            pickPreferredAgentContent(historyContent, liveContent)
+            pickPreferredAgentContent(historyContent, liveContent),
+          serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
         });
       }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
@@ -4031,6 +4059,11 @@ export function App() {
         const preserved = session.messages.filter(
           (msg) => !mappedIds.has(msg.id) && msg.role === "assistant" && isPauseFailureText(msg.error || "")
         );
+        // 历史拉空但本地有消息：同 snapshot 对账守卫，空表替换会清掉 user 消息。
+        if (mapped.length === 0 && session.messages.length > 0) {
+          appendAgentDebugLog(`agent.messages loaded ${id} empty history, keep local ${session.messages.length}`);
+          return session;
+        }
         return {
           ...session,
           messages: [...mapped, ...preserved],
@@ -6924,6 +6957,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 const bag = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
                 const pendingId = bag.shift() || "";
                 agentPendingLocalUserIdsBySessionRef.current[sessionId] = bag;
+                // 同 3269 区：替换保留本地 id 后必须补写 local→server 映射，
+                // 否则归并对账配不上对，user 行被丢、history 版本尾随错序。
+                if (pendingId && mappedUser.id) {
+                  commitAgentServerMessageIdByLocalId((prev) => (
+                    prev[pendingId] === mappedUser.id ? prev : { ...prev, [pendingId]: mappedUser.id }
+                  ));
+                }
                 const liveId = currentServerAssistantId || currentLocalAssistantId;
                 const liveActive = Boolean(liveId) && !frozenAssistantMessageIds.has(liveId);
                 updateAgentSessionById(sessionId, (session) => {
@@ -7767,13 +7807,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             updateAgentSessionById(sessionId, (session) => {
               const result = reconcilePromptTailFromHistory(session.messages, historyChat, {
                 pickContent: pickPreferredAgentContent,
-                hasLiveParts: (messageId) => {
-                  const parts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
-                  return parts.some((part) => {
-                    const type = String((part as { type?: string }).type || "");
-                    return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-                  });
-                }
+                hasLiveParts: (messageId) =>
+                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
               });
               touchedAssistantIds = result.touchedAssistantIds;
               if (!result.changed) return session;

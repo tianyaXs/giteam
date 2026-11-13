@@ -87,7 +87,11 @@ impl SessionAccumulator {
                 let session = session_key(&self.session_id);
                 if !self.session_base_written {
                     self.session_base_written = true;
-                    self.push_node(session_node(&self.session_id, &self.repo_path, envelope.timestamp_ms));
+                    self.push_node(session_node(
+                        &self.session_id,
+                        &self.repo_path,
+                        envelope.timestamp_ms,
+                    ));
                 }
                 self.push_edge(&session, &key, "has_turn", envelope, serde_json::json!({}));
                 self.push_node(NodeFact {
@@ -213,11 +217,23 @@ impl SessionAccumulator {
         self.push_node(node.clone());
         match self.turn_key.clone() {
             Some(turn) => {
-                self.push_edge(&turn, &node.key, "has_message", envelope, serde_json::json!({}));
+                self.push_edge(
+                    &turn,
+                    &node.key,
+                    "has_message",
+                    envelope,
+                    serde_json::json!({}),
+                );
             }
             None => {
                 let session = session_key(&self.session_id);
-                self.push_edge(&session, &node.key, "has_message", envelope, serde_json::json!({}));
+                self.push_edge(
+                    &session,
+                    &node.key,
+                    "has_message",
+                    envelope,
+                    serde_json::json!({}),
+                );
             }
         }
         // 首条用户消息 = 会话意图（跨会话感知的关键字段）。
@@ -275,7 +291,13 @@ impl SessionAccumulator {
             .turn_key
             .clone()
             .unwrap_or_else(|| session_key(&self.session_id));
-        self.push_edge(&anchor, &tool_key, "used_tool", envelope, serde_json::json!({"toolName": tool_name}));
+        self.push_edge(
+            &anchor,
+            &tool_key,
+            "used_tool",
+            envelope,
+            serde_json::json!({"toolName": tool_name}),
+        );
 
         // 资产边：从工具入参确定性地抽路径/命令。
         let mut saw_asset = false;
@@ -288,7 +310,8 @@ impl SessionAccumulator {
                 .iter()
                 .any(|(existing, _)| existing == &normalized)
             {
-                self.turn_file_keys.push((normalized.clone(), file_key.clone()));
+                self.turn_file_keys
+                    .push((normalized.clone(), file_key.clone()));
             }
             self.push_node(NodeFact {
                 node_type: "file",
@@ -297,7 +320,13 @@ impl SessionAccumulator {
                 props: serde_json::json!({}),
                 timestamp_ms: envelope.timestamp_ms,
             });
-            self.push_edge(&tool_key, &file_key, action, envelope, serde_json::json!({}));
+            self.push_edge(
+                &tool_key,
+                &file_key,
+                action,
+                envelope,
+                serde_json::json!({}),
+            );
         }
         if let Some(command) = extract_command_from_input(tool_name, input) {
             saw_asset = true;
@@ -313,7 +342,13 @@ impl SessionAccumulator {
                 props: serde_json::json!({"normalized": snippet(&normalized, 500)}),
                 timestamp_ms: envelope.timestamp_ms,
             });
-            self.push_edge(&tool_key, &command_key, "executed", envelope, serde_json::json!({}));
+            self.push_edge(
+                &tool_key,
+                &command_key,
+                "executed",
+                envelope,
+                serde_json::json!({}),
+            );
         }
         if saw_asset {
             self.session_had_tool_actions = true;
@@ -330,7 +365,8 @@ impl SessionAccumulator {
     ) {
         let tool_key = toolcall_key(&self.session_id, tool_call_id);
         let seq = self.bump_sequence(envelope);
-        self.tool_timeline.push((seq, tool_name.to_string(), is_error, tool_key.clone()));
+        self.tool_timeline
+            .push((seq, tool_name.to_string(), is_error, tool_key.clone()));
         if is_error {
             let raw_output = output_text(output);
             if let Some(first) = raw_output.lines().map(str::trim).find(|l| !l.is_empty()) {
@@ -352,7 +388,13 @@ impl SessionAccumulator {
                 props: serde_json::json!({"fingerprint": fingerprint}),
                 timestamp_ms: envelope.timestamp_ms,
             });
-            self.push_edge(&tool_key, &error_key, "failed_with", envelope, serde_json::json!({"toolName": tool_name}));
+            self.push_edge(
+                &tool_key,
+                &error_key,
+                "failed_with",
+                envelope,
+                serde_json::json!({"toolName": tool_name}),
+            );
             self.failures.push((error_key, seq));
             return;
         }
@@ -366,7 +408,13 @@ impl SessionAccumulator {
                 props: serde_json::json!({"sha": sha}),
                 timestamp_ms: envelope.timestamp_ms,
             });
-            self.push_edge(&tool_key, &commit_key, "produced", envelope, serde_json::json!({}));
+            self.push_edge(
+                &tool_key,
+                &commit_key,
+                "produced",
+                envelope,
+                serde_json::json!({}),
+            );
         }
     }
 
@@ -413,7 +461,11 @@ impl SessionAccumulator {
 
     /// 产出本轮的语义抽取输入并重置收集器（turn 边界调用）。
     #[must_use]
-    pub fn take_extraction_input(&mut self, timestamp_ms: u64, sequence: u64) -> super::extraction::ExtractionInput {
+    pub fn take_extraction_input(
+        &mut self,
+        timestamp_ms: u64,
+        sequence: u64,
+    ) -> super::extraction::ExtractionInput {
         super::extraction::ExtractionInput {
             session_id: self.session_id.clone(),
             run_id: self.run_id.clone(),
@@ -486,15 +538,14 @@ fn toolcall_key(session_id: &str, tool_call_id: &str) -> String {
     super::store::node_id("tool_call", &format!("{session_id}/{tool_call_id}"))
 }
 
-
 fn is_weak_user_title(title: &str) -> bool {
     let t = title.trim();
     if t.is_empty() || t.chars().count() < 2 {
         return true;
     }
     const WEAK: &[&str] = &[
-        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗",
-        "ok", "okay", "yes", "y", "hi", "hello", "thanks", "thx",
+        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗", "ok", "okay", "yes", "y", "hi",
+        "hello", "thanks", "thx",
     ];
     let lower = t.to_lowercase();
     WEAK.iter().any(|w| lower == *w || t == *w)
@@ -533,7 +584,11 @@ pub fn normalize_file_path(repo_path: &str, path: &str) -> String {
         .components()
         .filter_map(|c| {
             let part = c.as_os_str().to_string_lossy().to_string();
-            if part.is_empty() { None } else { Some(part) }
+            if part.is_empty() {
+                None
+            } else {
+                Some(part)
+            }
         })
         .collect::<Vec<_>>()
         .join("/")
@@ -645,7 +700,9 @@ pub fn extract_commit_sha(tool_name: &str, output_text: &str) -> Option<String> 
 
 fn is_hex_sha(text: &str) -> bool {
     (7..=40).contains(&text.len())
-        && text.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// 从 tool output（pi 的 content blocks 或纯文本）提取可读文本。
@@ -759,7 +816,10 @@ mod tests {
             .find(|n| n.node_type == "session" && n.props.get("intent").is_some())
             .expect("session with intent");
         assert_eq!(session.props["intent"], "修复登录超时");
-        assert!(session.props.get("sessionId").is_some(), "sessionId must survive props merge");
+        assert!(
+            session.props.get("sessionId").is_some(),
+            "sessionId must survive props merge"
+        );
         let turn = batch
             .nodes
             .iter()
@@ -789,7 +849,10 @@ mod tests {
         b.ingest(&envelope(1, AgentEvent::TurnStarted { index: 0 }));
         let key_b = b.take_extraction_input(1, 1).turn_key.clone();
 
-        assert_ne!(key_a, key_b, "same session turnIndex must not collide across runs");
+        assert_ne!(
+            key_a, key_b,
+            "same session turnIndex must not collide across runs"
+        );
         assert!(key_a.as_ref().unwrap().starts_with("turn:"));
         assert!(key_b.as_ref().unwrap().starts_with("turn:"));
     }
@@ -837,7 +900,11 @@ mod tests {
         let types: Vec<&str> = batch.nodes.iter().map(|n| n.node_type).collect();
         assert!(types.contains(&"error"), "error node missing: {types:?}");
         assert!(types.contains(&"commit"), "commit node missing: {types:?}");
-        let errors = batch.nodes.iter().filter(|n| n.node_type == "error").count();
+        let errors = batch
+            .nodes
+            .iter()
+            .filter(|n| n.node_type == "error")
+            .count();
         assert_eq!(errors, 1);
         // 同错误同节点：指纹数字抹平
         assert_eq!(
@@ -877,7 +944,10 @@ mod tests {
             extract_commit_sha("bash", "[main 8c1e2f3] fix login"),
             Some("8c1e2f3".into())
         );
-        assert_eq!(extract_commit_sha("bash", "commit deadbeef1234567"), Some("deadbeef1234567".into()));
+        assert_eq!(
+            extract_commit_sha("bash", "commit deadbeef1234567"),
+            Some("deadbeef1234567".into())
+        );
         assert_eq!(extract_commit_sha("read", "[main 8c1e2f3]"), None);
         assert_eq!(extract_commit_sha("bash", "nothing here"), None);
     }

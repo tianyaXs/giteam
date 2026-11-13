@@ -161,11 +161,9 @@ fn migrate(db: &Connection) -> rusqlite::Result<()> {
         "#,
     )?;
     let recorded: Option<i64> = db
-        .query_row(
-            "SELECT MAX(version) FROM schema_versions",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(None);
     let current = recorded.unwrap_or(0);
     if current < 2 {
@@ -374,7 +372,13 @@ mod tests {
             .query_row("SELECT MAX(version) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        for table in ["nodes", "edges", "replay_state", "nodes_fts", "extraction_jobs"] {
+        for table in [
+            "nodes",
+            "edges",
+            "replay_state",
+            "nodes_fts",
+            "extraction_jobs",
+        ] {
             let count: i64 = db
                 .query_row(
                     &format!("SELECT COUNT(*) FROM sqlite_master WHERE name = '{table}'"),
@@ -430,8 +434,12 @@ mod tests {
         };
         write_batch(&db, &batch).unwrap();
         write_batch(&db, &batch).unwrap(); // 幂等重放
-        let nodes: i64 = db.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0)).unwrap();
-        let edges: i64 = db.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap();
+        let nodes: i64 = db
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+            .unwrap();
+        let edges: i64 = db
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(nodes, 2);
         assert_eq!(edges, 1);
     }
@@ -446,7 +454,14 @@ mod tests {
             props: serde_json::json!({}),
             timestamp_ms: 1_000,
         };
-        write_batch(&db, &FactBatch { nodes: vec![node], edges: vec![] }).unwrap();
+        write_batch(
+            &db,
+            &FactBatch {
+                nodes: vec![node],
+                edges: vec![],
+            },
+        )
+        .unwrap();
         let again = NodeFact {
             node_type: "file",
             key: "a.rs".into(),
@@ -454,11 +469,20 @@ mod tests {
             props: serde_json::json!({"touch": 2}),
             timestamp_ms: 2_000,
         };
-        write_batch(&db, &FactBatch { nodes: vec![again], edges: vec![] }).unwrap();
+        write_batch(
+            &db,
+            &FactBatch {
+                nodes: vec![again],
+                edges: vec![],
+            },
+        )
+        .unwrap();
         let (first, last, label): (i64, i64, String) = db
-            .query_row("SELECT first_seen_ms, last_seen_ms, label FROM nodes", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT first_seen_ms, last_seen_ms, label FROM nodes",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
         assert_eq!((first, last), (1_000, 2_000));
         assert_eq!(label, "a.rs (new)");
@@ -474,7 +498,14 @@ mod tests {
             props: serde_json::json!({}),
             timestamp_ms: 1,
         };
-        write_batch(&db, &FactBatch { nodes: vec![node], edges: vec![] }).unwrap();
+        write_batch(
+            &db,
+            &FactBatch {
+                nodes: vec![node],
+                edges: vec![],
+            },
+        )
+        .unwrap();
         let hits: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'control'",

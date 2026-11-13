@@ -28,9 +28,43 @@ pub struct OfficeFileDiff {
 
 /// 参与内容 diff 的文本扩展名（office 二进制不在列）。
 const TEXT_EXTS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "svelte", "py", "rs", "go", "java", "kt",
-    "html", "htm", "css", "scss", "less", "json", "jsonc", "md", "txt", "yml", "yaml", "toml",
-    "sh", "bash", "c", "h", "cpp", "hpp", "sql", "xml", "svg", "env", "gitignore", "csv",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "vue",
+    "svelte",
+    "py",
+    "rs",
+    "go",
+    "java",
+    "kt",
+    "html",
+    "htm",
+    "css",
+    "scss",
+    "less",
+    "json",
+    "jsonc",
+    "md",
+    "txt",
+    "yml",
+    "yaml",
+    "toml",
+    "sh",
+    "bash",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "sql",
+    "xml",
+    "svg",
+    "env",
+    "gitignore",
+    "csv",
 ];
 /// 单文件内容上限（字节）。
 const CONTENT_CAP_PER_FILE: u64 = 64 * 1024;
@@ -57,8 +91,20 @@ pub struct OfficeRunManifestDiff {
 }
 
 const EXCLUDED_DIRS: &[&str] = &[
-    ".git", "node_modules", "dist", "build", "target", ".next", ".nuxt", ".venv", "venv",
-    "__pycache__", ".cache", "coverage", ".idea", ".vscode",
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".nuxt",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
+    "coverage",
+    ".idea",
+    ".vscode",
 ];
 const MAX_SCAN_FILE_SIZE: u64 = 20 * 1024 * 1024;
 const MAX_SCAN_FILES: usize = 20_000;
@@ -92,7 +138,9 @@ fn scan_workspace(root: &Path, with_content: bool) -> Vec<OfficeManifestFile> {
         if depth > 15 || out.len() >= MAX_SCAN_FILES {
             return;
         }
-        let Ok(reads) = std::fs::read_dir(dir) else { return };
+        let Ok(reads) = std::fs::read_dir(dir) else {
+            return;
+        };
         let mut entries: Vec<_> = reads.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
@@ -139,7 +187,11 @@ fn scan_workspace(root: &Path, with_content: bool) -> Vec<OfficeManifestFile> {
                     }
                 }
             }
-            out.push(OfficeManifestFile { path: rel, sha256: digest, content });
+            out.push(OfficeManifestFile {
+                path: rel,
+                sha256: digest,
+                content,
+            });
         }
     }
     let mut out = Vec::new();
@@ -191,63 +243,68 @@ pub async fn office_run_manifest_diff(
     turn_seq: u32,
 ) -> Result<OfficeRunManifestDiff, String> {
     tauri::async_runtime::spawn_blocking(move || {
-    let dir = runs_dir(&repo_path, &run_token)?;
-    let begin_text = std::fs::read_to_string(dir.join("begin.json"))
-        .map_err(|_| "基线清单不存在".to_string())?;
-    let begin: Vec<OfficeManifestFile> =
-        serde_json::from_str(&begin_text).map_err(|e| format!("基线解析失败：{e}"))?;
-    let current = scan_workspace(&std::path::PathBuf::from(repo_path.trim()), true);
+        let dir = runs_dir(&repo_path, &run_token)?;
+        let begin_text = std::fs::read_to_string(dir.join("begin.json"))
+            .map_err(|_| "基线清单不存在".to_string())?;
+        let begin: Vec<OfficeManifestFile> =
+            serde_json::from_str(&begin_text).map_err(|e| format!("基线解析失败：{e}"))?;
+        let current = scan_workspace(&std::path::PathBuf::from(repo_path.trim()), true);
 
-    let mut begin_by_path = std::collections::HashMap::new();
-    for file in &begin {
-        begin_by_path.insert(file.path.clone(), file.sha256.clone());
-    }
-    let mut current_by_path = std::collections::HashMap::new();
-    for file in &current {
-        current_by_path.insert(file.path.clone(), file.sha256.clone());
-    }
+        let mut begin_by_path = std::collections::HashMap::new();
+        for file in &begin {
+            begin_by_path.insert(file.path.clone(), file.sha256.clone());
+        }
+        let mut current_by_path = std::collections::HashMap::new();
+        for file in &current {
+            current_by_path.insert(file.path.clone(), file.sha256.clone());
+        }
 
-    let mut changed = Vec::new();
-    for file in &current {
-        match begin_by_path.get(&file.path) {
-            Some(old) if old == &file.sha256 => {}
-            _ => changed.push(file.path.clone()),
+        let mut changed = Vec::new();
+        for file in &current {
+            match begin_by_path.get(&file.path) {
+                Some(old) if old == &file.sha256 => {}
+                _ => changed.push(file.path.clone()),
+            }
         }
-    }
-    let mut deleted = Vec::new();
-    for file in &begin {
-        if !current_by_path.contains_key(&file.path) {
-            deleted.push(file.path.clone());
+        let mut deleted = Vec::new();
+        for file in &begin {
+            if !current_by_path.contains_key(&file.path) {
+                deleted.push(file.path.clone());
+            }
         }
-    }
 
-    // 变更文本文件：基线有内容且当前可读且仍为文本候选 → 产出真实 before/after。
-    let mut file_diffs = Vec::new();
-    for file in &current {
-        if !changed.contains(&file.path) {
-            continue;
+        // 变更文本文件：基线有内容且当前可读且仍为文本候选 → 产出真实 before/after。
+        let mut file_diffs = Vec::new();
+        for file in &current {
+            if !changed.contains(&file.path) {
+                continue;
+            }
+            let after = match &file.content {
+                Some(after) => after,
+                None => continue,
+            };
+            // 基线有内容 → 真实前后对比；基线无此条目（本轮新建）→ before 为空（真新增口径）。
+            let before = begin
+                .iter()
+                .find(|entry| entry.path == file.path)
+                .and_then(|entry| entry.content.clone())
+                .unwrap_or_default();
+            file_diffs.push(OfficeFileDiff {
+                path: file.path.clone(),
+                before,
+                after: after.clone(),
+            });
         }
-        let after = match &file.content {
-            Some(after) => after,
-            None => continue,
+        let diff = OfficeRunManifestDiff {
+            changed,
+            added: Vec::new(),
+            deleted,
+            file_diffs,
         };
-        // 基线有内容 → 真实前后对比；基线无此条目（本轮新建）→ before 为空（真新增口径）。
-        let before = begin
-            .iter()
-            .find(|entry| entry.path == file.path)
-            .and_then(|entry| entry.content.clone())
-            .unwrap_or_default();
-        file_diffs.push(OfficeFileDiff {
-            path: file.path.clone(),
-            before,
-            after: after.clone(),
-        });
-    }
-    let diff = OfficeRunManifestDiff { changed, added: Vec::new(), deleted, file_diffs };
-    let _ = std::fs::remove_dir_all(&dir);
-    // DSH 检查点式持久化：快照文件落盘（原子写），跨重启保留、按轮次归属。
-    let _ = save_turn_snapshot(&session_id, turn_seq, &diff);
-    Ok(diff)
+        let _ = std::fs::remove_dir_all(&dir);
+        // DSH 检查点式持久化：快照文件落盘（原子写），跨重启保留、按轮次归属。
+        let _ = save_turn_snapshot(&session_id, turn_seq, &diff);
+        Ok(diff)
     })
     .await
     .unwrap_or_else(|e| Err(format!("差集任务失败：{e}")))
@@ -297,7 +354,11 @@ fn sanitize_id(value: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
         .collect();
-    if out.is_empty() { "unknown".to_string() } else { out }
+    if out.is_empty() {
+        "unknown".to_string()
+    } else {
+        out
+    }
 }
 
 fn turn_snapshots_root() -> Option<PathBuf> {
@@ -306,12 +367,17 @@ fn turn_snapshots_root() -> Option<PathBuf> {
 
 fn snapshot_path(session_id: &str, turn_seq: u32) -> Option<PathBuf> {
     turn_snapshots_root().map(|root| {
-        root.join(sanitize_id(session_id)).join(format!("{turn_seq}.json"))
+        root.join(sanitize_id(session_id))
+            .join(format!("{turn_seq}.json"))
     })
 }
 
 /// 原子写（tmp + rename = 提交点）：崩溃残留 tmp 文件由 GC 清理。
-fn save_turn_snapshot(session_id: &str, turn_seq: u32, diff: &OfficeRunManifestDiff) -> Result<(), String> {
+fn save_turn_snapshot(
+    session_id: &str,
+    turn_seq: u32,
+    diff: &OfficeRunManifestDiff,
+) -> Result<(), String> {
     let file = snapshot_path(session_id, turn_seq).ok_or("数据目录不可用")?;
     let payload = TurnSnapshotFile {
         version: TURN_SNAPSHOT_VERSION,
@@ -323,7 +389,11 @@ fn save_turn_snapshot(session_id: &str, turn_seq: u32, diff: &OfficeRunManifestD
     };
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     if text.len() as u64 > TURN_SNAPSHOT_MAX_BYTES {
-        eprintln!("[turn-snapshot] 跳过保存：超过单轮上限 {} > {} 字节", text.len(), TURN_SNAPSHOT_MAX_BYTES);
+        eprintln!(
+            "[turn-snapshot] 跳过保存：超过单轮上限 {} > {} 字节",
+            text.len(),
+            TURN_SNAPSHOT_MAX_BYTES
+        );
         return Err("超过单轮快照上限".to_string());
     }
     if let Some(parent) = file.parent() {
@@ -336,16 +406,26 @@ fn save_turn_snapshot(session_id: &str, turn_seq: u32, diff: &OfficeRunManifestD
 }
 
 #[tauri::command]
-pub async fn office_turn_snapshots_list(session_id: String) -> Result<Vec<TurnSnapshotMeta>, String> {
+pub async fn office_turn_snapshots_list(
+    session_id: String,
+) -> Result<Vec<TurnSnapshotMeta>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(root) = turn_snapshots_root() else { return Ok(Vec::new()) };
+        let Some(root) = turn_snapshots_root() else {
+            return Ok(Vec::new());
+        };
         let dir = root.join(sanitize_id(&session_id));
         let mut out = Vec::new();
-        let Ok(reads) = std::fs::read_dir(&dir) else { return Ok(out) };
+        let Ok(reads) = std::fs::read_dir(&dir) else {
+            return Ok(out);
+        };
         for entry in reads.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
-            let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
-            let Ok(snap) = serde_json::from_str::<TurnSnapshotFile>(&text) else { continue };
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(snap) = serde_json::from_str::<TurnSnapshotFile>(&text) else {
+                continue;
+            };
             out.push(TurnSnapshotMeta {
                 turn_seq: snap.turn_seq,
                 saved_at_ms: snap.saved_at_ms,
@@ -366,9 +446,15 @@ pub async fn office_turn_snapshots_read(
     turn_seq: u32,
 ) -> Result<Option<TurnSnapshotFile>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(file) = snapshot_path(&session_id, turn_seq) else { return Ok(None) };
-        let Ok(text) = std::fs::read_to_string(&file) else { return Ok(None) };
-        serde_json::from_str(&text).map(Some).map_err(|e| e.to_string())
+        let Some(file) = snapshot_path(&session_id, turn_seq) else {
+            return Ok(None);
+        };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            return Ok(None);
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| e.to_string())
     })
     .await
     .unwrap_or_else(|e| Err(format!("读快照失败：{e}")))
@@ -388,12 +474,17 @@ pub struct TurnSnapshotGcResult {
 /// 4) 全局预算 LRU：按 savedAt 最旧优先回收至预算内；
 /// 5) 清理原子写残留的 *.tmp。
 #[tauri::command]
-pub async fn office_turn_snapshots_gc(valid_session_ids: Vec<String>) -> Result<TurnSnapshotGcResult, String> {
+pub async fn office_turn_snapshots_gc(
+    valid_session_ids: Vec<String>,
+) -> Result<TurnSnapshotGcResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut removed = 0u32;
         let mut freed = 0u64;
         let Some(root) = turn_snapshots_root() else {
-            return Ok(TurnSnapshotGcResult { removed_files: 0, freed_bytes: 0 });
+            return Ok(TurnSnapshotGcResult {
+                removed_files: 0,
+                freed_bytes: 0,
+            });
         };
         // 防御：会话列表为空（启动未加载完成）时禁止级联——空列表 ≠ 全部会话已删除。
         let cascade_allowed = !valid_session_ids.is_empty();
@@ -424,8 +515,12 @@ pub async fn office_turn_snapshots_gc(valid_session_ids: Vec<String>) -> Result<
                             freed += size;
                             continue;
                         }
-                        let Ok(text) = std::fs::read_to_string(file.path()) else { continue };
-                        let Ok(snap) = serde_json::from_str::<TurnSnapshotFile>(&text) else { continue };
+                        let Ok(text) = std::fs::read_to_string(file.path()) else {
+                            continue;
+                        };
+                        let Ok(snap) = serde_json::from_str::<TurnSnapshotFile>(&text) else {
+                            continue;
+                        };
                         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
                         if now.saturating_sub(snap.saved_at_ms) > TURN_SNAPSHOT_TTL_MS {
                             let _ = std::fs::remove_file(file.path());
@@ -471,7 +566,10 @@ pub async fn office_turn_snapshots_gc(valid_session_ids: Vec<String>) -> Result<
                 total = total.saturating_sub(size);
             }
         }
-        Ok(TurnSnapshotGcResult { removed_files: removed, freed_bytes: freed })
+        Ok(TurnSnapshotGcResult {
+            removed_files: removed,
+            freed_bytes: freed,
+        })
     })
     .await
     .unwrap_or_else(|e| Err(format!("GC 失败：{e}")))
@@ -514,7 +612,11 @@ mod tests {
         assert!(count >= 1);
 
         // 覆盖写：改一行、加一行。
-        std::fs::write(root.join("src/app.ts"), "line1\nline2-changed\nline3\nline4\n").expect("overwrite");
+        std::fs::write(
+            root.join("src/app.ts"),
+            "line1\nline2-changed\nline3\nline4\n",
+        )
+        .expect("overwrite");
 
         let diff = tauri::async_runtime::block_on(office_run_manifest_diff(
             root.to_string_lossy().to_string(),
@@ -524,9 +626,19 @@ mod tests {
         ))
         .expect("diff");
         assert_eq!(diff.changed, vec!["src/app.ts".to_string()]);
-        let file_diff = diff.file_diffs.iter().find(|d| d.path == "src/app.ts").expect("file_diffs 含 app.ts");
-        assert!(file_diff.before.contains("line2\n"), "before 是覆盖前完整内容");
-        assert!(file_diff.after.contains("line2-changed"), "after 是覆盖后完整内容");
+        let file_diff = diff
+            .file_diffs
+            .iter()
+            .find(|d| d.path == "src/app.ts")
+            .expect("file_diffs 含 app.ts");
+        assert!(
+            file_diff.before.contains("line2\n"),
+            "before 是覆盖前完整内容"
+        );
+        assert!(
+            file_diff.after.contains("line2-changed"),
+            "after 是覆盖后完整内容"
+        );
     }
 
     /// 新建文件：file_diffs 的 before 为空（真新增口径）。
@@ -551,7 +663,11 @@ mod tests {
             1,
         ))
         .expect("diff");
-        let file_diff = diff.file_diffs.iter().find(|d| d.path == "new.vue").expect("file_diffs 含 new.vue");
+        let file_diff = diff
+            .file_diffs
+            .iter()
+            .find(|d| d.path == "new.vue")
+            .expect("file_diffs 含 new.vue");
         assert_eq!(file_diff.before, "");
         assert!(file_diff.after.contains("<template>"));
     }

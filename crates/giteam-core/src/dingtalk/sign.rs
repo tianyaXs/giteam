@@ -10,8 +10,8 @@ type HmacSha256 = Hmac<Sha256>;
 #[must_use]
 pub fn sign_payload(timestamp_ms: i64, secret: &str) -> String {
     let string_to_sign = format!("{timestamp_ms}\n{secret}");
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC_SHA256 accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC_SHA256 accepts any key length");
     mac.update(string_to_sign.as_bytes());
     let result = mac.finalize().into_bytes();
     base64::engine::general_purpose::STANDARD.encode(result)

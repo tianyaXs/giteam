@@ -8,11 +8,13 @@ use pi::sdk::{Result, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::Value;
 
-use super::approval::denied_output;
 use super::super::interactions::{
     new_interaction_id, now_ms, InteractionHub, InteractionResolution, DEFAULT_INTERACTION_TIMEOUT,
 };
-use super::super::types::{AgentInteraction, AgentInteractionReply, AgentQuestion, AgentQuestionOption};
+use super::super::types::{
+    AgentInteraction, AgentInteractionReply, AgentQuestion, AgentQuestionOption,
+};
+use super::approval::denied_output;
 
 pub struct QuestionTool {
     hub: Arc<InteractionHub>,
@@ -116,9 +118,7 @@ impl Tool for QuestionTool {
             InteractionResolution::Reply(AgentInteractionReply::Cancel) => {
                 Ok(denied_output("question", "用户取消了提问"))
             }
-            InteractionResolution::Timeout => {
-                Ok(denied_output("question", "等待回答超时"))
-            }
+            InteractionResolution::Timeout => Ok(denied_output("question", "等待回答超时")),
             InteractionResolution::Aborted => Ok(denied_output("question", "任务已中止")),
             InteractionResolution::Shutdown => Ok(denied_output("question", "服务已关闭")),
             _ => Ok(denied_output("question", "无效的回答")),
@@ -203,7 +203,10 @@ fn validate_answers(
     }
     for (question, answers) in questions.iter().zip(answers) {
         if !question.multiple && answers.len() > 1 {
-            return Err(format!("问题「{}」为单选，但收到多个回答", question.question));
+            return Err(format!(
+                "问题「{}」为单选，但收到多个回答",
+                question.question
+            ));
         }
     }
     Ok(())

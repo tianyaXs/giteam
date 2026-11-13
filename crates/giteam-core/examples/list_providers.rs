@@ -25,5 +25,9 @@ fn main() {
             }
         }
     }
-    println!("total: {} providers, {} models", providers.len(), total_models);
+    println!(
+        "total: {} providers, {} models",
+        providers.len(),
+        total_models
+    );
 }

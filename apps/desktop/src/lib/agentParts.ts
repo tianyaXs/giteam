@@ -370,6 +370,25 @@ export function livePartsHaveTextPart(parts: AgentDetailedPart[] | undefined | n
   });
 }
 
+/**
+ * live parts 是否含用户可见内容：正文或思考流任一非空即算。
+ *
+ * history 对账的「保留 live 末尾气泡」判据若只认 text，会把「长思考后暂停」
+ * 的行判空抹掉（2026-11-12 实证：思考 75s 零正文点停止，轮询触发的 history
+ * 重载把只有 reasoning 的 live 行全部判无 → 整表替换只剩 user）。与
+ * isEmptyAssistantPlaceholder 的 reasoning 判据同源对齐。
+ */
+export function livePartsHaveVisibleContent(
+  parts: AgentDetailedPart[] | undefined | null
+): boolean {
+  if (!Array.isArray(parts)) return false;
+  return parts.some((part) => {
+    const type = String((part as { type?: string }).type || "");
+    if (type !== "text" && type !== "reasoning") return false;
+    return Boolean(String((part as { text?: string }).text || "").trim());
+  });
+}
+
 export function appendMissingTextPartsToLive(
   parts: AgentDetailedPart[] | undefined | null,
   textBlocks: string[]

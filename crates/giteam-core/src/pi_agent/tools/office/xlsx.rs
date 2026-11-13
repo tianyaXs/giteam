@@ -1,15 +1,12 @@
 //! Excel 读写：rust_xlsxwriter 写 / calamine 读。
 
-use super::{
-    emit_progress, error_output, output_with_details, resolve_path, text_output,
-};
+use super::{emit_progress, error_output, output_with_details, resolve_path, text_output};
 use async_trait::async_trait;
 use calamine::Reader;
 use pi::sdk::{ContentBlock, Result, TextContent, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-
 
 /// 0 基列号 → Excel 字母列名（0→A, 25→Z, 26→AA）。
 fn column_letter(column: usize) -> String {
@@ -128,7 +125,12 @@ impl Tool for WriteXlsxTool {
             return Ok(error_output("缺少 path 参数".to_string()));
         };
         let target = resolve_path(&self.cwd, path_raw);
-        if target.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("xlsx")) != Some(true) {
+        if target
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("xlsx"))
+            != Some(true)
+        {
             return Ok(error_output(format!(
                 "path 应指向 .xlsx 文件（收到 {path_raw}）"
             )));
@@ -139,7 +141,10 @@ impl Tool for WriteXlsxTool {
         if sheets.is_empty() {
             return Ok(error_output("sheets 不能为空".to_string()));
         }
-        let header = input.get("header").and_then(Value::as_bool).unwrap_or(false);
+        let header = input
+            .get("header")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         // 规模护栏：提前拒绝，别让模型把 prompt 预算烧在巨表上。
         for (idx, sheet) in sheets.iter().enumerate() {
@@ -223,7 +228,11 @@ impl Tool for WriteXlsxTool {
                             let _ = worksheet.write_boolean(row_num, col_num, *flag);
                         }
                         Value::Number(number) => {
-                            let _ = worksheet.write_number(row_num, col_num, number.as_f64().unwrap_or_default());
+                            let _ = worksheet.write_number(
+                                row_num,
+                                col_num,
+                                number.as_f64().unwrap_or_default(),
+                            );
                         }
                         Value::String(text) => {
                             if let Some(_formula) = text.strip_prefix('=') {
@@ -241,11 +250,7 @@ impl Tool for WriteXlsxTool {
                             }
                         }
                         other => {
-                            let _ = worksheet.write_string(
-                                row_num,
-                                col_num,
-                                &other.to_string(),
-                            );
+                            let _ = worksheet.write_string(row_num, col_num, &other.to_string());
                         }
                     }
                     if !cell.is_null() {
@@ -262,13 +267,13 @@ impl Tool for WriteXlsxTool {
             last_sheet_name = sheet_name;
             last_sheet_range = selection_range(max_row, max_col);
             emit_progress(
-            &on_update,
-            "render",
-            done,
-            format!("已写入工作表 {sheet_name}（{}/{}）", idx + 1, sheets.len()),
-            &target,
-            Some((sheet_name.to_string(), last_sheet_range.clone())),
-            None,
+                &on_update,
+                "render",
+                done,
+                format!("已写入工作表 {sheet_name}（{}/{}）", idx + 1, sheets.len()),
+                &target,
+                Some((sheet_name.to_string(), last_sheet_range.clone())),
+                None,
             );
             if let Err(error) = checkpoint {
                 return Ok(error_output(format!(
@@ -290,7 +295,8 @@ impl Tool for WriteXlsxTool {
         match workbook.save(&target) {
             Ok(()) => {
                 let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-                let mut extra = json!({ "bytes": size, "sheets": sheets.len(), "cells": total_cells });
+                let mut extra =
+                    json!({ "bytes": size, "sheets": sheets.len(), "cells": total_cells });
                 if !last_sheet_name.is_empty() {
                     extra["sheet"] = json!(last_sheet_name);
                     if let Some(range) = &last_sheet_range {
@@ -428,10 +434,7 @@ impl Tool for ReadXlsxTool {
         };
         let sheet_names = workbook.sheet_names().to_vec();
         if sheet_names.is_empty() {
-            return Ok(error_output(format!(
-                "{} 没有可用工作表",
-                target.display()
-            )));
+            return Ok(error_output(format!("{} 没有可用工作表", target.display())));
         }
         let wanted = input
             .get("sheet")
@@ -573,17 +576,27 @@ mod tests {
         let mut last = 0.0f64;
         for update in guard.iter() {
             let details = update.details.as_ref().expect("details");
-            let percent = details.get("percent").and_then(Value::as_f64).expect("percent");
+            let percent = details
+                .get("percent")
+                .and_then(Value::as_f64)
+                .expect("percent");
             assert!(percent >= last, "百分比应单调不减：{percent} < {last}");
             assert!(percent <= 100.0);
             assert!(details.get("stage").and_then(Value::as_str).is_some());
             last = percent;
         }
-        assert!((last - 95.0).abs() < f64::EPSILON, "write 最终进度为落盘 95%");
+        assert!(
+            (last - 95.0).abs() < f64::EPSILON,
+            "write 最终进度为落盘 95%"
+        );
 
         let reader = ReadXlsxTool::new(cwd);
         let read = reader
-            .execute("call-2", json!({ "path": "out/report.xlsx", "sheet": "数据" }), None)
+            .execute(
+                "call-2",
+                json!({ "path": "out/report.xlsx", "sheet": "数据" }),
+                None,
+            )
             .await
             .expect("read execute");
         assert!(!read.is_error);
@@ -704,7 +717,9 @@ fn find_row_range(xml: &str, row: usize) -> Option<(usize, usize)> {
         let rel = xml.get(from..)?.find(&needle)?;
         let start = from + rel;
         let rest = &xml[start..];
-        let Some(gt_rel) = rest.find('>') else { return None };
+        let Some(gt_rel) = rest.find('>') else {
+            return None;
+        };
         if rest[..gt_rel].ends_with('/') {
             return Some((start, start + gt_rel + 1));
         }
@@ -747,7 +762,10 @@ fn build_cell_xml(cell_ref: &str, attrs: &str, value: &Value) -> String {
     match value {
         Value::Null => format!(r#"<c r="{cell_ref}"{attrs}/>"#),
         Value::Bool(flag) => {
-            format!(r#"<c r="{cell_ref}"{attrs} t="b"><v>{}</v></c>"#, u8::from(*flag))
+            format!(
+                r#"<c r="{cell_ref}"{attrs} t="b"><v>{}</v></c>"#,
+                u8::from(*flag)
+            )
         }
         Value::Number(number) => {
             format!(r#"<c r="{cell_ref}"{attrs}><v>{}</v></c>"#, number)
@@ -822,7 +840,10 @@ fn insert_cell_into_row(row_block: &str, cell_ref: &str, cell_xml: &str) -> Opti
 }
 
 /// 应用一组单元格编辑（顺序执行字符串手术）。
-fn apply_cell_edits(mut sheet_xml: String, edits: &[(String, Value)]) -> std::result::Result<String, String> {
+fn apply_cell_edits(
+    mut sheet_xml: String,
+    edits: &[(String, Value)],
+) -> std::result::Result<String, String> {
     for (cell_ref, value) in edits {
         let Some((col, row)) = super::parse_cell_ref(cell_ref) else {
             return Err(format!("单元格地址 {cell_ref:?} 无效（如 B3）"));
@@ -977,13 +998,13 @@ impl Tool for EditXlsxTool {
         };
 
         emit_progress(
-        &on_update,
-        "parse",
-        10.0,
-        format!("定位工作表（{} 处修改）…", edits.len()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "parse",
+            10.0,
+            format!("定位工作表（{} 处修改）…", edits.len()),
+            &target,
+            None,
+            None,
         );
 
         if let Ok(previous) = std::fs::read(&target) {
@@ -991,7 +1012,12 @@ impl Tool for EditXlsxTool {
         }
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
-            Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),
+            Err(error) => {
+                return Ok(error_output(format!(
+                    "打开 {} 失败：{error}",
+                    target.display()
+                )))
+            }
         };
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(archive) => archive,
@@ -1020,7 +1046,9 @@ impl Tool for EditXlsxTool {
         let mut scan = 0usize;
         while let Some(rel) = workbook[scan..].find("<sheet ") {
             let abs = scan + rel;
-            let Some(gt_rel) = workbook[abs..].find('>') else { break };
+            let Some(gt_rel) = workbook[abs..].find('>') else {
+                break;
+            };
             let tag = &workbook[abs..abs + gt_rel + 1];
             let rid = tag_attr(tag, "r:id");
             if first_rid.is_none() {
@@ -1030,10 +1058,7 @@ impl Tool for EditXlsxTool {
                 if sheet_name.is_none() {
                     sheet_name = Some(name.clone());
                 }
-                if sheet_rid.is_none()
-                    && sheet_param
-                        .map(|wanted| wanted == name)
-                        .unwrap_or(false)
+                if sheet_rid.is_none() && sheet_param.map(|wanted| wanted == name).unwrap_or(false)
                 {
                     sheet_rid = rid;
                     sheet_name = Some(name);
@@ -1054,23 +1079,25 @@ impl Tool for EditXlsxTool {
             })
             .is_err()
         {
-            return Ok(error_output("读取 xl/_rels/workbook.xml.rels 失败".to_string()));
+            return Ok(error_output(
+                "读取 xl/_rels/workbook.xml.rels 失败".to_string(),
+            ));
         }
         let mut part: Option<String> = None;
         let mut scan = 0usize;
         while let Some(rel) = rels[scan..].find("<Relationship ") {
             let abs = scan + rel;
-            let Some(gt_rel) = rels[abs..].find('>') else { break };
+            let Some(gt_rel) = rels[abs..].find('>') else {
+                break;
+            };
             let tag = &rels[abs..abs + gt_rel + 1];
             if tag_attr(tag, "Id").as_deref() == Some(sheet_rid.as_str()) {
                 let target_part = tag_attr(tag, "Target").unwrap_or_default();
-                part = Some(
-                    if target_part.starts_with('/') {
-                        target_part[1..].to_string()
-                    } else {
-                        format!("xl/{target_part}")
-                    },
-                );
+                part = Some(if target_part.starts_with('/') {
+                    target_part[1..].to_string()
+                } else {
+                    format!("xl/{target_part}")
+                });
                 break;
             }
             scan = abs + 14;
@@ -1106,24 +1133,24 @@ impl Tool for EditXlsxTool {
             changes.push(json!({ "cell": cell_ref, "value": value }));
             let done = 10.0 + 80.0 * (idx + 1) as f32 / total as f32;
             emit_progress(
-            &on_update,
-            "render",
-            done,
-            format!("已修改 {cell_ref}（{}/{}）", idx + 1, total),
-            &target,
-            Some((sheet_name.clone(), None)),
-            None,
+                &on_update,
+                "render",
+                done,
+                format!("已修改 {cell_ref}（{}/{}）", idx + 1, total),
+                &target,
+                Some((sheet_name.clone(), None)),
+                None,
             );
         }
 
         emit_progress(
-        &on_update,
-        "write",
-        95.0,
-        format!("落盘 {}…", target.display()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "write",
+            95.0,
+            format!("落盘 {}…", target.display()),
+            &target,
+            None,
+            None,
         );
         // 只替换目标工作表 part，其余条目逐字节原样（样式/公式/图表无损）。
         let bytes = match super::rebuild_zip_with_replacements(
@@ -1209,7 +1236,11 @@ mod edit_tests {
         let rows = payload["rows"].as_array().expect("rows");
         assert_eq!(rows[1][1], 120, "B2 应已更新");
         // C2 是新写公式（<f> 无缓存 <v>）：calamine 读到 Null 属预期，Excel/WPS 打开时重算。
-        assert!(rows[1][2].is_null(), "未缓存公式读值应为 null，实际 {:?}", rows[1][2]);
+        assert!(
+            rows[1][2].is_null(),
+            "未缓存公式读值应为 null，实际 {:?}",
+            rows[1][2]
+        );
         assert_eq!(rows[3][0], "汇总", "新行 A4 应插入");
     }
 
@@ -1219,7 +1250,11 @@ mod edit_tests {
         let cwd = dir.path().to_path_buf();
         let writer = WriteXlsxTool::new(cwd.clone());
         writer
-            .execute("c1", json!({ "path": "b.xlsx", "sheets": [{ "name": "S", "rows": [["x", "y"]] }] }), None)
+            .execute(
+                "c1",
+                json!({ "path": "b.xlsx", "sheets": [{ "name": "S", "rows": [["x", "y"]] }] }),
+                None,
+            )
             .await
             .expect("write");
         let editor = EditXlsxTool::new(cwd.clone());
@@ -1242,7 +1277,10 @@ mod edit_tests {
         assert!(!edit.is_error);
         // details 携带变更集（前端逐格高亮用）。
         let details = edit.details.as_ref().expect("details");
-        let changes = details.get("changes").and_then(Value::as_array).expect("changes");
+        let changes = details
+            .get("changes")
+            .and_then(Value::as_array)
+            .expect("changes");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0]["cell"], "A1");
         assert_eq!(changes[0]["value"], "改好的");
@@ -1259,7 +1297,10 @@ mod edit_tests {
 
         // 未触碰的 B1 保持原值。
         let reader = ReadXlsxTool::new(cwd);
-        let read = reader.execute("c3", json!({ "path": "b.xlsx" }), None).await.expect("read");
+        let read = reader
+            .execute("c3", json!({ "path": "b.xlsx" }), None)
+            .await
+            .expect("read");
         let text = match read.content.first() {
             Some(pi::sdk::ContentBlock::Text(text)) => text.text.clone(),
             other => panic!("期望文本输出，收到 {other:?}"),

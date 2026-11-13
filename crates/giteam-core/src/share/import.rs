@@ -302,7 +302,11 @@ fn import_sessions(
             ShareError::Package(format!("session file not utf-8 ({}): {e}", src.display()))
         })?;
         let (text, hits_repo) = replace_paths(&text, origin_hint, new_repo_path);
-        let (text, hits_dir) = replace_paths(&text, sessions_dir_hint, &new_sessions_dir.to_string_lossy());
+        let (text, hits_dir) = replace_paths(
+            &text,
+            sessions_dir_hint,
+            &new_sessions_dir.to_string_lossy(),
+        );
         fs::write(new_sessions_dir.join(name), text)?;
         imported += 1;
         if hits_repo + hits_dir > 0 {
@@ -373,8 +377,12 @@ fn import_catalog(
         record["repoPath"] = serde_json::Value::String(new_repo_path.to_string());
         record["sessionDir"] =
             serde_json::Value::String(new_sessions_dir.to_string_lossy().to_string());
-        record["sessionPath"] =
-            serde_json::Value::String(new_sessions_dir.join(&file_name).to_string_lossy().to_string());
+        record["sessionPath"] = serde_json::Value::String(
+            new_sessions_dir
+                .join(&file_name)
+                .to_string_lossy()
+                .to_string(),
+        );
         existing.insert(session_id);
         global.push(record);
         merged += 1;
@@ -447,8 +455,7 @@ fn import_memory_db(
             );
             changed += conn
                 .execute(&sql, params![from, to])
-                .map_err(|e| ShareError::Persistence(e.to_string()))?
-                as u64;
+                .map_err(|e| ShareError::Persistence(e.to_string()))? as u64;
         }
         let _ = key_col;
         Ok(changed)
@@ -573,7 +580,11 @@ fn register_repository(conn: &rusqlite::Connection, target: &Path, name: &str) -
     Ok(())
 }
 
-fn import_reviews(conn: &rusqlite::Connection, staging: &Path, new_repo_path: &str) -> ShareResult<usize> {
+fn import_reviews(
+    conn: &rusqlite::Connection,
+    staging: &Path,
+    new_repo_path: &str,
+) -> ShareResult<usize> {
     if !staging.exists() {
         return Ok(0);
     }
@@ -677,14 +688,12 @@ pub fn import_share(share_url: &str, opts: &ImportOptions) -> ShareResult<Import
     fs::create_dir_all(&staging)?;
 
     let result = if is_split {
-        let context_hint = meta
-            .context_size_bytes
-            .max(
-                meta.meta
-                    .get("contextSizeBytes")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            );
+        let context_hint = meta.context_size_bytes.max(
+            meta.meta
+                .get("contextSizeBytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        );
         let context_pkg = download_with_progress(
             opts,
             &base,
@@ -701,8 +710,15 @@ pub fn import_share(share_url: &str, opts: &ImportOptions) -> ShareResult<Import
                 None
             },
         )?;
-        let import_result =
-            import_split(&base, &share_id, &context_pkg, &staging, &meta, opts, &mut warnings);
+        let import_result = import_split(
+            &base,
+            &share_id,
+            &context_pkg,
+            &staging,
+            &meta,
+            opts,
+            &mut warnings,
+        );
         let _ = fs::remove_file(&context_pkg);
         import_result
     } else {
@@ -766,14 +782,7 @@ fn download_with_progress(
     size_hint: Option<u64>,
 ) -> ShareResult<PathBuf> {
     check_cancelled(opts)?;
-    emit_progress(
-        opts,
-        stage,
-        message,
-        percent_start,
-        Some(0),
-        size_hint,
-    );
+    emit_progress(opts, stage, message, percent_start, Some(0), size_hint);
     let mut last_percent = percent_start;
     let mut last_emit_done = 0u64;
     let hook = opts.on_progress.clone();
@@ -1009,7 +1018,9 @@ fn finish_import(
     // 幂等提示：已导入过同一分享。
     if let Ok(existing) = run_git(target, &["config", "--get", "giteam.shareId"]) {
         if existing == share_id {
-            warnings.push("该仓库已导入过此分享（giteam.shareId 相同），上下文已按幂等规则合并".to_string());
+            warnings.push(
+                "该仓库已导入过此分享（giteam.shareId 相同），上下文已按幂等规则合并".to_string(),
+            );
         }
     }
 
@@ -1023,7 +1034,12 @@ fn finish_import(
         if !manifest.repo.upstream_url.trim().is_empty() {
             let _ = run_git(
                 target,
-                &["remote", "add", "upstream", manifest.repo.upstream_url.trim()],
+                &[
+                    "remote",
+                    "add",
+                    "upstream",
+                    manifest.repo.upstream_url.trim(),
+                ],
             );
         }
     }
