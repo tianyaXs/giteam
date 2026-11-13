@@ -88,7 +88,10 @@ jobs:
       matrix:
         include:
           - name: macos-aarch64
-            os: macos-14
+            # macos-14 runner 已被 GitHub 淘汰（"configuration
+            # 'macos-14-arm64-us-default' is not supported"），macos-15 同为
+            # ARM64（Apple Silicon 原生）。
+            os: macos-15
             args: "--target aarch64-apple-darwin"
           # Intel 交叉编译先关掉
           # - name: macos-x86_64
