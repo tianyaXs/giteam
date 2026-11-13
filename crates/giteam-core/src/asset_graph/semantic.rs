@@ -25,9 +25,7 @@
 
 use serde_json::Value;
 
-use super::entity::{
-    self, catalog_from_node, merge_entity_props, resolve_entity, CatalogEntity,
-};
+use super::entity::{self, catalog_from_node, merge_entity_props, resolve_entity, CatalogEntity};
 use super::store::{EdgeFact, FactBatch, NodeFact};
 
 /// 合法语义实体类型（`sem:` 前缀后的部分）。
@@ -159,7 +157,6 @@ const MIN_CONFIDENCE: f64 = 0.4;
 /// 无 evidence 时的豁免门槛（Semantica：高置信才可过门；默认仍要求 verbatim 证据）。
 const EVIDENCE_EXEMPT_CONFIDENCE: f64 = 0.85;
 
-
 /// 同 type 近名归并阈值（Semantica dedup 轻量版；略宽于跨 turn catalog fuzzy）。
 const NEAR_DUP_FUZZY_RATIO: f64 = 0.82;
 
@@ -222,8 +219,7 @@ pub fn parse_extraction(
 
     // 实体 → sem:<type> 节点；key = `sem:{type}:{normalize(name)}`（fuzzy 命中复用已有）。
     let mut valid_keys: Vec<String> = Vec::new();
-    let mut ref_index: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut ref_index: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut in_batch: Vec<CatalogEntity> = Vec::new();
 
     // 先登记 catalog：closes/supersedes 可引用既有实体，无需本轮重发（Graphiti 式
@@ -297,12 +293,9 @@ pub fn parse_extraction(
             // open_task：探索问法多样，优先 fuzzy 命中已有 canonical（catalog/批内）。
             let resolved = if etype == "open_task" {
                 let norm = entity::normalize_name(identity_name);
-                if let Some(existing_key) = find_matching_open_task_key(
-                    identity_name,
-                    &norm,
-                    &out.batch.nodes,
-                    catalog,
-                ) {
+                if let Some(existing_key) =
+                    find_matching_open_task_key(identity_name, &norm, &out.batch.nodes, catalog)
+                {
                     if let Some(entry) = catalog.iter().find(|e| e.key == existing_key) {
                         entity::ResolvedEntity {
                             key: entry.key.clone(),
@@ -311,7 +304,8 @@ pub fn parse_extraction(
                             aliases_to_add: vec![identity_name.to_string()],
                             existing_props: Some(entry.props.clone()),
                         }
-                    } else if let Some(node) = out.batch.nodes.iter().find(|n| n.key == existing_key)
+                    } else if let Some(node) =
+                        out.batch.nodes.iter().find(|n| n.key == existing_key)
                     {
                         entity::ResolvedEntity {
                             key: node.key.clone(),
@@ -344,10 +338,7 @@ pub fn parse_extraction(
             );
             let mut aliases: Vec<String> = resolved.aliases_to_add.clone();
             if let Some(id) = id_raw {
-                if id != display_label
-                    && id != identity_name
-                    && !aliases.iter().any(|a| a == id)
-                {
+                if id != display_label && id != identity_name && !aliases.iter().any(|a| a == id) {
                     aliases.push(id.to_string());
                 }
                 // id 本身也常是别名（与 normalize 不同时）
@@ -382,13 +373,8 @@ pub fn parse_extraction(
                 if let Some(entry) = in_batch.iter_mut().find(|e| e.key == key) {
                     entry.label = node.label.clone();
                     entry.props = node.props.clone();
-                    entry.aliases = entity::catalog_from_node(
-                        etype,
-                        &key,
-                        &node.label,
-                        &node.props,
-                    )
-                    .aliases;
+                    entry.aliases =
+                        entity::catalog_from_node(etype, &key, &node.label, &node.props).aliases;
                 }
             } else {
                 out.batch.nodes.push(NodeFact {
@@ -399,13 +385,9 @@ pub fn parse_extraction(
                     timestamp_ms: anchors.timestamp_ms,
                 });
                 if let Some(turn_key) = &anchors.turn_key {
-                    out.batch.edges.push(edge_fact(
-                        turn_key,
-                        &key,
-                        "extracted",
-                        anchors,
-                        None,
-                    ));
+                    out.batch
+                        .edges
+                        .push(edge_fact(turn_key, &key, "extracted", anchors, None));
                 }
                 in_batch.push(catalog_from_node(
                     etype,
@@ -494,14 +476,22 @@ pub fn parse_extraction(
             }
             if rtype == "supersedes" {
                 // supersedes(new→old) → sem/superseded_by(old→new)
-                out.batch
-                    .edges
-                    .push(edge_fact(&dst_key, &src_key, "superseded_by", anchors, evidence));
+                out.batch.edges.push(edge_fact(
+                    &dst_key,
+                    &src_key,
+                    "superseded_by",
+                    anchors,
+                    evidence,
+                ));
             } else if rtype == "closes" {
                 // closes(closer→open_task) → sem/closed_by(open_task→closer)
-                out.batch
-                    .edges
-                    .push(edge_fact(&dst_key, &src_key, "closed_by", anchors, evidence));
+                out.batch.edges.push(edge_fact(
+                    &dst_key,
+                    &src_key,
+                    "closed_by",
+                    anchors,
+                    evidence,
+                ));
             } else {
                 out.batch
                     .edges
@@ -690,7 +680,13 @@ fn attach_orphan_open_tasks(out: &mut SemanticExtraction, anchors: &ExtractionAn
         .filter(|n| {
             matches!(
                 n.node_type,
-                "decision" | "feature" | "module" | "tech_concept" | "api" | "tradeoff" | "error_pattern"
+                "decision"
+                    | "feature"
+                    | "module"
+                    | "tech_concept"
+                    | "api"
+                    | "tradeoff"
+                    | "error_pattern"
             )
         })
         .map(|n| {
@@ -715,10 +711,10 @@ fn attach_orphan_open_tasks(out: &mut SemanticExtraction, anchors: &ExtractionAn
         .map(|n| n.key.clone())
         .collect();
     for task_key in orphans {
-        let Some((peer_key, _, _)) = peers.iter().max_by(|a, b| {
-            a.2.partial_cmp(&b.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) else {
+        let Some((peer_key, _, _)) = peers
+            .iter()
+            .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        else {
             break;
         };
         if batch_has_edge(&out.batch, &task_key, peer_key, "sem/involves") {
@@ -914,11 +910,9 @@ fn prune_redundant_intent_open_tasks(out: &mut SemanticExtraction) {
     out.entity_count = out.entity_count.saturating_sub(removed);
     out.entity_summaries.retain(|(ty, title)| {
         *ty != "open_task"
-            || out
-                .batch
-                .nodes
-                .iter()
-                .any(|n| n.node_type == "open_task" && (n.label == *title || n.label.contains(title)))
+            || out.batch.nodes.iter().any(|n| {
+                n.node_type == "open_task" && (n.label == *title || n.label.contains(title))
+            })
     });
 }
 
@@ -927,11 +921,10 @@ fn ensure_process_anchors(out: &mut SemanticExtraction, anchors: &ExtractionAnch
     let Some(turn_key) = anchors.turn_key.as_deref() else {
         return;
     };
-    let needs_turn = out
-        .batch
-        .edges
-        .iter()
-        .any(|e| e.edge_type == "extracted" && (e.src_key == turn_key || e.dst_key == turn_key));
+    let needs_turn =
+        out.batch.edges.iter().any(|e| {
+            e.edge_type == "extracted" && (e.src_key == turn_key || e.dst_key == turn_key)
+        });
     if !needs_turn {
         return;
     }
@@ -939,10 +932,7 @@ fn ensure_process_anchors(out: &mut SemanticExtraction, anchors: &ExtractionAnch
         out.batch.nodes.push(NodeFact {
             node_type: "turn",
             key: turn_key.to_string(),
-            label: snippet(
-                out.intent.as_deref().unwrap_or("extraction turn"),
-                80,
-            ),
+            label: snippet(out.intent.as_deref().unwrap_or("extraction turn"), 80),
             props: serde_json::json!({
                 "source": "llm_extraction",
                 "synthetic": true,
@@ -955,10 +945,7 @@ fn ensure_process_anchors(out: &mut SemanticExtraction, anchors: &ExtractionAnch
         out.batch.nodes.push(NodeFact {
             node_type: "session",
             key: session_key.to_string(),
-            label: snippet(
-                out.intent.as_deref().unwrap_or("extraction session"),
-                80,
-            ),
+            label: snippet(out.intent.as_deref().unwrap_or("extraction session"), 80),
             props: serde_json::json!({
                 "source": "llm_extraction",
                 "synthetic": true,
@@ -1021,7 +1008,12 @@ fn find_matching_open_task_key(
     None
 }
 
-fn open_task_matches_intent(intent: &str, _norm_intent: &str, node_norm: &str, node_label: &str) -> bool {
+fn open_task_matches_intent(
+    intent: &str,
+    _norm_intent: &str,
+    node_norm: &str,
+    node_label: &str,
+) -> bool {
     open_task_labels_similar(intent, node_label) || open_task_labels_similar(intent, node_norm)
 }
 
@@ -1079,11 +1071,48 @@ fn content_tokens(s: &str) -> std::collections::HashSet<String> {
     const STOP: &[&str] = &[
         // discourse / interrogative
         // discourse / interrogative only — keep nouns as content signals
-        "了解", "概览", "探索", "熟悉", "介绍", "通读", "总结", "梳理", "诊断", "确认",
-        "找出", "哪些", "如何", "什么", "怎么", "怎样", "一下", "这个", "那个", "我们",
-        "一下", "一下", "最主要", "主要的",
-        "the", "a", "an", "how", "what", "which", "where", "explore", "understand",
-        "overview", "review", "check", "find", "about", "into", "from", "with", "this",
+        "了解",
+        "概览",
+        "探索",
+        "熟悉",
+        "介绍",
+        "通读",
+        "总结",
+        "梳理",
+        "诊断",
+        "确认",
+        "找出",
+        "哪些",
+        "如何",
+        "什么",
+        "怎么",
+        "怎样",
+        "一下",
+        "这个",
+        "那个",
+        "我们",
+        "一下",
+        "一下",
+        "最主要",
+        "主要的",
+        "the",
+        "a",
+        "an",
+        "how",
+        "what",
+        "which",
+        "where",
+        "explore",
+        "understand",
+        "overview",
+        "review",
+        "check",
+        "find",
+        "about",
+        "into",
+        "from",
+        "with",
+        "this",
         "that",
     ];
     s.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
@@ -1109,9 +1138,29 @@ fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<
 /// 行动方面：以祈使/实施类动词起势（语言学 verb class，非产品个案）。
 fn is_action_aspect(s: &str) -> bool {
     const VERBS: &[&str] = &[
-        "修复", "实现", "添加", "删除", "替换", "重构", "接入", "落地", "持久化", "补充",
-        "改", "写", "修", "fix", "implement", "add", "remove", "replace", "refactor",
-        "persist", "wire", "patch", "migrate",
+        "修复",
+        "实现",
+        "添加",
+        "删除",
+        "替换",
+        "重构",
+        "接入",
+        "落地",
+        "持久化",
+        "补充",
+        "改",
+        "写",
+        "修",
+        "fix",
+        "implement",
+        "add",
+        "remove",
+        "replace",
+        "refactor",
+        "persist",
+        "wire",
+        "patch",
+        "migrate",
     ];
     VERBS.iter().any(|v| s.contains(v))
 }
@@ -1140,8 +1189,7 @@ fn consolidate_open_tasks_in_batch(out: &mut SemanticExtraction) {
         return;
     }
 
-    let mut redirect: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut redirect: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for i in 0..open_keys.len() {
         for j in (i + 1)..open_keys.len() {
             let Some(ni) = out.batch.nodes.iter().find(|n| n.key == open_keys[i]) else {
@@ -1198,7 +1246,11 @@ fn consolidate_open_tasks_in_batch(out: &mut SemanticExtraction) {
         if e.src_key == e.dst_key {
             return false;
         }
-        seen_edges.insert((e.src_key.clone(), e.dst_key.clone(), e.edge_type.to_string()))
+        seen_edges.insert((
+            e.src_key.clone(),
+            e.dst_key.clone(),
+            e.edge_type.to_string(),
+        ))
     });
     out.entity_count = out.entity_count.saturating_sub(removed);
 }
@@ -1235,8 +1287,7 @@ fn consolidate_near_duplicate_entities(out: &mut SemanticExtraction) {
     if keys.len() < 2 {
         return;
     }
-    let mut redirect: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut redirect: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for i in 0..keys.len() {
         for j in (i + 1)..keys.len() {
             let Some(ni) = out.batch.nodes.iter().find(|n| n.key == keys[i]) else {
@@ -1257,12 +1308,11 @@ fn consolidate_near_duplicate_entities(out: &mut SemanticExtraction) {
                 (nj, ni)
             };
             // 保留更完整的 label
-            let (keep, drop) =
-                if keep.label.chars().count() >= drop.label.chars().count() {
-                    (keep, drop)
-                } else {
-                    (drop, keep)
-                };
+            let (keep, drop) = if keep.label.chars().count() >= drop.label.chars().count() {
+                (keep, drop)
+            } else {
+                (drop, keep)
+            };
             redirect.insert(drop.key.clone(), keep.key.clone());
         }
     }
@@ -1338,7 +1388,11 @@ fn apply_key_redirects(
         if e.src_key == e.dst_key {
             return false;
         }
-        seen.insert((e.src_key.clone(), e.dst_key.clone(), e.edge_type.to_string()))
+        seen.insert((
+            e.src_key.clone(),
+            e.dst_key.clone(),
+            e.edge_type.to_string(),
+        ))
     });
     out.entity_count = out.entity_count.saturating_sub(removed);
 }
@@ -1384,14 +1438,18 @@ fn demote_incomplete_decisions(batch: &mut FactBatch) -> usize {
     demoted
 }
 
-
 /// 无代码锚点的 error_pattern 丢弃（GraphRAG orphan 思想）。
 /// 锚点 = 已有 pattern_of/involves 到 file|module|feature|api，或 evidence 含路径/编译测试失败信号。
 fn filter_unanchored_error_patterns(batch: &mut FactBatch) -> usize {
     let anchored: std::collections::HashSet<String> = batch
         .edges
         .iter()
-        .filter(|e| matches!(e.edge_type, "sem/pattern_of" | "sem/involves" | "sem/affects"))
+        .filter(|e| {
+            matches!(
+                e.edge_type,
+                "sem/pattern_of" | "sem/involves" | "sem/affects"
+            )
+        })
         .filter(|e| {
             matches!(
                 lookup_node_type(batch, &e.dst_key),
@@ -1425,7 +1483,9 @@ fn filter_unanchored_error_patterns(batch: &mut FactBatch) -> usize {
     }
     let drop_set: std::collections::HashSet<String> = drop_keys.iter().cloned().collect();
     batch.nodes.retain(|n| !drop_set.contains(&n.key));
-    batch.edges.retain(|e| !drop_set.contains(&e.src_key) && !drop_set.contains(&e.dst_key));
+    batch
+        .edges
+        .retain(|e| !drop_set.contains(&e.src_key) && !drop_set.contains(&e.dst_key));
     drop_keys.len()
 }
 
@@ -1433,19 +1493,40 @@ fn filter_unanchored_error_patterns(batch: &mut FactBatch) -> usize {
 fn evidence_has_code_anchor(evidence: &str) -> bool {
     let e = evidence.to_lowercase();
     const PATH_MARKERS: &[&str] = &[
-        ".rs", ".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".java", ".kt",
-        ".swift", ".cs", ".cpp", ".c", ".h", ".rb", ".php", "/", "\\",
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".java", ".kt", ".swift", ".cs",
+        ".cpp", ".c", ".h", ".rb", ".php", "/", "\\",
     ];
     const FAIL_MARKERS: &[&str] = &[
-        "error:", "error[", "panic", "failed", "failure", "traceback", "exception",
-        "compile", "compilation", "assert", "test failed", "tests failed", "typeerror",
-        "borrow", "undefined", "nullpointer", "segfault", "stack overflow",
+        "error:",
+        "error[",
+        "panic",
+        "failed",
+        "failure",
+        "traceback",
+        "exception",
+        "compile",
+        "compilation",
+        "assert",
+        "test failed",
+        "tests failed",
+        "typeerror",
+        "borrow",
+        "undefined",
+        "nullpointer",
+        "segfault",
+        "stack overflow",
         // 中文失败信号（语言层，非具体工具名）
-        "错误", "失败", "异常", "编译", "借用检查", "类型错误", "测试失败", "断言",
+        "错误",
+        "失败",
+        "异常",
+        "编译",
+        "借用检查",
+        "类型错误",
+        "测试失败",
+        "断言",
     ];
     PATH_MARKERS.iter().any(|m| e.contains(m)) || FAIL_MARKERS.iter().any(|m| e.contains(m))
 }
-
 
 fn lookup_node_type(batch: &FactBatch, key: &str) -> Option<&'static str> {
     batch
@@ -1454,8 +1535,13 @@ fn lookup_node_type(batch: &FactBatch, key: &str) -> Option<&'static str> {
         .find(|n| n.key == key)
         .map(|n| n.node_type)
         .or_else(|| {
-            if key.starts_with("file:") || key.contains('/') || key.ends_with(".ts") || key.ends_with(".rs")
-                || key.ends_with(".vue") || key.ends_with(".tsx") || key.ends_with(".js")
+            if key.starts_with("file:")
+                || key.contains('/')
+                || key.ends_with(".ts")
+                || key.ends_with(".rs")
+                || key.ends_with(".vue")
+                || key.ends_with(".tsx")
+                || key.ends_with(".js")
             {
                 Some("file")
             } else if key.starts_with("session:") || key == "session" {
@@ -1478,7 +1564,14 @@ fn relation_type_matrix(rtype: &str) -> Option<RelationTypeRule> {
     match rtype {
         "pattern_of" => Some(RelationTypeRule {
             src: Some(&["error_pattern"]),
-            dst: Some(&["file", "module", "feature", "api", "tech_concept", "decision"]),
+            dst: Some(&[
+                "file",
+                "module",
+                "feature",
+                "api",
+                "tech_concept",
+                "decision",
+            ]),
         }),
         "affects" => Some(RelationTypeRule {
             src: Some(&["decision", "feature", "module", "error_pattern", "tradeoff"]),
@@ -1494,7 +1587,14 @@ fn relation_type_matrix(rtype: &str) -> Option<RelationTypeRule> {
         }),
         "decided" => Some(RelationTypeRule {
             src: Some(&["decision"]),
-            dst: Some(&["tech_concept", "module", "feature", "api", "file", "tradeoff"]),
+            dst: Some(&[
+                "tech_concept",
+                "module",
+                "feature",
+                "api",
+                "file",
+                "tradeoff",
+            ]),
         }),
         "rationale" => Some(RelationTypeRule {
             src: Some(&["tradeoff", "decision"]),
@@ -1509,8 +1609,20 @@ fn relation_type_matrix(rtype: &str) -> Option<RelationTypeRule> {
             dst: None,
         }),
         "supersedes" => Some(RelationTypeRule {
-            src: Some(&["decision", "feature", "open_task", "tech_concept", "tradeoff"]),
-            dst: Some(&["decision", "feature", "open_task", "tech_concept", "tradeoff"]),
+            src: Some(&[
+                "decision",
+                "feature",
+                "open_task",
+                "tech_concept",
+                "tradeoff",
+            ]),
+            dst: Some(&[
+                "decision",
+                "feature",
+                "open_task",
+                "tech_concept",
+                "tradeoff",
+            ]),
         }),
         "closes" => Some(RelationTypeRule {
             src: Some(&[
@@ -1528,7 +1640,13 @@ fn relation_type_matrix(rtype: &str) -> Option<RelationTypeRule> {
         }),
         "blocked_by" => Some(RelationTypeRule {
             src: Some(&["open_task", "feature", "decision"]),
-            dst: Some(&["error_pattern", "decision", "tradeoff", "open_task", "module"]),
+            dst: Some(&[
+                "error_pattern",
+                "decision",
+                "tradeoff",
+                "open_task",
+                "module",
+            ]),
         }),
         "involves" => Some(RelationTypeRule {
             src: Some(&["open_task", "decision", "feature"]),
@@ -1592,7 +1710,6 @@ fn relation_endpoints_sensible(
     type_allowed(rule.src, src_ty) && type_allowed(rule.dst, dst_ty)
 }
 
-
 /// 超出 [`MAX_ENTITIES_PER_TURN`] 时保留全部 open_task + 高 confidence 实体。
 fn trim_entities_if_needed(out: &mut SemanticExtraction) {
     if out.batch.nodes.len() <= MAX_ENTITIES_PER_TURN {
@@ -1612,10 +1729,7 @@ fn trim_entities_if_needed(out: &mut SemanticExtraction) {
         .filter(|n| !open_keys.contains(&n.key))
         .map(|n| (n.key.clone(), node_confidence(n)))
         .collect();
-    ranked.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let keep_budget = MAX_ENTITIES_PER_TURN.saturating_sub(open_keys.len());
     let mut keep_keys: std::collections::HashSet<String> = open_keys;
     for (key, _) in ranked.into_iter().take(keep_budget) {
@@ -1630,9 +1744,9 @@ fn trim_entities_if_needed(out: &mut SemanticExtraction) {
         .collect();
     let removed = drop_keys.len();
     out.batch.nodes.retain(|n| keep_keys.contains(&n.key));
-    out.batch.edges.retain(|e| {
-        !drop_keys.contains(&e.src_key) && !drop_keys.contains(&e.dst_key)
-    });
+    out.batch
+        .edges
+        .retain(|e| !drop_keys.contains(&e.src_key) && !drop_keys.contains(&e.dst_key));
     out.entity_count = out.entity_count.saturating_sub(removed);
     out.entity_summaries.retain(|(_, title)| {
         out.batch
@@ -1669,16 +1783,14 @@ fn batch_has_edge(batch: &FactBatch, src: &str, dst: &str, edge_type: &str) -> b
         .any(|e| e.src_key == src && e.dst_key == dst && e.edge_type == edge_type)
 }
 
-fn register_ref(
-    index: &mut std::collections::HashMap<String, String>,
-    key: &str,
-    alias: &str,
-) {
+fn register_ref(index: &mut std::collections::HashMap<String, String>, key: &str, alias: &str) {
     let trimmed = alias.trim();
     if trimmed.is_empty() {
         return;
     }
-    index.entry(trimmed.to_string()).or_insert_with(|| key.to_string());
+    index
+        .entry(trimmed.to_string())
+        .or_insert_with(|| key.to_string());
     let norm = entity::normalize_name(trimmed);
     if !norm.is_empty() {
         index.entry(norm).or_insert_with(|| key.to_string());
@@ -1730,7 +1842,11 @@ fn humanize_entity_label(
         return snippet(trimmed, 120);
     }
     if etype == "tradeoff" {
-        let chose = props.get("chose").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+        let chose = props
+            .get("chose")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let rejected = props
             .get("rejected")
             .and_then(Value::as_str)
@@ -1855,12 +1971,7 @@ fn enrich_missing_relations(out: &mut SemanticExtraction, anchors: &ExtractionAn
 }
 
 #[allow(dead_code)]
-fn has_sem_edge(
-    batch: &FactBatch,
-    src: &str,
-    dst: &str,
-    rtype: &str,
-) -> bool {
+fn has_sem_edge(batch: &FactBatch, src: &str, dst: &str, rtype: &str) -> bool {
     let edge_name = semantic_edge_type(rtype);
     batch
         .edges
@@ -1935,10 +2046,10 @@ fn resolve_ref(
         }
     }
     // 1) 已声明的实体 slug（补全 sem:type: 前缀——先试原样，再按 type 猜）。
-    if let Some(found) = entity_keys
-        .iter()
-        .find(|k| k.ends_with(&format!(":{trimmed}")) || (!norm.is_empty() && k.ends_with(&format!(":{norm}"))))
-    {
+    if let Some(found) = entity_keys.iter().find(|k| {
+        k.ends_with(&format!(":{trimmed}"))
+            || (!norm.is_empty() && k.ends_with(&format!(":{norm}")))
+    }) {
         return Some(found.clone());
     }
     // 2) 显式 sem: 前缀。
@@ -2210,7 +2321,12 @@ mod tests {
         assert!(edges.contains(&"sem/implements"));
         assert!(edges.contains(&"sem/pattern_of"));
         // 决策字段进 props。
-        let decision = out.batch.nodes.iter().find(|n| n.key.contains("decision")).unwrap();
+        let decision = out
+            .batch
+            .nodes
+            .iter()
+            .find(|n| n.key.contains("decision"))
+            .unwrap();
         assert_eq!(decision.props["category"], "data");
         assert_eq!(decision.props["confidence"], 0.9);
         // 实体挂到 turn 锚点。
@@ -2231,7 +2347,10 @@ mod tests {
     #[test]
     fn json_extraction_finds_outermost_object() {
         let text = "prefix {\"a\":{\"b\":1}} suffix";
-        assert_eq!(extract_json_object(text).as_deref(), Some("{\"a\":{\"b\":1}}"));
+        assert_eq!(
+            extract_json_object(text).as_deref(),
+            Some("{\"a\":{\"b\":1}}")
+        );
     }
 
     #[test]
@@ -2325,11 +2444,7 @@ mod tests {
         assert!(edge.src_key.starts_with("sem:decision:"));
         assert!(edge.dst_key.starts_with("sem:decision:"));
         assert_ne!(edge.src_key, edge.dst_key);
-        assert!(
-            edge.src_key.contains("leveldb"),
-            "src={}",
-            edge.src_key
-        );
+        assert!(edge.src_key.contains("leveldb"), "src={}", edge.src_key);
         assert!(edge.dst_key.contains("redb"), "dst={}", edge.dst_key);
     }
 
@@ -2358,15 +2473,26 @@ mod tests {
             .iter()
             .find(|e| e.edge_type == "sem/closed_by")
             .expect("closed_by edge");
-        assert!(edge.src_key.starts_with("sem:open_task:"), "src={}", edge.src_key);
-        assert!(edge.dst_key.starts_with("sem:decision:"), "dst={}", edge.dst_key);
+        assert!(
+            edge.src_key.starts_with("sem:open_task:"),
+            "src={}",
+            edge.src_key
+        );
+        assert!(
+            edge.dst_key.starts_with("sem:decision:"),
+            "dst={}",
+            edge.dst_key
+        );
         let task = out
             .batch
             .nodes
             .iter()
             .find(|n| n.key == edge.src_key)
             .expect("closed open_task");
-        assert_eq!(task.props.get("status").and_then(|v| v.as_str()), Some("done"));
+        assert_eq!(
+            task.props.get("status").and_then(|v| v.as_str()),
+            Some("done")
+        );
     }
 
     #[test]
@@ -2497,7 +2623,10 @@ mod tests {
             node.label
         );
         // confidence 取 max
-        assert_eq!(node.props.get("confidence").and_then(|v| v.as_f64()), Some(0.9));
+        assert_eq!(
+            node.props.get("confidence").and_then(|v| v.as_f64()),
+            Some(0.9)
+        );
     }
 
     #[test]
@@ -2586,7 +2715,11 @@ mod tests {
         assert!(out.should_emit_memory_event());
         assert_eq!(out.entity_count, 2);
         assert!(out.relation_count >= 1);
-        assert!(out.batch.edges.iter().any(|e| e.edge_type.starts_with("sem/")));
+        assert!(out
+            .batch
+            .edges
+            .iter()
+            .any(|e| e.edge_type.starts_with("sem/")));
     }
 
     #[test]
@@ -2738,10 +2871,7 @@ mod tests {
             "番茄钟功能如何实现"
         ));
         // 轻内容 + 非行动方面 → 探索 hub
-        assert!(open_task_labels_similar(
-            "通读项目结构",
-            "了解项目目录"
-        ));
+        assert!(open_task_labels_similar("通读项目结构", "了解项目目录"));
         // 行动方面 vs 探索方面：不合并
         assert!(!open_task_labels_similar("修复登录超时", "了解项目结构"));
         assert!(!open_task_labels_similar(
@@ -2830,8 +2960,7 @@ mod tests {
           ]
         }"#;
         let mut anchors = anchors();
-        anchors.source_text =
-            "了解项目结构。计时模块。编译失败缺依赖。".into();
+        anchors.source_text = "了解项目结构。计时模块。编译失败缺依赖。".into();
         let out = parse_extraction(raw, &anchors, &[]);
         let explore_key = out
             .batch
@@ -2855,15 +2984,17 @@ mod tests {
             "pattern_of must not target open_task"
         );
         assert!(
-            !out.batch.edges.iter().any(|e| {
-                e.edge_type == "sem/blocked_by" && e.dst_key == explore_key
-            }),
+            !out.batch
+                .edges
+                .iter()
+                .any(|e| { e.edge_type == "sem/blocked_by" && e.dst_key == explore_key }),
             "module must not be blocked_by open_task"
         );
         assert!(
-            out.batch.edges.iter().any(|e| {
-                e.edge_type == "sem/involves" && e.src_key == explore_key
-            }),
+            out.batch
+                .edges
+                .iter()
+                .any(|e| { e.edge_type == "sem/involves" && e.src_key == explore_key }),
             "open_task —involves→ module should keep"
         );
         assert!(
@@ -2900,7 +3031,10 @@ mod tests {
             "product-surface decision without chose/rejected should demote to feature"
         );
         assert!(
-            out.batch.nodes.iter().any(|n| n.node_type == "decision" && n.label.contains("SQLite")),
+            out.batch
+                .nodes
+                .iter()
+                .any(|n| n.node_type == "decision" && n.label.contains("SQLite")),
             "real decision with chose/rejected should remain"
         );
     }
@@ -2987,6 +3121,11 @@ mod tests {
             .iter()
             .filter(|n| n.node_type == "module")
             .collect();
-        assert_eq!(modules.len(), 1, "near-duplicate modules should merge: {:?}", modules.iter().map(|m| &m.label).collect::<Vec<_>>());
+        assert_eq!(
+            modules.len(),
+            1,
+            "near-duplicate modules should merge: {:?}",
+            modules.iter().map(|m| &m.label).collect::<Vec<_>>()
+        );
     }
 }

@@ -5,8 +5,8 @@ mod http;
 mod tunnel;
 
 pub use config::{
-    forget_access_key_local, get_cloud_link_settings, remember_access_key, set_cloud_link_settings,
-    CloudAccessKeyRecord, CloudLinkSettings, DEFAULT_CLOUD_BASE_URL, rename_access_key_local,
+    forget_access_key_local, get_cloud_link_settings, remember_access_key, rename_access_key_local,
+    set_cloud_link_settings, CloudAccessKeyRecord, CloudLinkSettings, DEFAULT_CLOUD_BASE_URL,
 };
 pub use http::{
     disconnect_mobile_client, link_begin, link_complete, link_device, link_device_with_opts,

@@ -136,7 +136,11 @@ impl Tool for TaskTool {
         };
 
         if requests.len() == 1 {
-            return match self.host.run_subagent(requests.into_iter().next().unwrap()).await {
+            return match self
+                .host
+                .run_subagent(requests.into_iter().next().unwrap())
+                .await
+            {
                 Ok(result) => Ok(single_success_output(result)),
                 Err(error) => Ok(error_output(error)),
             };
@@ -172,7 +176,11 @@ fn parse_spawn_requests(
                 .filter(|text| !text.is_empty())
                 .is_some()
             {
-                return Ok(vec![parse_one_task(parent_session_id, tool_call_id, input)?]);
+                return Ok(vec![parse_one_task(
+                    parent_session_id,
+                    tool_call_id,
+                    input,
+                )?]);
             }
             return Err(
                 "tasks array must not be empty (or provide top-level description+subagent_type)"
@@ -198,7 +206,11 @@ fn parse_spawn_requests(
         return Ok(out);
     }
 
-    Ok(vec![parse_one_task(parent_session_id, tool_call_id, input)?])
+    Ok(vec![parse_one_task(
+        parent_session_id,
+        tool_call_id,
+        input,
+    )?])
 }
 
 fn parse_one_task(
@@ -273,11 +285,7 @@ fn batch_output(results: Vec<std::result::Result<SubagentSpawnResult, String>>) 
     for (index, result) in results.into_iter().enumerate() {
         match result {
             Ok(item) => {
-                lines.push(format!(
-                    "### Task {}\n{}",
-                    index + 1,
-                    item.summary.trim()
-                ));
+                lines.push(format!("### Task {}\n{}", index + 1, item.summary.trim()));
                 details.push(serde_json::json!({
                     "index": index,
                     "ok": true,
@@ -300,7 +308,10 @@ fn batch_output(results: Vec<std::result::Result<SubagentSpawnResult, String>>) 
     }
     let body = format!(
         "Completed {done}/{total} subagent task(s).\n\n{body}",
-        done = details.iter().filter(|item| item.get("ok") == Some(&Value::Bool(true))).count(),
+        done = details
+            .iter()
+            .filter(|item| item.get("ok") == Some(&Value::Bool(true)))
+            .count(),
         total = total,
         body = lines.join("\n\n")
     );

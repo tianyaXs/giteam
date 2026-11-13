@@ -15,6 +15,7 @@ import {
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
+import { QueueItem } from "../ai-elements/queue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -112,7 +113,7 @@ const EMPTY_DRAFT: DraftForm = {
   sessionMode: "new",
   sessionId: "",
   modelRef: "",
-  thinkingLevel: "auto",
+  thinkingLevel: "off",
   schedulePreset: "daily",
   time: "09:00",
   intervalMinutes: "60",
@@ -147,7 +148,6 @@ function parseModelRef(ref: string): { provider: string | null; model: string | 
 
 function toStoredThinkingLevel(level: AgentThinkingLevel): string | null {
   const normalized = normalizeThinkingLevel(level);
-  if (normalized === "auto") return null;
   if (normalized === "off" || normalized === "none") return "off";
   if (normalized === "max") return "xhigh";
   return normalized;
@@ -270,7 +270,7 @@ function taskToDraft(task: AutomationTask): DraftForm {
     sessionMode: task.sessionMode,
     sessionId: task.sessionId || "",
     modelRef,
-    thinkingLevel: normalizeThinkingLevel(task.thinkingLevel || "auto"),
+    thinkingLevel: normalizeThinkingLevel(task.thinkingLevel || "off"),
     schedulePreset,
     time,
     intervalMinutes,
@@ -1030,7 +1030,7 @@ export function AutomationView(props: Props) {
                   <SectionLabel>运行历史</SectionLabel>
                   <ul className="space-y-1.5">
                     {runs.map((run) => (
-                      <li key={run.id} className="rounded-lg border border-border/60 px-3 py-2 text-sm">
+                      <QueueItem key={run.id} className="border border-border/60 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <RunStatusBadge status={run.status} />
                           <span className="text-xs text-muted-foreground">
@@ -1043,7 +1043,7 @@ export function AutomationView(props: Props) {
                         {run.errorMessage ? (
                           <div className="mt-1 line-clamp-2 text-xs text-destructive">{run.errorMessage}</div>
                         ) : null}
-                      </li>
+                      </QueueItem>
                     ))}
                   </ul>
                 </div>

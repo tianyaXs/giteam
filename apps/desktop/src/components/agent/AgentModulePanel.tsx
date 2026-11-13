@@ -7,6 +7,7 @@ import {
 } from "../../lib/agentSkillData";
 import type { AgentDefinition } from "../../lib/agentDefinitions";
 import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
+import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { AGENT_RECOMMENDED_SKILLS, type AgentSkillSearchResult } from "../../lib/agentSkillMarketplace";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -210,18 +211,25 @@ function PermissionsSection(props: AgentModulePanelProps) {
         <div className="grid gap-2">
           {props.activePermissions.map((req) => {
             const view = describePermissionInteraction(req);
+            // 我们的权限请求只在 pending 阶段渲染(回复后即从列表移除),
+            // 适配为 Confirmation 的 approval-requested 状态。
             return (
-              <Card key={req.id} className="rounded-lg shadow-none">
-                <CardContent className="grid gap-3 p-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.6fr)_auto] md:items-center">
+              <Confirmation
+                key={req.id}
+                approval={{ id: req.id }}
+                state="approval-requested"
+                className="rounded-lg shadow-none"
+              >
+                <div className="grid gap-3 p-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.6fr)_auto] md:items-center">
                   <strong className="truncate text-sm font-semibold">{view.tool}</strong>
                   <code className="truncate rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground">{view.target || "*"}</code>
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</Button>
-                    <Button variant="contrast" size="sm" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</Button>
-                    <Button variant="destructive" size="sm" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</Button>
-                  </div>
-                </CardContent>
-              </Card>
+                  <ConfirmationActions>
+                    <ConfirmationAction variant="outline" size="sm" onClick={() => props.onSendPermissionReply(req.id, "once")}>本次</ConfirmationAction>
+                    <ConfirmationAction variant="contrast" size="sm" onClick={() => props.onSendPermissionReply(req.id, "always")}>总是</ConfirmationAction>
+                    <ConfirmationAction variant="destructive" size="sm" onClick={() => props.onSendPermissionReply(req.id, "reject")}>拒绝</ConfirmationAction>
+                  </ConfirmationActions>
+                </div>
+              </Confirmation>
             );
           })}
         </div>

@@ -1,22 +1,29 @@
 //! 对生产 DB 做与 `/api/v1/graph/*` 等价的 query 层验证，并冒烟新 context/trace。
-use std::path::PathBuf;
 use giteam_core::asset_graph;
+use std::path::PathBuf;
 
 fn main() {
-    let repo = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from("/Users/tianya/Documents/project/test")
-    });
+    let repo = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Users/tianya/Documents/project/test"));
     asset_graph::attach_repo(&repo).expect("attach");
     let graph = asset_graph::attached(&repo).expect("mounted");
     let g = graph.lock().expect("lock");
     let q = g.query();
     let counts = q.counts();
-    println!("[summary] {}", serde_json::to_string_pretty(&counts).unwrap());
+    println!(
+        "[summary] {}",
+        serde_json::to_string_pretty(&counts).unwrap()
+    );
 
     let hits = q.search("sqlite", None, 20);
     println!("[search sqlite] hits={}", hits.len());
     for h in hits.iter().take(8) {
-        println!("  - type={} id={} label={}", h.node_type, h.node_id, h.label);
+        println!(
+            "  - type={} id={} label={}",
+            h.node_type, h.node_id, h.label
+        );
     }
 
     let bundle = q.build_context("sqlite 存储选型");
@@ -74,13 +81,10 @@ fn main() {
         }
     }
 
-    let ok = hits
-        .iter()
-        .any(|h| {
-            (h.node_type == "decision" || h.node_type == "tech_concept")
-                && h.label.to_lowercase().contains("sqlite")
-        })
-        && !bundle.matched_nodes.is_empty();
+    let ok = hits.iter().any(|h| {
+        (h.node_type == "decision" || h.node_type == "tech_concept")
+            && h.label.to_lowercase().contains("sqlite")
+    }) && !bundle.matched_nodes.is_empty();
     if ok {
         println!("[PASS] thickened context + search + optional trace look healthy");
     } else {

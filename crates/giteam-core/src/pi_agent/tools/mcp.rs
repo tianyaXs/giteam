@@ -81,16 +81,19 @@ impl Tool for McpTool {
         input: Value,
         on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
     ) -> Result<ToolOutput> {
-        let mut handle = match self.runtime.store.start_tool_execution(
-            self.spec.instance_id,
-            &self.spec.tool_name,
-            input,
-            None,
-            McpExecutionOptions::default()
-                .with_idle_timeout(MCP_IDLE_TIMEOUT)
-                .with_max_total_timeout(MCP_MAX_TOTAL_TIMEOUT),
-        )
-        .await
+        let mut handle = match self
+            .runtime
+            .store
+            .start_tool_execution(
+                self.spec.instance_id,
+                &self.spec.tool_name,
+                input,
+                None,
+                McpExecutionOptions::default()
+                    .with_idle_timeout(MCP_IDLE_TIMEOUT)
+                    .with_max_total_timeout(MCP_MAX_TOTAL_TIMEOUT),
+            )
+            .await
         {
             Ok(handle) => handle,
             // 服务断开/未连接等：可读错误返回给模型，不打断 run。
@@ -134,8 +137,7 @@ impl McpTool {
             McpToolExecution::Task { task } => {
                 return ToolOutput {
                     content: vec![ContentBlock::Text(TextContent::new(
-                        serde_json::to_string_pretty(&task)
-                            .unwrap_or_else(|_| "{}".to_string()),
+                        serde_json::to_string_pretty(&task).unwrap_or_else(|_| "{}".to_string()),
                     ))],
                     details: Some(serde_json::json!({
                         "kind": "mcp_task",
@@ -151,16 +153,19 @@ impl McpTool {
             .into_iter()
             .map(|item| match item {
                 ContentItem::Text { text, .. } => ContentBlock::Text(TextContent::new(text)),
-                ContentItem::Image { data, mime_type, .. } => {
-                    ContentBlock::Image(ImageContent { data, mime_type })
-                }
+                ContentItem::Image {
+                    data, mime_type, ..
+                } => ContentBlock::Image(ImageContent { data, mime_type }),
                 ContentItem::Resource { resource, .. }
-                | ContentItem::ResourceLink { resource, .. } => ContentBlock::Text(
-                    TextContent::new(serde_json::to_string_pretty(&resource).unwrap_or_else(
-                        |_| "\"(unserializable MCP resource)\"".to_string(),
-                    )),
-                ),
-                ContentItem::Audio { data, mime_type, .. } => {
+                | ContentItem::ResourceLink { resource, .. } => {
+                    ContentBlock::Text(TextContent::new(
+                        serde_json::to_string_pretty(&resource)
+                            .unwrap_or_else(|_| "\"(unserializable MCP resource)\"".to_string()),
+                    ))
+                }
+                ContentItem::Audio {
+                    data, mime_type, ..
+                } => {
                     ContentBlock::Text(TextContent::new(format!(
                         "(MCP audio content: {mime_type}, {} bytes, not displayable)",
                         data.len() / 4 * 3 // base64 → 原始字节近似
@@ -218,8 +223,9 @@ for line in sys.stdin:
         ));
         let repo = base.join("repo");
         std::fs::create_dir_all(&repo).ok()?;
-        let runtime =
-            crate::pi_agent::mcp::load_with_base(&base, &repo).await.ok()?;
+        let runtime = crate::pi_agent::mcp::load_with_base(&base, &repo)
+            .await
+            .ok()?;
         crate::pi_agent::mcp::add_service(
             &runtime,
             &crate::pi_agent::mcp::McpServiceInput {
@@ -235,7 +241,9 @@ for line in sys.stdin:
         )
         .await
         .ok()?;
-        let runtime = crate::pi_agent::mcp::load_with_base(&base, &repo).await.ok()?;
+        let runtime = crate::pi_agent::mcp::load_with_base(&base, &repo)
+            .await
+            .ok()?;
         Some(runtime)
     }
 
@@ -261,11 +269,7 @@ for line in sys.stdin:
         let tool = McpTool::new(spec, Arc::clone(&runtime));
         assert_eq!(tool.name(), "mcp__echo__echo");
         let output = tool
-            .execute(
-                "call-1",
-                serde_json::json!({"text": "hello"}),
-                None,
-            )
+            .execute("call-1", serde_json::json!({"text": "hello"}), None)
             .await
             .expect("execute ok");
         assert!(!output.is_error);

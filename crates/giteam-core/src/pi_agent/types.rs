@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-const PI_SDK_REVISION: &str = "b27abd576cc0d2f39e2eef8f87f7897edec53b4f";#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+const PI_SDK_REVISION: &str = "b27abd576cc0d2f39e2eef8f87f7897edec53b4f";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiRuntimeInfo {
     pub backend: String,

@@ -5,15 +5,19 @@ import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, R
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED, MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 import { UI_ZOOM_RANGE, CODE_FONT_RANGE } from "../../lib/useAppearanceFontSize";
-import { CheckIcon, AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
+import { AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { ButtonGroup } from "../ui/button-group";
 import { Card, CardContent } from "../ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
-import { ScrollArea } from "../ui/scroll-area";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "../ui/item";
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
+import { Slider } from "../ui/slider";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { SegmentedControl } from "../ui/segmented";
 import { Tabs, TabsContent } from "../ui/tabs";
 import { AgentMcpSection } from "../agent/AgentMcpPanel";
@@ -338,7 +342,7 @@ const THEME_PRESETS = {
 function ThemePreview(props: { variant: "light" | "dark" }) {
   const c = THEME_PRESETS[props.variant];
   return (
-    <div className="flex h-full w-full overflow-hidden rounded-[5px]" style={{ background: c.bg }}>
+    <div className="flex h-11 w-full overflow-hidden rounded-[5px]" style={{ background: c.bg }}>
       <div
         className="flex w-[34%] flex-col gap-[3px] px-[5px] pt-[6px]"
         style={{ background: c.sidebar, borderRight: `1px solid ${c.divider}` }}
@@ -367,40 +371,33 @@ function ThemePicker(props: {
     { value: "light", label: props.lightLabel },
     { value: "dark", label: props.darkLabel }
   ];
+  // Official ToggleGroup composition (variant=outline, single): selection
+  // state, focus ring and keyboard semantics are owned by the component;
+  // the card thumbnail stays as aria-hidden preview inside each item.
   return (
-    <div className="flex items-center gap-2">
+    <ToggleGroup
+      type="single"
+      value={props.value}
+      onValueChange={(value) => {
+        if (value === "light" || value === "dark") props.onSelect(value);
+      }}
+      variant="outline"
+    >
       {options.map((option) => {
-        const selected = props.value === option.value;
-        const accent = THEME_PRESETS[option.value].accent;
         return (
-          <button
+          <ToggleGroupItem
             key={option.value}
-            type="button"
-            aria-pressed={selected}
+            value={option.value}
             aria-label={option.label}
             title={option.label}
-            onClick={() => props.onSelect(option.value)}
-            className="relative flex w-[88px] flex-col gap-1 rounded-lg border border-border/70 p-1 outline-none transition-[border-color,box-shadow] hover:border-foreground/40 focus-visible:ring-2 focus-visible:ring-foreground/40"
-            style={selected ? { borderColor: accent, boxShadow: `0 0 0 3px ${accent}33` } : undefined}
+            className="h-auto w-[88px] flex-col gap-1 p-1"
           >
-            <div className="h-[44px] w-full">
-              <ThemePreview variant={option.value} />
-            </div>
-            <span className={cn("text-center text-[11px] leading-[14px]", selected ? "font-semibold text-foreground" : "text-muted-foreground")}>
-              {option.label}
-            </span>
-            {selected ? (
-              <span
-                className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full text-white shadow-[0_1px_3px_rgba(0,0,0,0.3)]"
-                style={{ background: accent }}
-              >
-                <CheckIcon className="size-2.5" />
-              </span>
-            ) : null}
-          </button>
+            <ThemePreview variant={option.value} />
+            <span className="text-[11px] leading-[14px]">{option.label}</span>
+          </ToggleGroupItem>
         );
       })}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -418,54 +415,58 @@ function FontSlider(props: {
   onReset: () => void;
   preview: ReactNode;
 }) {
+  // Official Slider: drag only updates the local draft preview; onValueCommit
+  // (pointer release / keyboard release) applies to the app, keeping the drag
+  // smooth without re-rendering the whole sections tree.
   return (
     <div className="flex flex-col gap-2.5 rounded-lg border border-border/70 bg-card/40 p-3">
       <div className="flex items-center justify-between gap-3">
         <strong className="text-sm font-semibold text-foreground">{props.label}</strong>
-        <div className="inline-flex items-center gap-0.5 rounded-md bg-muted/40 p-0.5">
+        <ButtonGroup className="bg-muted/40 p-0.5 shadow-none">
           {props.presets.map((preset) => {
             const active = props.value === preset.value;
             return (
-              <button
+              <Button
                 key={preset.value}
                 type="button"
+                variant="ghost"
                 onClick={() => { props.onChange(preset.value); props.onCommit(preset.value); }}
                 className={cn(
-                  "rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
-                  active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  "h-5 rounded px-2 py-0 text-[11px] font-medium",
+                  active ? "bg-background text-foreground shadow-sm hover:bg-background hover:text-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
               >
                 {preset.label}
-              </button>
+              </Button>
             );
           })}
-        </div>
+        </ButtonGroup>
       </div>
       <div className="flex items-center gap-3">
-        <input
-          type="range"
-          className="gt-range flex-1"
+        <Slider
+          className="flex-1"
           min={props.min}
           max={props.max}
           step={props.step}
-          value={props.value}
-          onChange={(event) => props.onChange(Number(event.target.value))}
-          onPointerUp={(event) => props.onCommit(Number(event.currentTarget.value))}
-          onKeyUp={(event) => props.onCommit(Number(event.currentTarget.value))}
+          value={[props.value]}
+          onValueChange={(values) => props.onChange(values[0])}
+          onValueCommit={(values) => props.onCommit(values[0])}
           aria-label={props.label}
         />
         <span className="w-12 shrink-0 text-right font-mono text-[12px] tabular-nums text-muted-foreground">
           {props.format(props.value)}
         </span>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           onClick={props.onReset}
           title={props.resetLabel}
           aria-label={props.resetLabel}
-          className="rounded-md p-1 text-muted-foreground outline-none transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/40"
+          className="size-5 rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground [&_svg]:size-3.5"
         >
-          <RefreshIcon className="size-3.5" />
-        </button>
+          <RefreshIcon />
+        </Button>
       </div>
       {props.preview}
     </div>
@@ -595,29 +596,36 @@ function FontSizeSection(props: {
 }
 
 function SettingsRows(props: { entries: Array<SettingsEntry> }) {
+  // Official Item composition: title/description/actions with focus-visible
+  // and hover states owned by the component (no per-row grid overrides).
   return (
-    <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
-      <CardContent className="p-0">
-        {props.entries.map((entry) => (
-          <article key={entry.title} className="grid min-h-[64px] grid-cols-[minmax(0,1fr)_auto] items-center gap-6 border-b border-border/70 px-4 py-3 last:border-b-0">
-            <div className="min-w-0">
-              <strong className="block text-sm font-semibold leading-6 text-foreground">{entry.title}</strong>
-              <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">{entry.description}</p>
-            </div>
-            <div className="flex min-w-40 items-center justify-end gap-2">{entry.action}</div>
-          </article>
-        ))}
-      </CardContent>
-    </Card>
+    <div className="flex flex-col overflow-hidden rounded-lg border border-border/80 bg-card">
+      {props.entries.map((entry, index) => (
+        <Item
+          key={entry.title}
+          variant="outline"
+          className={cn(
+            "gap-6 rounded-none border-0 border-b px-4 py-3 last:border-b-0",
+            index > 0 && "border-t-0"
+          )}
+        >
+          <ItemContent className="min-w-0 gap-0.5">
+            <ItemTitle className="leading-6 font-semibold">{entry.title}</ItemTitle>
+            <ItemDescription className="text-[13px] leading-5">{entry.description}</ItemDescription>
+          </ItemContent>
+          <ItemActions className="min-w-40 justify-end">{entry.action}</ItemActions>
+        </Item>
+      ))}
+    </div>
   );
 }
 
 function SettingsGroup(props: { title: string; entries: Array<SettingsEntry>; wide?: boolean }) {
   return (
-    <section className={cn("flex flex-col gap-2.5", props.wide ? "w-full" : undefined)}>
+    <ItemGroup className={cn("gap-2.5", props.wide ? "w-full" : undefined)}>
       <div className="px-1 text-sm font-medium text-muted-foreground">{props.title}</div>
       <SettingsRows entries={props.entries} />
-    </section>
+    </ItemGroup>
   );
 }
 
@@ -1646,55 +1654,54 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <span className="text-sm leading-5 font-medium">返回应用</span>
           </Button>
         </div>
-        <ScrollArea className="min-h-0">
-          <div className="flex flex-col gap-0.5">
+        <div className="gt-subtle-scrollbar min-h-0 overflow-y-auto">
+          <SidebarMenu className="gap-0.5">
             {sections.map((section) => {
               const Icon = SETTINGS_SECTION_ICONS[section.id];
               return (
-                <Button
-                  key={section.id}
-                  variant="ghost"
-                  className={cn(
-                    "h-8 w-full justify-start gap-2.5 rounded-lg px-3 font-normal text-sidebar-foreground/76 transition-[background-color,color,box-shadow] hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] hover:text-sidebar-foreground [&_svg]:size-4",
-                    activeSection === section.id && "bg-[color-mix(in_srgb,#8f8270_16%,var(--bg)_84%)] text-sidebar-foreground shadow-none hover:bg-[color-mix(in_srgb,#8f8270_18%,var(--bg)_82%)]"
-                  )}
-                  onClick={() => setActiveSection(section.id)}
-                >
-                  <Icon className="shrink-0" />
-                  <span className="truncate text-sm leading-5 font-medium">{section.title}</span>
-                </Button>
+                <SidebarMenuItem key={section.id}>
+                  <SidebarMenuButton
+                    isActive={activeSection === section.id}
+                    onClick={() => setActiveSection(section.id)}
+                    className={cn(
+                      "h-8 gap-2.5 rounded-lg px-3 font-medium text-sidebar-foreground/76 hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] hover:text-sidebar-foreground [&_svg]:size-4",
+                      activeSection === section.id && "bg-[color-mix(in_srgb,#8f8270_16%,var(--bg)_84%)] text-sidebar-foreground hover:bg-[color-mix(in_srgb,#8f8270_18%,var(--bg)_82%)]"
+                    )}
+                  >
+                    <Icon className="shrink-0" />
+                    <span className="truncate text-sm leading-5 font-medium">{section.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               );
             })}
-          </div>
-        </ScrollArea>
+          </SidebarMenu>
+        </div>
       </aside>
 
-      <section className="min-h-0 bg-background">
-        <ScrollArea className="h-full min-h-0">
-          <div
-            className={cn(
-              "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
-              active.id === "models" || active.id === "mobile"
-                ? "max-w-[1120px]"
-                : active.id === "plugins"
-                  ? "max-w-[760px]"
-                  : "max-w-[680px]"
-            )}
-          >
-            {active.title && !active.embedHeader ? (
-              <header className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
-                  {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
-                </div>
-              </header>
-            ) : null}
-            <div className="flex flex-col gap-6">
-              {active.content ? active.content : null}
-              {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
-            </div>
+      <section className="gt-subtle-scrollbar min-h-0 overflow-y-auto bg-background">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
+            active.id === "models" || active.id === "mobile"
+              ? "max-w-[1120px]"
+              : active.id === "plugins"
+                ? "max-w-[760px]"
+                : "max-w-[680px]"
+          )}
+        >
+          {active.title && !active.embedHeader ? (
+            <header className="flex items-center justify-between gap-4">
+              <div>
+                <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
+                {active.description ? <p className="mt-3 text-sm leading-6 text-muted-foreground">{active.description}</p> : null}
+              </div>
+            </header>
+          ) : null}
+          <div className="flex flex-col gap-6">
+            {active.content ? active.content : null}
+            {active.entries?.length ? <SettingsRows entries={active.entries} /> : null}
           </div>
-        </ScrollArea>
+        </div>
       </section>
     </div>,
     document.body

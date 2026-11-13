@@ -251,13 +251,15 @@ impl<'a> GraphQuery<'a> {
             return Vec::new();
         };
         let mut seen = std::collections::HashSet::new();
-        stmt.query_map([edge_type, target_type, session_id], |row| row.get::<_, String>(0))
-            .map(|rows| {
-                rows.filter_map(std::result::Result::ok)
-                    .filter(|label| seen.insert(label.clone()))
-                    .collect()
-            })
-            .unwrap_or_default()
+        stmt.query_map([edge_type, target_type, session_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map(|rows| {
+            rows.filter_map(std::result::Result::ok)
+                .filter(|label| seen.insert(label.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// 会话内未闭环错误（failed_with 无 resolved_by）。
@@ -365,7 +367,11 @@ impl<'a> GraphQuery<'a> {
             return Vec::new();
         };
         // LIKE 用指纹前段（数字已抹平）做宽松匹配。
-        let prefix: String = fingerprint.chars().take(40).collect::<String>().replace('%', "");
+        let prefix: String = fingerprint
+            .chars()
+            .take(40)
+            .collect::<String>()
+            .replace('%', "");
         let pattern = format!("%{prefix}%");
         let rows: Vec<(String, String, String, i64)> = stmt
             .query_map([&pattern], |row| {
@@ -374,16 +380,18 @@ impl<'a> GraphQuery<'a> {
             .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             .unwrap_or_default();
         rows.into_iter()
-            .map(|(error_label, resolved_by_label, session_id, timestamp_ms)| {
-                let (session_key, intent) = self.session_intent(&session_id);
-                PrecedentHit {
-                    error_label,
-                    resolved_by_label,
-                    session_key,
-                    intent,
-                    timestamp_ms,
-                }
-            })
+            .map(
+                |(error_label, resolved_by_label, session_id, timestamp_ms)| {
+                    let (session_key, intent) = self.session_intent(&session_id);
+                    PrecedentHit {
+                        error_label,
+                        resolved_by_label,
+                        session_key,
+                        intent,
+                        timestamp_ms,
+                    }
+                },
+            )
             .collect()
     }
 
@@ -415,14 +423,16 @@ impl<'a> GraphQuery<'a> {
                     .to_string(),
             };
             if let Ok(mut stmt) = self.db.prepare(&sql) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![fts_query, fetch as i64], |row| {
-                    Ok(NodeHit {
-                        node_id: row.get(0)?,
-                        node_type: row.get(1)?,
-                        label: row.get(2)?,
-                        last_seen_ms: row.get(3)?,
+                if let Ok(rows) =
+                    stmt.query_map(rusqlite::params![fts_query, fetch as i64], |row| {
+                        Ok(NodeHit {
+                            node_id: row.get(0)?,
+                            node_type: row.get(1)?,
+                            label: row.get(2)?,
+                            last_seen_ms: row.get(3)?,
+                        })
                     })
-                }) {
+                {
                     hits.extend(rows.filter_map(std::result::Result::ok));
                 }
             }
@@ -461,7 +471,6 @@ impl<'a> GraphQuery<'a> {
             }
         }
 
-        
         // 会话/轮次展示名：用 props.intent 覆盖占位 label（与 compact 视图一致）。
         for hit in &mut hits {
             if hit.node_type == "session" || hit.node_type == "turn" {
@@ -484,9 +493,7 @@ impl<'a> GraphQuery<'a> {
             let sb = search_hit_score(b, trimmed, &anchors, &query_terms);
             sb.partial_cmp(&sa)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    search_type_rank(&a.node_type).cmp(&search_type_rank(&b.node_type))
-                })
+                .then_with(|| search_type_rank(&a.node_type).cmp(&search_type_rank(&b.node_type)))
                 .then_with(|| b.last_seen_ms.cmp(&a.last_seen_ms))
         });
         hits.dedup_by(|a, b| a.node_id == b.node_id);
@@ -540,13 +547,13 @@ impl<'a> GraphQuery<'a> {
         let anchor_ids: Vec<String> = hits.iter().map(|h| h.node_id.clone()).collect();
         let neighbors = self.neighbors_of(&anchor_ids, 24);
         let mut open_loops = self.open_loops(8);
-        let hit_labels: std::collections::HashSet<String> = hits
-            .iter()
-            .map(|h| h.label.to_ascii_lowercase())
-            .collect();
+        let hit_labels: std::collections::HashSet<String> =
+            hits.iter().map(|h| h.label.to_ascii_lowercase()).collect();
         open_loops.sort_by_key(|loop_hit| {
             let needle = loop_hit.label.to_ascii_lowercase();
-            let related = hit_labels.iter().any(|l| l.contains(&needle) || needle.contains(l));
+            let related = hit_labels
+                .iter()
+                .any(|l| l.contains(&needle) || needle.contains(l));
             (!related, loop_hit.label.clone())
         });
         open_loops.truncate(8);
@@ -727,10 +734,7 @@ impl<'a> GraphQuery<'a> {
             return Vec::new();
         };
         if start_id == goal_id {
-            return self
-                .node_as_hop(&start_id, None)
-                .into_iter()
-                .collect();
+            return self.node_as_hop(&start_id, None).into_iter().collect();
         }
 
         use std::collections::{HashMap, HashSet, VecDeque};
@@ -886,9 +890,10 @@ impl<'a> GraphQuery<'a> {
     /// 被取代的语义节点集合（存在 sem/superseded_by 出边 = 已有更新决策）。
     #[allow(dead_code)]
     fn superseded_node_ids(&self) -> std::collections::HashSet<String> {
-        let Ok(mut stmt) = self.db.prepare(
-            "SELECT DISTINCT src_id FROM edges WHERE type = 'sem/superseded_by'",
-        ) else {
+        let Ok(mut stmt) = self
+            .db
+            .prepare("SELECT DISTINCT src_id FROM edges WHERE type = 'sem/superseded_by'")
+        else {
             return std::collections::HashSet::new();
         };
         stmt.query_map([], |row| row.get::<_, String>(0))
@@ -978,12 +983,7 @@ impl<'a> GraphQuery<'a> {
         };
         let rows: Vec<(String, String, String, i64)> = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map(|rows| rows.filter_map(std::result::Result::ok).collect())
             .unwrap_or_default();
@@ -1098,7 +1098,9 @@ impl<'a> GraphQuery<'a> {
         // 时间过滤：非中心节点按 last_seen_ms 落在区间内才保留
         // （BFS 展开不过滤——邻居的时间不应截断遍历路径，只影响最终渲染集）。
         if let Some((from, to)) = range {
-            nodes.retain(|n| n.node_id == center_row || (n.last_seen_ms >= from && n.last_seen_ms <= to));
+            nodes.retain(|n| {
+                n.node_id == center_row || (n.last_seen_ms >= from && n.last_seen_ms <= to)
+            });
         }
         // 下钻视图去噪：丢掉无正文的 message（历史空 Tool/流式占位），
         // turn 若仍是裸 "turn N" 则用 props.intent 补标签。
@@ -1537,7 +1539,11 @@ impl<'a> GraphQuery<'a> {
             "#,
         ) {
             if let Ok(rows) = stmt.query_map(rusqlite::params![from, to], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             }) {
                 for (src, dst, ts) in rows.flatten() {
                     if id_set.contains(src.as_str()) && id_set.contains(dst.as_str()) {
@@ -1755,7 +1761,11 @@ impl<'a> GraphQuery<'a> {
                 std::collections::HashMap::new();
             let mut deduped: Vec<SubgraphEdge> = Vec::with_capacity(edges.len());
             for edge in edges {
-                let key = (edge.src_id.clone(), edge.dst_id.clone(), edge.edge_type.clone());
+                let key = (
+                    edge.src_id.clone(),
+                    edge.dst_id.clone(),
+                    edge.edge_type.clone(),
+                );
                 if let Some(&pos) = seen.get(&key) {
                     if edge.timestamp_ms > deduped[pos].timestamp_ms {
                         deduped[pos].timestamp_ms = edge.timestamp_ms;
@@ -1825,7 +1835,9 @@ impl<'a> GraphQuery<'a> {
             let mut params: Vec<&dyn rusqlite::ToSql> =
                 chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
             params.extend(chunk.iter().map(|id| id as &dyn rusqlite::ToSql));
-            let Ok(mut stmt) = self.db.prepare(&sql) else { continue };
+            let Ok(mut stmt) = self.db.prepare(&sql) else {
+                continue;
+            };
             let mapped = stmt.query_map(params.as_slice(), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1909,9 +1921,10 @@ impl<'a> GraphQuery<'a> {
         }
         // 精确统计同组：拉同 type 后在内存归一化比对（SQLite 无 Unicode fold）。
         let mut same = 0i64;
-        if let Ok(mut stmt) = self.db.prepare(
-            "SELECT label FROM nodes WHERE type = 'session'",
-        ) {
+        if let Ok(mut stmt) = self
+            .db
+            .prepare("SELECT label FROM nodes WHERE type = 'session'")
+        {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
                 for other in rows.flatten() {
                     if is_extraction_noise_label(&other) {
@@ -1938,11 +1951,12 @@ impl<'a> GraphQuery<'a> {
         if trimmed.is_empty() {
             return None;
         }
-        if let Ok(id) = self.db.query_row(
-            "SELECT id FROM nodes WHERE id = ?1",
-            [trimmed],
-            |row| row.get::<_, String>(0),
-        ) {
+        if let Ok(id) = self
+            .db
+            .query_row("SELECT id FROM nodes WHERE id = ?1", [trimmed], |row| {
+                row.get::<_, String>(0)
+            })
+        {
             return Some(id);
         }
         if let Ok(id) = self.db.query_row(
@@ -2011,7 +2025,13 @@ impl<'a> GraphQuery<'a> {
             } else {
                 format!(
                     "；产出 {}",
-                    session.commits.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+                    session
+                        .commits
+                        .iter()
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             };
             let pending = if session.unresolved_errors.is_empty() {
@@ -2041,8 +2061,10 @@ impl<'a> GraphQuery<'a> {
         if lines.is_empty() {
             return String::new();
         }
-        let mut digest =
-            format!("## 仓库近期变更上下文（来自记忆，其他会话的记录）\n{}", lines.join("\n"));
+        let mut digest = format!(
+            "## 仓库近期变更上下文（来自记忆，其他会话的记录）\n{}",
+            lines.join("\n")
+        );
         const BUDGET: usize = 2 * 1024;
         if digest.len() > BUDGET {
             let mut end = BUDGET;
@@ -2061,10 +2083,7 @@ fn token_set(text: &str) -> std::collections::HashSet<String> {
     const STOP: [&str; 12] = [
         "the", "a", "an", "of", "to", "in", "for", "and", "or", "is", "这", "的",
     ];
-    fn flush_cjk(
-        run: &mut Vec<char>,
-        out: &mut std::collections::HashSet<String>,
-    ) {
+    fn flush_cjk(run: &mut Vec<char>, out: &mut std::collections::HashSet<String>) {
         if run.len() >= 2 {
             for pair in run.windows(2) {
                 out.insert(pair.iter().collect::<String>());
@@ -2135,7 +2154,11 @@ fn age_label(timestamp_ms: i64) -> String {
 fn sanitize_fts(text: &str) -> String {
     let terms: Vec<String> = text
         .split_whitespace()
-        .map(|term| term.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .map(|term| {
+            term.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|term: &String| !term.is_empty())
         .take(4)
         .collect();
@@ -2159,7 +2182,9 @@ fn extract_search_anchors(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let push = |s: &str, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>| {
-        let t = s.trim().trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '"' | '\''));
+        let t = s
+            .trim()
+            .trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '"' | '\''));
         if t.len() < 2 {
             return;
         }
@@ -2215,8 +2240,8 @@ fn regex_lite_anchors(text: &str) -> Vec<String> {
             }
             let lower = t.to_ascii_lowercase();
             const STOP: &[&str] = &[
-                "the", "and", "for", "with", "from", "this", "that", "into", "over",
-                "refactor", "module", "please", "fix", "bug",
+                "the", "and", "for", "with", "from", "this", "that", "into", "over", "refactor",
+                "module", "please", "fix", "bug",
             ];
             if STOP.contains(&lower.as_str()) {
                 return false;
@@ -2367,8 +2392,8 @@ fn session_props_quality_is_low(props: &str) -> bool {
 
 /// 总览里会话节点标为卫星（实体为主、会话环绕）。
 fn mark_session_satellite_props(props: &mut String) {
-    let mut value = serde_json::from_str::<serde_json::Value>(props)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let mut value =
+        serde_json::from_str::<serde_json::Value>(props).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(obj) = value.as_object_mut() {
         obj.insert("role".into(), serde_json::json!("satellite"));
     }
@@ -2388,10 +2413,7 @@ fn looks_like_opaque_id(label: &str) -> bool {
         return true;
     }
     // 纯 hex 6..=32
-    if lower.len() >= 6
-        && lower.len() <= 32
-        && lower.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if lower.len() >= 6 && lower.len() <= 32 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
         return true;
     }
     // sess/session/run/... 前缀 + hex
@@ -2522,8 +2544,18 @@ mod tests {
 
         // 会话 A：改 login.rs，产出提交。
         let mut a = SessionAccumulator::new("/repo", "sess-a", "run-a");
-        a.ingest(&env(1, "sess-a", "run-a", AgentEvent::TurnStarted { index: 0 }));
-        a.ingest(&env(2, "sess-a", "run-a", message("m1", AgentRole::User, "重构登录模块")));
+        a.ingest(&env(
+            1,
+            "sess-a",
+            "run-a",
+            AgentEvent::TurnStarted { index: 0 },
+        ));
+        a.ingest(&env(
+            2,
+            "sess-a",
+            "run-a",
+            message("m1", AgentRole::User, "重构登录模块"),
+        ));
         a.ingest(&env(
             3,
             "sess-a",
@@ -2566,13 +2598,28 @@ mod tests {
                 is_error: false,
             },
         ));
-        a.ingest(&env(7, "sess-a", "run-a", AgentEvent::TurnCompleted { index: 0 }));
+        a.ingest(&env(
+            7,
+            "sess-a",
+            "run-a",
+            AgentEvent::TurnCompleted { index: 0 },
+        ));
         store::write_batch(&db, &a.take_batch()).unwrap();
 
         // 会话 B：构建失败 → 修复（resolved_by 链）。
         let mut b = SessionAccumulator::new("/repo", "sess-b", "run-b");
-        b.ingest(&env(1, "sess-b", "run-b", AgentEvent::TurnStarted { index: 0 }));
-        b.ingest(&env(2, "sess-b", "run-b", message("m2", AgentRole::User, "修构建失败")));
+        b.ingest(&env(
+            1,
+            "sess-b",
+            "run-b",
+            AgentEvent::TurnStarted { index: 0 },
+        ));
+        b.ingest(&env(
+            2,
+            "sess-b",
+            "run-b",
+            message("m2", AgentRole::User, "修构建失败"),
+        ));
         b.ingest(&env(
             3,
             "sess-b",
@@ -2615,7 +2662,12 @@ mod tests {
                 is_error: false,
             },
         ));
-        b.ingest(&env(7, "sess-b", "run-b", AgentEvent::TurnCompleted { index: 0 }));
+        b.ingest(&env(
+            7,
+            "sess-b",
+            "run-b",
+            AgentEvent::TurnCompleted { index: 0 },
+        ));
         store::write_batch(&db, &b.take_batch()).unwrap();
         (dir, db)
     }
@@ -2680,8 +2732,18 @@ mod tests {
         let (dir, db) = seeded();
         // 会话 C：失败且未修复。
         let mut c = SessionAccumulator::new("/repo", "sess-c", "run-c");
-        c.ingest(&env(1, "sess-c", "run-c", AgentEvent::TurnStarted { index: 0 }));
-        c.ingest(&env(2, "sess-c", "run-c", message("m3", AgentRole::User, "加个功能")));
+        c.ingest(&env(
+            1,
+            "sess-c",
+            "run-c",
+            AgentEvent::TurnStarted { index: 0 },
+        ));
+        c.ingest(&env(
+            2,
+            "sess-c",
+            "run-c",
+            message("m3", AgentRole::User, "加个功能"),
+        ));
         c.ingest(&env(
             3,
             "sess-c",
@@ -2703,7 +2765,12 @@ mod tests {
                 is_error: true,
             },
         ));
-        c.ingest(&env(5, "sess-c", "run-c", AgentEvent::TurnCompleted { index: 0 }));
+        c.ingest(&env(
+            5,
+            "sess-c",
+            "run-c",
+            AgentEvent::TurnCompleted { index: 0 },
+        ));
         store::write_batch(&db, &c.take_batch()).unwrap();
 
         let q = GraphQuery::new(&db);
@@ -2734,7 +2801,10 @@ mod tests {
         assert_eq!(view.nodes.len() >= 2, true, "nodes: {}", view.nodes.len());
         let types: Vec<&str> = view.nodes.iter().map(|n| n.node_type.as_str()).collect();
         assert!(types.contains(&"file"), "{types:?}");
-        assert!(types.contains(&"tool_call") || types.contains(&"session"), "{types:?}");
+        assert!(
+            types.contains(&"tool_call") || types.contains(&"session"),
+            "{types:?}"
+        );
         assert!(!view.edges.is_empty());
         // 全部边端点都在节点集内。
         let ids: std::collections::HashSet<&str> =
@@ -2757,9 +2827,19 @@ mod tests {
         let types: std::collections::HashSet<&str> =
             view.nodes.iter().map(|n| n.node_type.as_str()).collect();
         for excluded in [
-            "run", "turn", "message", "tool_call", "command", "file", "error", "commit",
+            "run",
+            "turn",
+            "message",
+            "tool_call",
+            "command",
+            "file",
+            "error",
+            "commit",
         ] {
-            assert!(!types.contains(excluded), "{excluded} should not be in entity-first outer layer");
+            assert!(
+                !types.contains(excluded),
+                "{excluded} should not be in entity-first outer layer"
+            );
         }
         let edge_types: Vec<&str> = view.edges.iter().map(|e| e.edge_type.as_str()).collect();
         assert!(!edge_types.contains(&"used_tool"));
@@ -2802,9 +2882,13 @@ mod tests {
             timestamp_ms: ts,
         }];
         let mut edges = Vec::new();
-        for (i, (sid, label)) in [("sess-h1", "你好"), ("sess-h2", "你好"), ("sess-h3", "你好")]
-            .into_iter()
-            .enumerate()
+        for (i, (sid, label)) in [
+            ("sess-h1", "你好"),
+            ("sess-h2", "你好"),
+            ("sess-h3", "你好"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let session_key = sid.to_string();
             let turn_key = format!("{sid}/turn/0");
@@ -2850,7 +2934,7 @@ mod tests {
             });
         }
         store::write_batch(&db, &FactBatch { nodes, edges }).unwrap();
-                let q = GraphQuery::new(&db);
+        let q = GraphQuery::new(&db);
         let view = q.full_graph(1000);
         let groups: Vec<&SubgraphNode> = view
             .nodes
@@ -2860,7 +2944,11 @@ mod tests {
         assert_eq!(groups.len(), 1, "expected exactly one group: {groups:?}");
         // 展示名优先 props.intent（「打招呼」），而非原始 label「你好」。
         assert!(groups[0].label.starts_with("打招呼"), "{}", groups[0].label);
-        assert!(!groups[0].label.contains('×'), "label should not show ×N: {}", groups[0].label);
+        assert!(
+            !groups[0].label.contains('×'),
+            "label should not show ×N: {}",
+            groups[0].label
+        );
         let count = serde_json::from_str::<serde_json::Value>(&groups[0].props)
             .ok()
             .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
@@ -2870,12 +2958,15 @@ mod tests {
         let member_session_count = view
             .nodes
             .iter()
-            .filter(|n| {
-                n.node_type == "session" && !n.node_id.starts_with(SESSION_GROUP_PREFIX)
-            })
+            .filter(|n| n.node_type == "session" && !n.node_id.starts_with(SESSION_GROUP_PREFIX))
             .count();
         // 外层只保留挂实体的会话；seeded 无实体会话不进 compact，组外 session 应为 0。
-        assert_eq!(member_session_count, 0, "nodes: {:?}", view.nodes.iter().map(|n| &n.label).collect::<Vec<_>>());
+        assert_eq!(
+            member_session_count,
+            0,
+            "nodes: {:?}",
+            view.nodes.iter().map(|n| &n.label).collect::<Vec<_>>()
+        );
         let _ = dir;
     }
 
@@ -2886,7 +2977,12 @@ mod tests {
         for (sid, with_tool) in [("sess-h1", true), ("sess-h2", false)] {
             let mut h = SessionAccumulator::new("/repo", sid, "run-h");
             h.ingest(&env(1, sid, "run-h", AgentEvent::TurnStarted { index: 0 }));
-            h.ingest(&env(2, sid, "run-h", message("m-h", AgentRole::User, "查一下天气")));
+            h.ingest(&env(
+                2,
+                sid,
+                "run-h",
+                message("m-h", AgentRole::User, "查一下天气"),
+            ));
             if with_tool {
                 h.ingest(&env(
                     3,
@@ -2899,7 +2995,12 @@ mod tests {
                     },
                 ));
             }
-            h.ingest(&env(4, sid, "run-h", AgentEvent::TurnCompleted { index: 0 }));
+            h.ingest(&env(
+                4,
+                sid,
+                "run-h",
+                AgentEvent::TurnCompleted { index: 0 },
+            ));
             store::write_batch(&db, &h.take_batch()).unwrap();
         }
         let q = GraphQuery::new(&db);
@@ -2911,7 +3012,12 @@ mod tests {
             .iter()
             .filter(|n| n.node_type == "session" && n.node_id != group_id)
             .count();
-        assert_eq!(member_count, 2, "nodes: {:?}", view.nodes.iter().map(|n| &n.label).collect::<Vec<_>>());
+        assert_eq!(
+            member_count,
+            2,
+            "nodes: {:?}",
+            view.nodes.iter().map(|n| &n.label).collect::<Vec<_>>()
+        );
         assert!(view.edges.iter().any(|e| e.edge_type == "member_of"));
         // 有工具动作的成员把文件资产带进展开视图。
         assert!(view.nodes.iter().any(|n| n.label == "src/weather.rs"));
@@ -2955,7 +3061,10 @@ mod tests {
         assert!(
             !view.nodes.iter().any(|n| n.node_type == "session"),
             "entityless low-quality session must not appear in compact: {:?}",
-            view.nodes.iter().map(|n| (&n.node_type, &n.label)).collect::<Vec<_>>()
+            view.nodes
+                .iter()
+                .map(|n| (&n.node_type, &n.label))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3074,7 +3183,8 @@ mod tests {
         let q = GraphQuery::new(&db);
         let hits = q.search("refactor login.rs module", None, 10);
         assert!(
-            hits.iter().any(|h| h.label.contains("login.rs") || h.node_type == "file"),
+            hits.iter()
+                .any(|h| h.label.contains("login.rs") || h.node_type == "file"),
             "path anchor should surface file: {:?}",
             hits
         );
@@ -3086,13 +3196,10 @@ mod tests {
         let _ = dir;
         let q = GraphQuery::new(&db);
         let hops = q.trace_path("重构登录模块", "login.rs", 6);
+        assert!(hops.len() >= 2, "expected multi-hop path, got {:?}", hops);
         assert!(
-            hops.len() >= 2,
-            "expected multi-hop path, got {:?}",
-            hops
-        );
-        assert!(
-            hops.iter().any(|h| h.label.contains("login") || h.node_type == "file"),
+            hops.iter()
+                .any(|h| h.label.contains("login") || h.node_type == "file"),
             "path should include file hop: {:?}",
             hops
         );
@@ -3178,7 +3285,11 @@ mod tests {
                 .iter()
                 .any(|h| h.label.contains("SQLite")),
             "active fact should remain: {:?}",
-            active.matched_nodes.iter().map(|h| &h.label).collect::<Vec<_>>()
+            active
+                .matched_nodes
+                .iter()
+                .map(|h| &h.label)
+                .collect::<Vec<_>>()
         );
 
         let superseded = q.build_context("LevelDB");
@@ -3188,14 +3299,22 @@ mod tests {
                 .iter()
                 .all(|h| !h.label.contains("LevelDB")),
             "superseded fact should be filtered: {:?}",
-            superseded.matched_nodes.iter().map(|h| &h.label).collect::<Vec<_>>()
+            superseded
+                .matched_nodes
+                .iter()
+                .map(|h| &h.label)
+                .collect::<Vec<_>>()
         );
 
         let closed = q.build_context("找钥匙");
         assert!(
             closed.matched_nodes.iter().all(|h| h.label != "找钥匙"),
             "closed open_task should be filtered: {:?}",
-            closed.matched_nodes.iter().map(|h| &h.label).collect::<Vec<_>>()
+            closed
+                .matched_nodes
+                .iter()
+                .map(|h| &h.label)
+                .collect::<Vec<_>>()
         );
         let _ = dir;
     }

@@ -152,7 +152,8 @@ pub fn compute_layout(node_count: usize, edges: &[[u32; 2]], options: LayoutOpti
         // 2) 均匀网格（counting sort，复用分配）。
         let span_x = (max_x - min_x).max(1.0);
         let span_y = (max_y - min_y).max(1.0);
-        let cell = CUTOFF.max(span_x / GRID_MAX_CELLS_PER_AXIS as f32)
+        let cell = CUTOFF
+            .max(span_x / GRID_MAX_CELLS_PER_AXIS as f32)
             .max(span_y / GRID_MAX_CELLS_PER_AXIS as f32);
         let grid_w = ((span_x / cell).ceil() as u32).clamp(1, GRID_MAX_CELLS_PER_AXIS);
         let grid_h = ((span_y / cell).ceil() as u32).clamp(1, GRID_MAX_CELLS_PER_AXIS);
@@ -229,8 +230,7 @@ pub fn compute_layout(node_count: usize, edges: &[[u32; 2]], options: LayoutOpti
                                     if j == i {
                                         continue;
                                     }
-                                    let (ox, oy) =
-                                        (current_ref[j * 2], current_ref[j * 2 + 1]);
+                                    let (ox, oy) = (current_ref[j * 2], current_ref[j * 2 + 1]);
                                     let (dx, dy) = (x - ox, y - oy);
                                     let d2 = dx * dx + dy * dy;
                                     if d2 >= cutoff_sq {
@@ -362,22 +362,37 @@ mod tests {
     use super::*;
 
     fn ring(node_count: u32) -> Vec<[u32; 2]> {
-        (0..node_count)
-            .map(|i| [i, (i + 1) % node_count])
-            .collect()
+        (0..node_count).map(|i| [i, (i + 1) % node_count]).collect()
     }
 
     #[test]
     fn empty_and_single() {
         assert!(compute_layout(0, &[], LayoutOptions::default()).is_empty());
-        assert_eq!(compute_layout(1, &[], LayoutOptions::default()), vec![0.0, 0.0]);
+        assert_eq!(
+            compute_layout(1, &[], LayoutOptions::default()),
+            vec![0.0, 0.0]
+        );
     }
 
     #[test]
     fn deterministic_and_finite() {
         let edges = ring(64);
-        let a = compute_layout(64, &edges, LayoutOptions { iterations: 40, ..Default::default() });
-        let b = compute_layout(64, &edges, LayoutOptions { iterations: 40, ..Default::default() });
+        let a = compute_layout(
+            64,
+            &edges,
+            LayoutOptions {
+                iterations: 40,
+                ..Default::default()
+            },
+        );
+        let b = compute_layout(
+            64,
+            &edges,
+            LayoutOptions {
+                iterations: 40,
+                ..Default::default()
+            },
+        );
         assert_eq!(a.len(), 128);
         assert_eq!(a, b, "同拓扑同参数必须得到相同布局");
         assert!(a.iter().all(|v| v.is_finite()));
@@ -388,7 +403,14 @@ mod tests {
         // 环上相邻点收敛后应显著近于环上对径点：布局确实「成团」。
         let n = 120usize;
         let edges: Vec<[u32; 2]> = (0..n as u32).map(|i| [i, (i + 1) % n as u32]).collect();
-        let pos = compute_layout(n, &edges, LayoutOptions { iterations: 150, ..Default::default() });
+        let pos = compute_layout(
+            n,
+            &edges,
+            LayoutOptions {
+                iterations: 150,
+                ..Default::default()
+            },
+        );
         let dist = |a: usize, b: usize| {
             ((pos[a * 2] - pos[b * 2]).powi(2) + (pos[a * 2 + 1] - pos[b * 2 + 1]).powi(2)).sqrt()
         };
@@ -402,8 +424,14 @@ mod tests {
 
     #[test]
     fn fingerprint_reflects_topology() {
-        assert_ne!(layout_fingerprint(3, &[[0, 1]]), layout_fingerprint(3, &[[0, 2]]));
-        assert_eq!(layout_fingerprint(3, &[[0, 1], [1, 2]]), layout_fingerprint(3, &[[0, 1], [1, 2]]));
+        assert_ne!(
+            layout_fingerprint(3, &[[0, 1]]),
+            layout_fingerprint(3, &[[0, 2]])
+        );
+        assert_eq!(
+            layout_fingerprint(3, &[[0, 1], [1, 2]]),
+            layout_fingerprint(3, &[[0, 1], [1, 2]])
+        );
     }
 
     #[test]
@@ -433,7 +461,10 @@ mod tests {
     /// 30 万节点全量冒烟：debug 构建下忽略（慢 20~50×），
     /// 用 `cargo test --release -p giteam-core asset_graph::layout -- --ignored` 跑。
     #[test]
-    #[cfg_attr(debug_assertions, ignore = "release 构建下运行：cargo test --release -- --ignored")]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "release 构建下运行：cargo test --release -- --ignored"
+    )]
     fn large_graph_layout_smoke() {
         let n = 300_000usize;
         let edges: Vec<[u32; 2]> = (0..n as u32)

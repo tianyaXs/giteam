@@ -35,7 +35,9 @@ fn service_settings_columns(conn: &Connection) -> Result<Vec<String>, String> {
         .map_err(|e| format!("query remote repo service settings schema failed: {e}"))?;
     let mut columns = Vec::new();
     for row in rows {
-        columns.push(row.map_err(|e| format!("decode remote repo service settings schema failed: {e}"))?);
+        columns.push(
+            row.map_err(|e| format!("decode remote repo service settings schema failed: {e}"))?,
+        );
     }
     Ok(columns)
 }
@@ -165,10 +167,14 @@ pub fn get_service_api_key(app_handle: &AppHandle) -> Result<Option<String>, Str
     Ok(get_service_setting(app_handle)?.map(|setting| setting.api_key))
 }
 
-pub fn get_service_setting(app_handle: &AppHandle) -> Result<Option<RemoteRepoServiceStoredSetting>, String> {
+pub fn get_service_setting(
+    app_handle: &AppHandle,
+) -> Result<Option<RemoteRepoServiceStoredSetting>, String> {
     let conn = open_db(app_handle)?;
     let mut stmt = conn
-        .prepare("SELECT service_url, api_key FROM remote_repo_service_settings WHERE id = 1 LIMIT 1")
+        .prepare(
+            "SELECT service_url, api_key FROM remote_repo_service_settings WHERE id = 1 LIMIT 1",
+        )
         .map_err(|e| format!("prepare get remote repo service url failed: {e}"))?;
     let mut rows = stmt
         .query_map([], |row| {
@@ -188,7 +194,11 @@ pub fn set_service_url(app_handle: &AppHandle, service_url: &str) -> Result<(), 
     set_service_setting(app_handle, service_url, &api_key)
 }
 
-pub fn set_service_setting(app_handle: &AppHandle, service_url: &str, api_key: &str) -> Result<(), String> {
+pub fn set_service_setting(
+    app_handle: &AppHandle,
+    service_url: &str,
+    api_key: &str,
+) -> Result<(), String> {
     let conn = open_db(app_handle)?;
     if service_url.trim().is_empty() && api_key.trim().is_empty() {
         conn.execute("DELETE FROM remote_repo_service_settings WHERE id = 1", [])
@@ -334,7 +344,10 @@ pub fn list_configs(app_handle: &AppHandle) -> Result<Vec<RemoteRepoConfig>, Str
     Ok(out)
 }
 
-pub fn get_config(app_handle: &AppHandle, repo_id: &str) -> Result<Option<RemoteRepoConfig>, String> {
+pub fn get_config(
+    app_handle: &AppHandle,
+    repo_id: &str,
+) -> Result<Option<RemoteRepoConfig>, String> {
     let conn = open_db(app_handle)?;
     let mut stmt = conn
         .prepare(

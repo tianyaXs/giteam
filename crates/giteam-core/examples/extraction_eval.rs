@@ -226,22 +226,43 @@ fn json_parseable(raw: &str) -> bool {
         .unwrap_or(text)
         .trim();
     let text = text.strip_suffix("```").unwrap_or(text);
-    let Some(start) = text.find('{') else { return false };
-    let Some(end) = text.rfind('}') else { return false };
+    let Some(start) = text.find('{') else {
+        return false;
+    };
+    let Some(end) = text.rfind('}') else {
+        return false;
+    };
     end > start && serde_json::from_str::<serde_json::Value>(&text[start..=end]).is_ok()
 }
 
 fn load_case(path: &std::path::Path) -> Result<Case, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
 fn print_checks(case: &Case, checks: &[Check], parseable: bool) -> (usize, usize) {
     let mut passed = 0;
-    println!("== {} {}{}", case.name, if case.xfail { "(xfail) " } else { "" }, if case.note.is_empty() { String::new() } else { format!("— {}", case.note) });
-    println!("   json_parseable: {}", if parseable { "yes" } else { "NO" });
+    println!(
+        "== {} {}{}",
+        case.name,
+        if case.xfail { "(xfail) " } else { "" },
+        if case.note.is_empty() {
+            String::new()
+        } else {
+            format!("— {}", case.note)
+        }
+    );
+    println!(
+        "   json_parseable: {}",
+        if parseable { "yes" } else { "NO" }
+    );
     for check in checks {
-        println!("   {} {}", if check.passed { "✓" } else { "✗" }, check.label);
+        println!(
+            "   {} {}",
+            if check.passed { "✓" } else { "✗" },
+            check.label
+        );
         if check.passed {
             passed += 1;
         }
@@ -254,13 +275,17 @@ fn main() {
     let mode = args.get(1).map(String::as_str).unwrap_or("");
     match mode {
         "prompt" => {
-            let case = load_case(std::path::Path::new(args.get(2).expect("usage: prompt <case.json>")))
-                .unwrap_or_else(|e| panic!("{e}"));
+            let case = load_case(std::path::Path::new(
+                args.get(2).expect("usage: prompt <case.json>"),
+            ))
+            .unwrap_or_else(|e| panic!("{e}"));
             print!("{}", extraction_input(&case).build_prompt(&[]));
         }
         "score" => {
-            let case = load_case(std::path::Path::new(args.get(2).expect("usage: score <case.json> <raw.txt>")))
-                .unwrap_or_else(|e| panic!("{e}"));
+            let case = load_case(std::path::Path::new(
+                args.get(2).expect("usage: score <case.json> <raw.txt>"),
+            ))
+            .unwrap_or_else(|e| panic!("{e}"));
             let raw_path = args.get(3).expect("usage: score <case.json> <raw.txt>");
             let raw = std::fs::read_to_string(raw_path).expect("read raw output");
             let parseable = json_parseable(&raw);
@@ -276,7 +301,8 @@ fn main() {
         }
         "report" => {
             let cases_dir = args.get(2).expect("usage: report <cases_dir> <outs_dir>");
-            let outs_dir = std::path::Path::new(args.get(3).expect("usage: report <cases_dir> <outs_dir>"));
+            let outs_dir =
+                std::path::Path::new(args.get(3).expect("usage: report <cases_dir> <outs_dir>"));
             let mut paths: Vec<_> = std::fs::read_dir(cases_dir)
                 .expect("read cases dir")
                 .filter_map(Result::ok)
@@ -314,7 +340,10 @@ fn main() {
                 } else if gate_only {
                     String::new()
                 } else {
-                    println!("-- {stem}: no model output ({}), skipped", out_path.display());
+                    println!(
+                        "-- {stem}: no model output ({}), skipped",
+                        out_path.display()
+                    );
                     continue;
                 };
                 // 门控 case 没有模型输出，不计入 JSON 可解析率。
@@ -367,7 +396,11 @@ fn main() {
                 let mut uniq = keys.clone();
                 uniq.sort();
                 uniq.dedup();
-                let status = if uniq.len() <= 1 { "✓ stable" } else { "✗ DIVERGED" };
+                let status = if uniq.len() <= 1 {
+                    "✓ stable"
+                } else {
+                    "✗ DIVERGED"
+                };
                 println!("slug_group '{group}' ({types}): {status} — {uniq:?}");
             }
         }

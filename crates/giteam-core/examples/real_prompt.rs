@@ -90,10 +90,8 @@ fn main() {
         }
     }
 
-    let session_dir = std::env::temp_dir().join(format!(
-        "giteam-real-prompt-{}",
-        std::process::id()
-    ));
+    let session_dir =
+        std::env::temp_dir().join(format!("giteam-real-prompt-{}", std::process::id()));
     let config = PiSessionConfig {
         repo_path: args.repo.clone(),
         session_dir: session_dir.clone(),
@@ -109,6 +107,7 @@ fn main() {
         thinking: args.thinking.clone(),
         max_tool_iterations: None,
         browser_controller: None,
+        os_controller: None,
         parent_session_id: None,
         parent_tool_call_id: None,
         session_kind: "primary".to_string(),
@@ -136,7 +135,9 @@ fn main() {
             }
             AgentEvent::ToolProgress { tool_name, .. } => format!("tool.progress name={tool_name}"),
             AgentEvent::ToolCompleted {
-                tool_name, is_error, ..
+                tool_name,
+                is_error,
+                ..
             } => format!("tool.completed name={tool_name} isError={is_error}"),
             AgentEvent::Retry {
                 phase,

@@ -44,7 +44,10 @@ fn try_acquire_task(task_id: &str) -> Option<TaskExecutionGuard> {
     })
 }
 
-fn skip_already_running(task: &AutomationTask, trigger: RunTrigger) -> AutomationResult<RunOutcome> {
+fn skip_already_running(
+    task: &AutomationTask,
+    trigger: RunTrigger,
+) -> AutomationResult<RunOutcome> {
     let run = with_store(|s| {
         let run = s.insert_run(task, trigger, RunStatus::Skipped)?;
         let run = s.finish_run(
@@ -54,14 +57,14 @@ fn skip_already_running(task: &AutomationTask, trigger: RunTrigger) -> Automatio
             Some("任务正在运行中"),
             None,
         )?;
-        let task = s.mark_task_finished(&task.id, RunStatus::Skipped, trigger == RunTrigger::Schedule)?;
+        let task = s.mark_task_finished(
+            &task.id,
+            RunStatus::Skipped,
+            trigger == RunTrigger::Schedule,
+        )?;
         Ok((run, task))
     })?;
-    Ok(skipped_outcome(
-        run.0,
-        run.1,
-        "任务正在运行中，请稍后再试",
-    ))
+    Ok(skipped_outcome(run.0, run.1, "任务正在运行中，请稍后再试"))
 }
 
 /// 单次执行结果（含是否应发通知）。
@@ -113,15 +116,27 @@ pub async fn execute_task(
     let session_id = match resolve_session(service, &task).await {
         Ok(id) => id,
         Err(err) => {
-            return finalize_failure(&task, &run.id, trigger, err.to_string(), "创建/选择会话失败")
-                .await;
+            return finalize_failure(
+                &task,
+                &run.id,
+                trigger,
+                err.to_string(),
+                "创建/选择会话失败",
+            )
+            .await;
         }
     };
 
     // 任务指定了模型则切到对应 provider/model 再执行。
     if let (Some(provider), Some(model)) = (
-        task.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-        task.model.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        task.provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        task.model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
     ) {
         if let Err(err) = service.set_model(&session_id, provider, model).await {
             return finalize_failure(
@@ -162,8 +177,11 @@ pub async fn execute_task(
                 Some("session busy"),
                 None,
             )?;
-            let task =
-                s.mark_task_finished(&task.id, RunStatus::Skipped, trigger == RunTrigger::Schedule)?;
+            let task = s.mark_task_finished(
+                &task.id,
+                RunStatus::Skipped,
+                trigger == RunTrigger::Schedule,
+            )?;
             Ok((run, task))
         })?;
         return Ok(skipped_outcome(
@@ -227,16 +245,7 @@ pub async fn execute_task(
                 task: finished.1,
             })
         }
-        Err(err) => {
-            finalize_failure(
-                &task,
-                &run.id,
-                trigger,
-                err.to_string(),
-                "执行失败",
-            )
-            .await
-        }
+        Err(err) => finalize_failure(&task, &run.id, trigger, err.to_string(), "执行失败").await,
     }
 }
 
@@ -268,6 +277,7 @@ async fn resolve_session(
                     .map(str::to_string),
                 max_tool_iterations: None,
                 browser_controller: None,
+                os_controller: None,
                 parent_session_id: None,
                 parent_tool_call_id: None,
                 session_kind: "primary".to_string(),
@@ -321,8 +331,11 @@ async fn finalize_failure(
 ) -> AutomationResult<RunOutcome> {
     let finished = with_store(|s| {
         let run = s.finish_run(run_id, RunStatus::Failure, None, Some(&error), None)?;
-        let task =
-            s.mark_task_finished(&task.id, RunStatus::Failure, trigger == RunTrigger::Schedule)?;
+        let task = s.mark_task_finished(
+            &task.id,
+            RunStatus::Failure,
+            trigger == RunTrigger::Schedule,
+        )?;
         // 路径不存在时自动暂停，避免反复失败
         let task = if error.contains("repo path missing") {
             s.set_enabled(&task.id, false)?

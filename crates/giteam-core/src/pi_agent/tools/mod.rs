@@ -9,11 +9,12 @@ mod asset_graph_tools;
 mod background;
 mod browser_use;
 mod command_safety;
-mod shell_resolver;
+mod computer_use;
 mod edit_guard;
 mod mcp;
 pub mod office;
 mod question;
+mod shell_resolver;
 mod task;
 mod todo;
 mod tool_budget;
@@ -26,11 +27,16 @@ use pi::sdk::{default_tool_registry, Config, Tool, ToolFactory, ToolRegistry};
 
 use super::browser_controller::SharedBrowserController;
 use super::interactions::{InteractionHub, InteractionRisk};
+use super::os_controller::SharedOsController;
 use super::subagents::SubagentHost;
 
 pub use approval::ApprovalTool;
+pub use asset_graph_tools::{
+    AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool,
+};
 pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, KillShellTool};
 pub use browser_use::BrowserUseTool;
+pub use computer_use::ComputerUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
 pub use mcp::McpTool;
 pub use office::{
@@ -39,7 +45,6 @@ pub use office::{
 };
 pub use question::QuestionTool;
 pub use task::TaskTool;
-pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool};
 pub use todo::TodoTool;
 pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
@@ -58,11 +63,15 @@ pub struct GiteamToolFactory {
     web_search_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "browser_use" 时为 true。
     browser_use_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "computer_use" 时为 true。
+    computer_use_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "task" 时为 true；
     /// 实际注册还需要 `subagent_host`（子 agent 默认不注入 host，故不注册 task）。
     task_enabled: bool,
     /// 内置浏览器控制器；desktop 注入实现，CLI/control 为 None。
     browser_controller: SharedBrowserController,
+    /// OS 控制器（computer_use 执行层）；desktop 注入实现，CLI/control 为 None。
+    os_controller: SharedOsController,
     /// 后台任务日志目录（会话目录下）；no_session 模式为 None（落临时目录）。
     session_dir: Option<PathBuf>,
     /// 子 agent 宿主；主会话注入，plan 子会话为 None（禁止再委派）。
@@ -88,30 +97,40 @@ impl GiteamToolFactory {
         enabled_tools: Option<&[String]>,
         session_dir: Option<PathBuf>,
         browser_controller: SharedBrowserController,
+        os_controller: SharedOsController,
         subagent_host: Option<Arc<dyn SubagentHost>>,
         tool_budget: ToolBudgetConfig,
         mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
     ) -> Self {
-        let question_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
-        let todo_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "todowrite"));
-        let web_fetch_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
-        let web_search_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
-        let browser_use_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
-        let task_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
-        let asset_graph_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
+        let question_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
+        let todo_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "todowrite"));
+        let web_fetch_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
+        let web_search_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
+        let browser_use_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
+        let computer_use_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "computer_use"));
+        let task_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
+        let asset_graph_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
         let office_enabled = enabled_tools.is_none_or(|tools| {
             tools.iter().any(|tool| {
                 matches!(
                     tool.as_str(),
-                    "read_xlsx" | "write_xlsx" | "read_docx" | "write_docx" | "read_pptx"
-                        | "write_pptx" | "edit_xlsx" | "edit_docx" | "edit_pptx"
+                    "read_xlsx"
+                        | "write_xlsx"
+                        | "read_docx"
+                        | "write_docx"
+                        | "read_pptx"
+                        | "write_pptx"
+                        | "edit_xlsx"
+                        | "edit_docx"
+                        | "edit_pptx"
                 )
             })
         });
@@ -124,8 +143,10 @@ impl GiteamToolFactory {
             web_fetch_enabled,
             web_search_enabled,
             browser_use_enabled,
+            computer_use_enabled,
             task_enabled,
             browser_controller,
+            os_controller,
             session_dir,
             subagent_host,
             tool_budget: Arc::new(tool_budget),
@@ -144,25 +165,46 @@ impl ToolFactory for GiteamToolFactory {
         let wants_web_fetch = enabled.contains(&"web_fetch");
         let wants_web_search = enabled.contains(&"web_search");
         let wants_browser_use = enabled.contains(&"browser_use");
+        let wants_computer_use = enabled.contains(&"computer_use");
         let wants_task = enabled.contains(&"task");
         let wants_office = enabled.iter().any(|name| {
-        matches!(
-            *name,
-            "read_xlsx" | "write_xlsx" | "read_docx" | "write_docx" | "read_pptx" | "write_pptx"
-                | "edit_xlsx" | "edit_docx" | "edit_pptx"
-        )
-    });
+            matches!(
+                *name,
+                "read_xlsx"
+                    | "write_xlsx"
+                    | "read_docx"
+                    | "write_docx"
+                    | "read_pptx"
+                    | "write_pptx"
+                    | "edit_xlsx"
+                    | "edit_docx"
+                    | "edit_pptx"
+            )
+        });
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
             .filter(|name| {
                 !matches!(
                     *name,
-                    "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
-                        | "web_fetch" | "web_search" | "browser_use" | "task"
-                        | "read_xlsx" | "write_xlsx"
-                        | "read_docx" | "write_docx" | "read_pptx" | "write_pptx"
-                        | "edit_xlsx" | "edit_docx" | "edit_pptx"
+                    "question"
+                        | "todowrite"
+                        | "bash"
+                        | "bash_output"
+                        | "kill_shell"
+                        | "web_fetch"
+                        | "web_search"
+                        | "browser_use"
+                        | "task"
+                        | "read_xlsx"
+                        | "write_xlsx"
+                        | "read_docx"
+                        | "write_docx"
+                        | "read_pptx"
+                        | "write_pptx"
+                        | "edit_xlsx"
+                        | "edit_docx"
+                        | "edit_pptx"
                 )
             })
             .collect();
@@ -196,7 +238,9 @@ impl ToolFactory for GiteamToolFactory {
 
         if bash_enabled {
             let background = Arc::new(BackgroundTaskRegistry::new(
-                self.session_dir.as_ref().map(|dir| dir.join("background-tasks")),
+                self.session_dir
+                    .as_ref()
+                    .map(|dir| dir.join("background-tasks")),
             ));
             registry.push(wrap(Box::new(GiteamBashTool::new(
                 cwd,
@@ -244,7 +288,17 @@ impl ToolFactory for GiteamToolFactory {
         }
         // browser_use 经 wrap：InteractionRisk::for_tool 归 Network → 自动套 ApprovalTool。
         if self.browser_use_enabled || wants_browser_use {
-            registry.push(wrap(Box::new(BrowserUseTool::new(self.browser_controller.clone()))));
+            registry.push(wrap(Box::new(BrowserUseTool::new(
+                self.browser_controller.clone(),
+            ))));
+        }
+        // computer_use / guide 经 wrap：归 System → 自动套 ApprovalTool（逐次审批，
+        // always 仅会话内工具名粒度）。controller None 时工具仍注册（返回
+        // 「仅桌面端可用」），保证工具清单在 CLI/control 端稳定可见。
+        if self.computer_use_enabled || wants_computer_use {
+            registry.push(wrap(Box::new(ComputerUseTool::new(
+                self.os_controller.clone(),
+            ))));
         }
         // task：主会话全量或显式启用，且有 SubagentHost；子 agent 白名单不含 task / host=None。
         if (self.task_enabled || wants_task) && self.subagent_host.is_some() {
@@ -301,6 +355,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             ToolBudgetConfig::for_primary(None),
             None,
         )
@@ -312,6 +367,7 @@ mod tests {
         GiteamToolFactory::new(
             hub,
             enabled_tools,
+            None,
             None,
             None,
             Some(host),

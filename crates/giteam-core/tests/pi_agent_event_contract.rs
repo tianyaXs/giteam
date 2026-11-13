@@ -127,8 +127,12 @@ fn tool_call_stream_recovers_identity_from_partial_message() {
         },
     };
 
-    let start = translator.translate(start).expect("tool call start should map");
-    let delta = translator.translate(delta).expect("tool call delta should map");
+    let start = translator
+        .translate(start)
+        .expect("tool call start should map");
+    let delta = translator
+        .translate(delta)
+        .expect("tool call delta should map");
 
     assert_eq!(
         start.event,
@@ -177,9 +181,7 @@ fn stream_markers_without_user_payload_are_dropped() {
     let message = || assistant_message(11);
     let partial = || Arc::new(AssistantMessage::default());
     let dropped = vec![
-        AME::Start {
-            partial: partial(),
-        },
+        AME::Start { partial: partial() },
         AME::TextStart {
             content_index: 0,
             partial: partial(),

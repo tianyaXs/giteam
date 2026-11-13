@@ -135,7 +135,11 @@ fn resolve_session_tty_name(script_pid: u32) -> Option<String> {
     }
 }
 
-fn apply_session_winsize(session: &mut ManagedRepoTerminalSession, cols: u16, rows: u16) -> Result<(), String> {
+fn apply_session_winsize(
+    session: &mut ManagedRepoTerminalSession,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
     let (cols, rows) = clamp_terminal_size(cols, rows);
     if session.cols == cols && session.rows == rows {
         return Ok(());
@@ -586,8 +590,9 @@ fn spawn_interactive_shell_command(repo_path: &str) -> Result<Command, String> {
     #[cfg(windows)]
     {
         // 尚无 ConPTY：用管道挂交互壳。优先 Git Bash，其次 pwsh / powershell / cmd。
-        let shell = command_runner::resolve_login_shell()
-            .ok_or_else(|| "no usable Windows shell found (install Git Bash or use PowerShell)".to_string())?;
+        let shell = command_runner::resolve_login_shell().ok_or_else(|| {
+            "no usable Windows shell found (install Git Bash or use PowerShell)".to_string()
+        })?;
         let stem = Path::new(&shell)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -880,7 +885,14 @@ fn is_untracked_worktree_path(repo_path: &str, path: &str) -> bool {
         return false;
     }
     let output = Command::new("git")
-        .args(["ls-files", "-z", "--others", "--exclude-standard", "--", path])
+        .args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            path,
+        ])
         .current_dir(repo_path)
         .output();
     let Ok(output) = output else {
@@ -1089,12 +1101,22 @@ fn parse_worktree_overview(raw: String) -> GitWorktreeOverview {
 }
 
 fn parse_numstat_totals(raw: &str) -> (u32, u32) {
-    raw.lines().fold((0u32, 0u32), |(added_total, deleted_total), line| {
-        let mut parts = line.split_whitespace();
-        let added = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        let deleted = parts.next().and_then(|value| value.parse::<u32>().ok()).unwrap_or(0);
-        (added_total.saturating_add(added), deleted_total.saturating_add(deleted))
-    })
+    raw.lines()
+        .fold((0u32, 0u32), |(added_total, deleted_total), line| {
+            let mut parts = line.split_whitespace();
+            let added = parts
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            let deleted = parts
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0);
+            (
+                added_total.saturating_add(added),
+                deleted_total.saturating_add(deleted),
+            )
+        })
 }
 
 fn sanitize_branch_for_dir(branch: &str) -> String {
@@ -1223,7 +1245,14 @@ pub fn run_git_recent_commits(
 }
 
 #[tauri::command]
-pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, String> {
+pub async fn run_git_local_branches(repo_path: String) -> Result<Vec<GitBranchSummary>, String> {
+    // git 读取是阻塞子进程调用：丢进 blocking 线程池，避免 Tauri v2 在主线程执行同步命令冻结 UI。
+    tauri::async_runtime::spawn_blocking(move || run_git_local_branches_impl(&repo_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_git_local_branches_impl(repo_path: &str) -> Result<Vec<GitBranchSummary>, String> {
     // Local branch names.
     let local_raw = run_git(
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
@@ -1302,7 +1331,20 @@ pub fn run_git_local_branches(repo_path: &str) -> Result<Vec<GitBranchSummary>, 
 }
 
 #[tauri::command]
-pub fn run_git_branch_commits(
+pub async fn run_git_branch_commits(
+    repo_path: String,
+    branch_name: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommitSummary>, String> {
+    // 阻塞子进程调用放 blocking 线程池，避免冻结 UI 主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git_branch_commits_impl(&repo_path, &branch_name, limit)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_git_branch_commits_impl(
     repo_path: &str,
     branch_name: &str,
     limit: Option<u32>,
@@ -1342,7 +1384,17 @@ pub fn run_git_branch_commits(
 }
 
 #[tauri::command]
-pub fn run_git_commit_graph(
+pub async fn run_git_commit_graph(
+    repo_path: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitGraphNode>, String> {
+    // `log --graph --all` 是打开项目时最重的 git 调用：放 blocking 线程池，避免冻结 UI 主线程。
+    tauri::async_runtime::spawn_blocking(move || run_git_commit_graph_impl(&repo_path, limit))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_git_commit_graph_impl(
     repo_path: &str,
     limit: Option<u32>,
 ) -> Result<Vec<GitGraphNode>, String> {
@@ -1514,13 +1566,25 @@ pub fn run_git_worktree_status_stat(repo_path: &str) -> Result<Vec<GitStatusStat
             // 运行中删除的文件：无 meta 仍列出（size 0），前端按需过滤。
             Err(_) => (0, 0),
         };
-        out.push(GitStatusStatEntry { path, status, mtime_ms, size });
+        out.push(GitStatusStatEntry {
+            path,
+            status,
+            mtime_ms,
+            size,
+        });
     }
     Ok(out)
 }
 
 #[tauri::command]
-pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview, String> {
+pub async fn run_git_worktree_overview(repo_path: String) -> Result<GitWorktreeOverview, String> {
+    // 打开项目与 watcher 刷新的高频路径：放 blocking 线程池，避免冻结 UI 主线程。
+    tauri::async_runtime::spawn_blocking(move || run_git_worktree_overview_impl(&repo_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_git_worktree_overview_impl(repo_path: &str) -> Result<GitWorktreeOverview, String> {
     let raw = run_git(&["status", "--short", "--branch"], repo_path)?;
     let mut overview = parse_worktree_overview(raw);
     if let Ok(numstat) = run_git(&["diff", "--numstat", "HEAD", "--"], repo_path) {
@@ -1538,7 +1602,14 @@ pub fn run_git_worktree_overview(repo_path: &str) -> Result<GitWorktreeOverview,
 }
 
 #[tauri::command]
-pub fn run_git_worktree_list(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, String> {
+pub async fn run_git_worktree_list(repo_path: String) -> Result<Vec<GitLinkedWorktree>, String> {
+    // 每个 worktree 各跑一次 git status，多 worktree 时是重调用：放 blocking 线程池。
+    tauri::async_runtime::spawn_blocking(move || run_git_worktree_list_impl(&repo_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_git_worktree_list_impl(repo_path: &str) -> Result<Vec<GitLinkedWorktree>, String> {
     let raw = run_git(&["worktree", "list", "--porcelain"], repo_path)?;
     let mut rows = Vec::new();
     let current_key =
@@ -1954,7 +2025,19 @@ pub fn run_git_remove_worktree(
 }
 
 #[tauri::command]
-pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<String, String> {
+pub async fn run_git_worktree_file_patch(
+    repo_path: String,
+    file_path: String,
+) -> Result<String, String> {
+    // 无 diff 时可能触发全仓 untracked 扫描：放 blocking 线程池，避免冻结 UI 主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git_worktree_file_patch_impl(&repo_path, &file_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_git_worktree_file_patch_impl(repo_path: &str, file_path: &str) -> Result<String, String> {
     let path = file_path.trim();
     if path.is_empty() {
         return Err("file path is empty".to_string());
@@ -1997,7 +2080,19 @@ pub fn run_git_worktree_file_patch(repo_path: &str, file_path: &str) -> Result<S
 }
 
 #[tauri::command]
-pub fn run_git_worktree_file_content(
+pub async fn run_git_worktree_file_content(
+    repo_path: String,
+    file_path: String,
+) -> Result<GitWorktreeFileContent, String> {
+    // 全文件读取 + base64 编码可能很大：放 blocking 线程池，避免冻结 UI 主线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git_worktree_file_content_impl(&repo_path, &file_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_git_worktree_file_content_impl(
     repo_path: &str,
     file_path: &str,
 ) -> Result<GitWorktreeFileContent, String> {
@@ -2291,7 +2386,14 @@ pub fn close_repo_terminal_session(
 }
 
 #[tauri::command]
-pub fn run_git_user_identity(repo_path: &str) -> Result<GitUserIdentity, String> {
+pub async fn run_git_user_identity(repo_path: String) -> Result<GitUserIdentity, String> {
+    // 阻塞子进程调用放 blocking 线程池，统一打开项目路径的命令调度方式。
+    tauri::async_runtime::spawn_blocking(move || run_git_user_identity_impl(&repo_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn run_git_user_identity_impl(repo_path: &str) -> Result<GitUserIdentity, String> {
     let name = run_git(&["config", "user.name"], repo_path)
         .unwrap_or_default()
         .trim()
@@ -2315,7 +2417,7 @@ mod tests {
             return;
         }
         let branches =
-            run_git_local_branches(repo_path).expect("run_git_local_branches should succeed");
+            run_git_local_branches_impl(repo_path).expect("run_git_local_branches should succeed");
         // At least one regular branch should be visible for a valid repo.
         assert!(
             !branches.is_empty(),

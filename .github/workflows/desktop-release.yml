@@ -45,17 +45,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.2.52）
+            const body = `## 本版重点（0.2.56）
 
-            - 插件设置：Codex 式插件 / 技能 / MCP 管理，MCP 添加弹窗更精致
-            - 运行时依赖改为安装 / 更新（不再提供卸载开关）
-            - 会话贴底跟随与中断渲染更稳，工具事件行减少抖动
+            - 修复 macOS 正式包本地网络授权不能跨版本保持的问题
+            - macOS 正式包改用稳定的 Giteam Desktop 代码签名身份，不再使用每次构建漂移的 ad-hoc 签名
+            - 安装新版本后首次访问局域网模型服务时授权一次，后续升级通常保持授权
+            - Windows 本版仅同步版本更新；如安装器上传中断，请用上方旧安装器或重新触发发布
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.2.52.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.2.56.md\``;
 
             let release;
             try {
@@ -79,6 +80,7 @@ jobs:
   publish:
     name: Build ${{ matrix.name }}
     needs: create-release
+    timeout-minutes: 70
     permissions:
       contents: write
     strategy:
@@ -86,7 +88,10 @@ jobs:
       matrix:
         include:
           - name: macos-aarch64
-            os: macos-14
+            # macos-14 runner 已被 GitHub 淘汰（"configuration
+            # 'macos-14-arm64-us-default' is not supported"），macos-15 同为
+            # ARM64（Apple Silicon 原生）。
+            os: macos-15
             args: "--target aarch64-apple-darwin"
           # Intel 交叉编译先关掉
           # - name: macos-x86_64
@@ -158,7 +163,9 @@ jobs:
             | xargs -0 -r grep -l 'packages.microsoft.com' \
             | xargs -r sudo rm -f || true
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # libpipewire-0.3-dev：xcap 的 Linux 捕获后端（pipewire-rs）需要
+          # libspa-sys pkg-config 探测（0.2.57 起引入 xcap 截图依赖后必需）。
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
 
       - name: Install frontend dependencies
         working-directory: apps/desktop
@@ -174,11 +181,45 @@ jobs:
           VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
         run: npm run build
 
+      # macOS 本地网络隐私按稳定代码签名身份记录授权。
+      # ad-hoc/linker 签名每次构建 UUID 都会漂移，用户授权无法跨版本保持，
+      # 会导致正式包访问局域网模型服务时被系统静默拒绝（EHOSTUNREACH/No route to host）。
+      - name: Import stable macOS codesign identity
+        if: matrix.name == 'macos-aarch64'
+        shell: bash
+        env:
+          MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
+          MACOS_CODESIGN_PASSWORD: ${{ secrets.MACOS_CODESIGN_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CODESIGN_P12" ] || [ -z "$MACOS_CODESIGN_PASSWORD" ]; then
+            echo "::error::Missing macOS codesign secrets (MACOS_CODESIGN_P12 / MACOS_CODESIGN_PASSWORD)."
+            exit 1
+          fi
+          KEYCHAIN=build.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN"
+          echo "$MACOS_CODESIGN_P12" | base64 --decode > /tmp/giteam-codesign.p12
+          # 从 legacy PKCS12 中导出证书；自签身份必须显式标记信任。
+          openssl pkcs12 -in /tmp/giteam-codesign.p12 -passin "pass:$MACOS_CODESIGN_PASSWORD" -nokeys -clcerts -out /tmp/giteam-codesign.crt
+          security import /tmp/giteam-codesign.p12 -k "$KEYCHAIN" -P "$MACOS_CODESIGN_PASSWORD" -T /usr/bin/codesign
+          # add-trusted-cert 可能触发 GUI 授权卡死；CI 用 partitions + codesign 指定 keychain 即可。
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          IDENTITY_COUNT=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep -c '"Giteam Desktop"' || true)
+          if [ "$IDENTITY_COUNT" -lt 1 ]; then
+            echo "::warning::Stable macOS signing identity is not marked valid yet."
+          fi
+          security find-identity -v -p codesigning "$KEYCHAIN" || true
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
           # 优先用 PAT，避免仓库把 GITHUB_TOKEN 锁成只读
           GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
+          MACOS_CODESIGN_PASSWORD: ${{ secrets.MACOS_CODESIGN_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
@@ -193,4 +234,4 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           # inline JSON，避免 tauri-action 把文件路径先当 JSON 解析
-          args: ${{ matrix.args }} --config {"build":{"beforeBuildCommand":""}}
+          args: ${{ matrix.args }} --config '{"build":{"beforeBuildCommand":""},"bundle":{"macOS":{"signingIdentity":"Giteam Desktop"}}}'

@@ -68,7 +68,9 @@ impl Default for DingTalkSettings {
 }
 
 fn settings_path() -> Option<PathBuf> {
-    ensure_data_dir().or_else(default_data_dir).map(|d| d.join(SETTINGS_FILE))
+    ensure_data_dir()
+        .or_else(default_data_dir)
+        .map(|d| d.join(SETTINGS_FILE))
 }
 
 fn secret_store() -> Option<SecretStore> {
@@ -142,12 +144,16 @@ pub fn set_outgoing_secret(secret: &str) -> Result<(), String> {
 
 pub fn clear_sign_secret() -> Result<(), String> {
     let store = secret_store().ok_or_else(|| "secret store unavailable".to_string())?;
-    let _ = store.remove(SIGN_SECRET_PROVIDER).map_err(|e| e.to_string())?;
+    let _ = store
+        .remove(SIGN_SECRET_PROVIDER)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub fn clear_outgoing_secret() -> Result<(), String> {
     let store = secret_store().ok_or_else(|| "secret store unavailable".to_string())?;
-    let _ = store.remove(OUTGOING_SECRET_PROVIDER).map_err(|e| e.to_string())?;
+    let _ = store
+        .remove(OUTGOING_SECRET_PROVIDER)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

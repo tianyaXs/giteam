@@ -6,9 +6,7 @@
 use std::path::Path;
 
 fn main() {
-    let repo = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| ".".to_string());
+    let repo = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
     let repo = Path::new(&repo).canonicalize().expect("canonicalize repo");
     let mut graph = giteam_core::asset_graph::AssetGraph::open(&repo).expect("open graph");
     let (indexed, skipped) = graph.replay_backlog();
@@ -21,9 +19,19 @@ fn main() {
         println!(
             "「{}」files={:?} commits={:?} unresolved={:?}",
             session.intent,
-            session.files_modified.iter().take(4).cloned().collect::<Vec<_>>(),
+            session
+                .files_modified
+                .iter()
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>(),
             session.commits.iter().take(2).cloned().collect::<Vec<_>>(),
-            session.unresolved_errors.iter().take(1).cloned().collect::<Vec<_>>()
+            session
+                .unresolved_errors
+                .iter()
+                .take(1)
+                .cloned()
+                .collect::<Vec<_>>()
         );
     }
     println!("\n--- digest ---");
@@ -31,11 +39,18 @@ fn main() {
 
     // 定向验证：有改动史的会话应带出文件列表（跨会话文件修改史闭环）。
     println!("\n--- file history probe ---");
-    for file in ["docs/desktop-user-guide.html", "crates/giteam-core/Cargo.toml"] {
+    for file in [
+        "docs/desktop-user-guide.html",
+        "crates/giteam-core/Cargo.toml",
+    ] {
         let history = query.file_history(file);
         println!("{file}: {} entries", history.len());
         for entry in history.iter().take(3) {
-            println!("  intent={} ts={}", entry.intent.chars().take(40).collect::<String>(), entry.timestamp_ms);
+            println!(
+                "  intent={} ts={}",
+                entry.intent.chars().take(40).collect::<String>(),
+                entry.timestamp_ms
+            );
         }
     }
     let with_files: Vec<_> = query
@@ -45,12 +60,21 @@ fn main() {
         .collect();
     println!("sessions with modified files: {}", with_files.len());
     for s in with_files.iter().take(3) {
-        println!("  「{}」-> {:?}", s.intent.chars().take(30).collect::<String>(), s.files_modified.iter().take(3).cloned().collect::<Vec<_>>());
+        println!(
+            "  「{}」-> {:?}",
+            s.intent.chars().take(30).collect::<String>(),
+            s.files_modified.iter().take(3).cloned().collect::<Vec<_>>()
+        );
     }
-    let precedents = query.find_precedents("App.tsx(412,7): error TS2322: Type '() => void' is not assignable");
+    let precedents =
+        query.find_precedents("App.tsx(412,7): error TS2322: Type '() => void' is not assignable");
     println!("precedents probe: {} hits", precedents.len());
     for hit in precedents.iter().take(2) {
-        println!("  fixed by: {} (intent: {})", hit.resolved_by_label.chars().take(60).collect::<String>(), hit.intent.chars().take(30).collect::<String>());
+        println!(
+            "  fixed by: {} (intent: {})",
+            hit.resolved_by_label.chars().take(60).collect::<String>(),
+            hit.intent.chars().take(30).collect::<String>()
+        );
     }
 
     // 关键回归：以 sessions 接口返回的 sessionKey（key 而非 id）为中心——
@@ -78,14 +102,14 @@ fn main() {
         view.nodes.len(),
         view.edges.len()
     );
-    let types: std::collections::HashMap<&str, usize> =
-        view.nodes.iter().map(|n| (n.node_type.as_str(), 1)).fold(
-            std::collections::HashMap::new(),
-            |mut acc, (k, v)| {
-                *acc.entry(k).or_insert(0) += v;
-                acc
-            },
-        );
+    let types: std::collections::HashMap<&str, usize> = view
+        .nodes
+        .iter()
+        .map(|n| (n.node_type.as_str(), 1))
+        .fold(std::collections::HashMap::new(), |mut acc, (k, v)| {
+            *acc.entry(k).or_insert(0) += v;
+            acc
+        });
     println!("node types: {:?}", types);
     let edge_types: std::collections::HashSet<&str> =
         view.edges.iter().map(|e| e.edge_type.as_str()).collect();
@@ -94,7 +118,12 @@ fn main() {
     // 搜索冒烟：仓库内高频文件应可命中。
     for probe in ["control", "login", "cargo"] {
         let hits = query.search(probe, None, 3);
-        println!("search({probe:?}) -> {} hits: {:?}", hits.len(),
-            hits.iter().map(|h| (h.node_type.clone(), h.label.clone())).collect::<Vec<_>>());
+        println!(
+            "search({probe:?}) -> {} hits: {:?}",
+            hits.len(),
+            hits.iter()
+                .map(|h| (h.node_type.clone(), h.label.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 }

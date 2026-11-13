@@ -47,7 +47,13 @@ mod tests {
 
     #[test]
     fn qualified_name_uses_double_underscore() {
-        assert_eq!(qualified_name("github", "list_repos"), "mcp__github__list_repos");
-        assert_eq!(qualified_name("my srv", "tool.name"), "mcp__my-srv__tool-name");
+        assert_eq!(
+            qualified_name("github", "list_repos"),
+            "mcp__github__list_repos"
+        );
+        assert_eq!(
+            qualified_name("my srv", "tool.name"),
+            "mcp__my-srv__tool-name"
+        );
     }
 }

@@ -34,7 +34,8 @@ export type AgentSessionSummary = {
   repoPath: string;
   provider: string;
   model: string;
-  messageCount: number;
+  /** null = 会话未驻留（懒恢复只返回 catalog 元数据），非空才表示真实消息数。 */
+  messageCount: number | null;
   updatedAtMs: number;
   /** 首条用户消息派生的标题；空会话缺省。 */
   title?: string;

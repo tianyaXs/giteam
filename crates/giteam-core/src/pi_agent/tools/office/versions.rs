@@ -20,9 +20,13 @@ fn enforce_store_budget(base: &Path) {
     fn version_files(base: &Path) -> Vec<(PathBuf, u64, u64)> {
         // (版本文件路径, savedAtMs, 大小)
         let mut out = Vec::new();
-        let Ok(sessions) = std::fs::read_dir(base) else { return out };
+        let Ok(sessions) = std::fs::read_dir(base) else {
+            return out;
+        };
         for dir in sessions.flatten() {
-            let Ok(files) = std::fs::read_dir(dir.path()) else { continue };
+            let Ok(files) = std::fs::read_dir(dir.path()) else {
+                continue;
+            };
             for file in files.flatten() {
                 let name = file.file_name().to_string_lossy().to_string();
                 let Some(num) = name
@@ -63,7 +67,10 @@ fn enforce_store_budget(base: &Path) {
             // 同步索引：该文件的 manifest 去掉对应条目（孤儿镜像由启动恢复重建/清理）。
             if let Some(dir) = path.parent() {
                 let mut index = read_index(dir);
-                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let n: u32 = stem.trim_start_matches('v').parse().unwrap_or(0);
                 index.versions.retain(|entry| entry.n != n);
                 let _ = write_index(dir, &index);
@@ -201,7 +208,9 @@ pub fn restore_previous_version(path: &Path) -> Result<bool, String> {
 
 /// 剩余可回退版本数（前端按钮显隐用）。
 pub fn previous_version_count(path: &Path) -> usize {
-    let Some(base) = versions_base() else { return 0 };
+    let Some(base) = versions_base() else {
+        return 0;
+    };
     previous_version_count_in(&base, path)
 }
 
@@ -221,7 +230,10 @@ mod tests {
     #[test]
     fn restore_swaps_between_versions() {
         let base = temp_base();
-        let path = base.parent().unwrap().join(format!("doc-{}.xlsx", std::process::id()));
+        let path = base
+            .parent()
+            .unwrap()
+            .join(format!("doc-{}.xlsx", std::process::id()));
         std::fs::write(&path, b"v1").expect("write");
 
         push_version_in(&base, &path, b"v1");
@@ -239,7 +251,10 @@ mod tests {
     #[test]
     fn overflow_drops_oldest() {
         let base = temp_base();
-        let path = base.parent().unwrap().join(format!("doc-{}.xlsx", std::process::id()));
+        let path = base
+            .parent()
+            .unwrap()
+            .join(format!("doc-{}.xlsx", std::process::id()));
         std::fs::write(&path, b"seed").expect("seed");
         for round in 0..8u8 {
             push_version_in(&base, &path, &[round]);
@@ -259,7 +274,10 @@ mod tests {
     fn persists_across_reopen() {
         // 磁盘持久化核心：模拟进程重启（重新解析 index）后仍可恢复。
         let base = temp_base();
-        let path = base.parent().unwrap().join(format!("doc-{}.docx", std::process::id()));
+        let path = base
+            .parent()
+            .unwrap()
+            .join(format!("doc-{}.docx", std::process::id()));
         std::fs::write(&path, b"before").expect("write");
         push_version_in(&base, &path, b"before");
         std::fs::write(&path, b"after").expect("write after");

@@ -1,9 +1,22 @@
 import type { AgentTodoItem } from "../../lib/agentSessions";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Collapsible, CollapsibleContent } from "../ui/collapsible";
-import { ScrollArea } from "../ui/scroll-area";
-import { CheckIcon, CloseIcon } from "../icons";
 import { cn } from "../../lib/utils";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "../ui/trace";
+import {
+  CircleCheckIcon,
+  CircleDotIcon,
+  CircleIcon,
+  ListChecksIcon,
+  ListTodoIcon,
+} from "lucide-react";
 
 type AgentTodoProgressCardProps = {
   todos: AgentTodoItem[];
@@ -16,39 +29,6 @@ type AgentTodoProgressCardProps = {
   collapsed?: boolean;
 };
 
-function TodoStatusMark({
-  status,
-  activeSessionBusy
-}: {
-  status: AgentTodoItem["status"];
-  activeSessionBusy: boolean;
-}) {
-  const running = status === "in_progress";
-  const completed = status === "completed";
-  const cancelled = status === "cancelled";
-
-  return (
-    <span
-      className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-full border text-muted-foreground",
-        completed && "border-muted-foreground/75 bg-muted-foreground/80 text-background",
-        cancelled && "border-border bg-muted text-muted-foreground",
-        running && "border-muted-foreground/75 bg-muted-foreground/80 text-background",
-        running && activeSessionBusy && "animate-pulse"
-      )}
-      aria-hidden="true"
-    >
-      {completed ? (
-        <CheckIcon width={12} height={12} />
-      ) : cancelled ? (
-        <CloseIcon width={10} height={10} />
-      ) : running ? (
-        <span className="size-1 rounded-full bg-background" />
-      ) : null}
-    </span>
-  );
-}
-
 export function AgentTodoProgressCard({
   todos,
   progress,
@@ -58,9 +38,6 @@ export function AgentTodoProgressCard({
   if (todos.length <= 0) return null;
 
   const label = `${progress.done}/${progress.total}`;
-  const title = progress.active?.content
-    ? `进度 ${label} · ${progress.active.content}`
-    : `进度 ${label}`;
 
   if (collapsed) {
     // 单层胶囊：避免 Card+Badge 叠成「外白圈 + 内灰底」。
@@ -68,51 +45,76 @@ export function AgentTodoProgressCard({
       <div
         className={cn(
           "inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-border/60 bg-card px-2.5",
-          "text-xs font-medium tabular-nums tracking-normal text-muted-foreground shadow-sm",
-          "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out",
-          "hover:-translate-y-px hover:border-border hover:bg-muted hover:text-foreground hover:shadow-md",
-          "active:translate-y-0 active:shadow-sm"
+          activeSessionBusy && "border-muted-foreground/70 animate-pulse"
         )}
-        title={title}
-        aria-label={title}
       >
         {label}
       </div>
     );
   }
 
+  // 官方 QueueDemo 形状：一个 Trace 里两组 TraceCollapsible（N to do / N completed），
+  // 条目按当前状态「滑动」归属——随 todowrite 快照推进，条目从 pending 组滑入
+  // completed 组，而不是整卡平铺滚动。pending 展开、completed 收起（defaultOpen）。
+  const pending = todos.filter((todo) => todo.status !== "completed");
+  const completed = todos.filter((todo) => todo.status === "completed");
   return (
-    <Collapsible open>
-      <Card className="w-full rounded-[28px] border-border/55 bg-card/95 shadow-sm transition-all duration-200">
-        <CardHeader className="flex-row items-center justify-between gap-2 px-4 pb-2 pt-4">
-          <CardTitle className="text-sm font-normal text-muted-foreground">进度</CardTitle>
-          <span className="text-xs font-medium tabular-nums text-muted-foreground">{label}</span>
-        </CardHeader>
-        <CollapsibleContent>
-          <CardContent className="px-4 pb-4 pt-0">
-            <ScrollArea className="max-h-[min(46vh,340px)] pr-1.5" scrollBarClassName="w-1.5">
-              <div className="flex flex-col gap-2">
-                {todos.map((todo) => {
-                  const current = progress.active?.id === todo.id && todo.status !== "completed";
-                  return (
-                    <div key={todo.id} className="flex min-w-0 items-start gap-2">
-                      <TodoStatusMark status={todo.status} activeSessionBusy={activeSessionBusy} />
-                      <span
-                        className={cn(
-                          "min-w-0 flex-1 text-sm font-normal leading-6 text-muted-foreground",
-                          current && "text-foreground"
-                        )}
-                      >
-                        {todo.content}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
+    <div className="w-full rounded-[28px] border border-border/55 bg-card/95 p-3 text-sm shadow-sm">
+      <Trace>
+        {pending.length > 0 ? (
+          <TraceCollapsible key={`pending:${todos.length}`} defaultOpen>
+            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+              <TraceLine status={activeSessionBusy ? "running" : undefined}>
+                <TraceIcon>
+                  <ListTodoIcon />
+                </TraceIcon>
+                <TraceTitle>{`${pending.length} 待办`}</TraceTitle>
+                {progress.active?.content ? (
+                  <TraceDescription className="max-w-[240px] shrink truncate">
+                    {progress.active.content}
+                  </TraceDescription>
+                ) : null}
+              </TraceLine>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <Trace>
+                {pending.map((todo) => (
+                  <TraceLine key={todo.id} status={activeSessionBusy && todo.status === "in_progress" ? "running" : "pending"}>
+                    <TraceIcon>
+                      {todo.status === "in_progress" && activeSessionBusy ? <CircleDotIcon /> : <CircleIcon />}
+                    </TraceIcon>
+                    <TraceTitle className="font-normal">{todo.content}</TraceTitle>
+                  </TraceLine>
+                ))}
+              </Trace>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        ) : null}
+        {completed.length > 0 ? (
+          <TraceCollapsible defaultOpen>
+            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+              <TraceLine>
+                <TraceIcon>
+                  <ListChecksIcon />
+                </TraceIcon>
+                <TraceTitle>{`${completed.length} 已完成`}</TraceTitle>
+              </TraceLine>
+            </TraceCollapsibleTrigger>
+            <TraceCollapsibleContent>
+              <Trace>
+                {completed.map((todo) => (
+                  <TraceLine key={todo.id}>
+                    <TraceIcon>
+                      <CircleCheckIcon />
+                    </TraceIcon>
+                    <TraceTitle className="font-normal line-through opacity-70">{todo.content}</TraceTitle>
+                  </TraceLine>
+                ))}
+              </Trace>
+            </TraceCollapsibleContent>
+          </TraceCollapsible>
+        ) : null}
+      </Trace>
+    </div>
   );
 }

@@ -299,17 +299,10 @@ pub fn deliver_run_notification(
 
             let use_markdown = !prefers_plain_text(summary);
             if use_markdown {
-                match deliver_dingtalk_markdown(
-                    webhook,
-                    sign_secret.clone(),
-                    &heading,
-                    summary,
-                ) {
+                match deliver_dingtalk_markdown(webhook, sign_secret.clone(), &heading, summary) {
                     Ok(()) => return None,
                     Err(err) => {
-                        eprintln!(
-                            "[automation] dingtalk markdown failed, fallback to text: {err}"
-                        );
+                        eprintln!("[automation] dingtalk markdown failed, fallback to text: {err}");
                     }
                 }
             }

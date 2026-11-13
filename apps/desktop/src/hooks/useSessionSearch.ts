@@ -123,7 +123,8 @@ export function useSessionSearch(args: UseSessionSearchArgs): UseSessionSearchRe
           const candidates = all
             .filter((s) => scope === "all-repos" || normalizeWorkspacePath(s.repoPath) === normalizeWorkspacePath(currentRepoPath))
             .filter((s) => s.sessionId !== currentSessionId) // 当前会话命中由 currentHits 负责，避免重复
-            .filter((s) => s.messageCount !== 0) // 跳过空会话，省一次 IPC
+            // 跳过确认为空的会话省一次 IPC；null = 未驻留（懒恢复元数据行），不可据此排除
+            .filter((s) => s.messageCount == null || s.messageCount !== 0)
             .sort((a, b) => b.updatedAtMs - a.updatedAtMs); // 最近活跃优先，命中更早浮现
 
           const acc: SearchHit[] = [];

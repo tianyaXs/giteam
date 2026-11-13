@@ -30,9 +30,9 @@ pub fn compute_next_run_at(
 }
 
 fn next_interval(expr: &str, after_ms: i64) -> Result<Option<i64>, AutomationError> {
-    let secs: i64 = expr.parse().map_err(|_| {
-        AutomationError::InvalidInput(format!("invalid interval seconds: {expr}"))
-    })?;
+    let secs: i64 = expr
+        .parse()
+        .map_err(|_| AutomationError::InvalidInput(format!("invalid interval seconds: {expr}")))?;
     if secs <= 0 {
         return Err(AutomationError::InvalidInput(
             "interval must be a positive number of seconds".into(),
@@ -213,10 +213,7 @@ pub fn preset_weekdays(hour: u32, minute: u32) -> (ScheduleKind, String) {
 }
 
 pub fn preset_weekly(weekday: u32, hour: u32, minute: u32) -> (ScheduleKind, String) {
-    (
-        ScheduleKind::Cron,
-        format!("{minute} {hour} * * {weekday}"),
-    )
+    (ScheduleKind::Cron, format!("{minute} {hour} * * {weekday}"))
 }
 
 #[cfg(test)]

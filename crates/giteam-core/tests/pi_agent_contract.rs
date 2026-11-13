@@ -220,10 +220,22 @@ fn question_carries_up_to_four_options_with_multiple_flag() {
         question: "选哪些？".to_string(),
         header: None,
         options: vec![
-            AgentQuestionOption { label: "a".into(), description: None },
-            AgentQuestionOption { label: "b".into(), description: None },
-            AgentQuestionOption { label: "c".into(), description: None },
-            AgentQuestionOption { label: "d".into(), description: None },
+            AgentQuestionOption {
+                label: "a".into(),
+                description: None,
+            },
+            AgentQuestionOption {
+                label: "b".into(),
+                description: None,
+            },
+            AgentQuestionOption {
+                label: "c".into(),
+                description: None,
+            },
+            AgentQuestionOption {
+                label: "d".into(),
+                description: None,
+            },
         ],
         multiple: true,
         custom: true,

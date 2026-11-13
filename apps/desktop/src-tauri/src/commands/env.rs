@@ -341,7 +341,6 @@ fn build_path_env() -> String {
         .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default())
 }
 
-
 #[cfg(windows)]
 fn command_for_path(bin: &std::path::Path) -> Command {
     let ext = bin
@@ -660,8 +659,7 @@ fn install_script(name: &str, action: &str) -> Result<&'static str, String> {
     {
         match (name, action) {
             ("giteam", "install") | ("giteam", "update") => {
-                return Ok(
-                    r#"where npm >nul 2>nul
+                return Ok(r#"where npm >nul 2>nul
 if errorlevel 1 (
   echo npm is required to install giteam CLI ^(not found in PATH^).
   exit /b 2
@@ -669,24 +667,20 @@ if errorlevel 1 (
 echo [giteam] npm install -g giteam@latest
 call npm install -g giteam@latest
 where giteam
-echo [giteam] install finished"#,
-                );
+echo [giteam] install finished"#);
             }
             ("giteam", "uninstall") => {
-                return Ok(
-                    r#"where npm >nul 2>nul
+                return Ok(r#"where npm >nul 2>nul
 if errorlevel 1 (
   echo npm not found; skip uninstall
   exit /b 0
 )
 echo [giteam] npm uninstall -g giteam
 call npm uninstall -g giteam
-echo giteam uninstall finished."#,
-                );
+echo giteam uninstall finished."#);
             }
             ("git", "install") => {
-                return Ok(
-                    r#"where git >nul 2>nul
+                return Ok(r#"where git >nul 2>nul
 if not errorlevel 1 (
   echo git already installed
   exit /b 0
@@ -696,8 +690,7 @@ if errorlevel 1 (
   echo Install Git for Windows manually: https://git-scm.com/download/win
   exit /b 2
 )
-winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"#,
-                );
+winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements"#);
             }
             ("git", "uninstall") => {
                 return Ok(
@@ -755,7 +748,8 @@ case "$GIT_AFTER" in
     exit 1
     ;;
 esac"#),
-        ("entire", "install") | ("entire", "update") => Ok(r#"if ! command -v brew >/dev/null 2>&1; then
+        ("entire", "install") | ("entire", "update") => {
+            Ok(r#"if ! command -v brew >/dev/null 2>&1; then
   echo "Homebrew is required to install Entire CLI."
   exit 2
 fi
@@ -767,7 +761,8 @@ elif brew list --formula entire >/dev/null 2>&1 || brew list entireio/tap/entire
   brew upgrade entireio/tap/entire || brew upgrade entire || brew install entireio/tap/entire
 else
   brew install entireio/tap/entire || brew install --cask entireio/tap/entire
-fi"#),
+fi"#)
+        }
         ("entire", "uninstall") => Ok(r##"rehash 2>/dev/null || true
 echo "[giteam] entire before: $(command -v entire || echo missing)"
 # Entire may be formula or cask (Caskroom/entire); try both names.
@@ -972,12 +967,14 @@ fn check_runtime_requirements_sync() -> RuntimeRequirementsStatus {
 fn dependency_still_installed(name: &str) -> bool {
     match name {
         "git" => check_dep("git", &["--version"], "brew install git").installed,
-        "entire" => check_dep(
-            "entire",
-            &["--version"],
-            "brew tap entireio/tap && brew install entireio/tap/entire",
-        )
-        .installed,
+        "entire" => {
+            check_dep(
+                "entire",
+                &["--version"],
+                "brew tap entireio/tap && brew install entireio/tap/entire",
+            )
+            .installed
+        }
         "giteam" => check_giteam_npm_global().installed,
         _ => false,
     }
@@ -1085,12 +1082,7 @@ pub fn start_runtime_dependency_action(name: &str, action: &str) -> Result<Strin
                                 "{name_owned} 卸载后仍可检测到，可能是系统自带或不完全移除"
                             );
                             append_job_log(&job_id_for_thread, &msg);
-                            set_job_done(
-                                &job_id_for_thread,
-                                false,
-                                status.code(),
-                                Some(msg),
-                            );
+                            set_job_done(&job_id_for_thread, false, status.code(), Some(msg));
                         } else {
                             set_job_done(&job_id_for_thread, true, status.code(), None);
                         }

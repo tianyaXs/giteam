@@ -83,16 +83,16 @@ impl ChromiumoxideController {
             .await
             .map_err(|_| format!("Chrome 冷启动超时（{LAUNCH_TIMEOUT:?}）"))?
             .map_err(|e| {
-                format!("未找到 Chrome/Chromium 或启动失败：{e}\n请安装 Google Chrome 或 Chromium。")
+                format!(
+                    "未找到 Chrome/Chromium 或启动失败：{e}\n请安装 Google Chrome 或 Chromium。"
+                )
             })?;
         let (browser, mut handler) = launched;
 
         // 驱动 CDP WebSocket：handler 是 Stream，必须持续 poll 否则命令不归。
         // 不因单个事件 Err 提前退出（长生命周期下误杀非致命事件会断整个连接）——连接真断时
         // `next()` 返回 None，循环自然结束。生命周期随 browser。
-        tauri::async_runtime::spawn(async move {
-            while handler.next().await.is_some() {}
-        });
+        tauri::async_runtime::spawn(async move { while handler.next().await.is_some() {} });
 
         let page = browser
             .new_page("about:blank")
@@ -114,20 +114,13 @@ impl ChromiumoxideController {
 
     /// 执行单个 action。返回结果 + 是否连接死（超时类失败需 reset 自愈）。
     /// 业务类错误（元素未找到、eval 语法错）不 reset——常见，重 launch 反而拖慢 agent。
-    async fn run_action(
-        &self,
-        page: &Page,
-        action: BrowserAction,
-    ) -> (BrowserActionResult, bool) {
+    async fn run_action(&self, page: &Page, action: BrowserAction) -> (BrowserActionResult, bool) {
         match action {
             BrowserAction::Navigate { url } => {
                 match tokio::time::timeout(ACTION_TIMEOUT, page.goto(url.as_str())).await {
                     Ok(Ok(_)) => (BrowserActionResult::ok_text("已导航"), false),
                     // 导航的 CdpError 多为连接断，保守判死重连。
-                    Ok(Err(e)) => (
-                        BrowserActionResult::err(format!("导航失败：{e}")),
-                        true,
-                    ),
+                    Ok(Err(e)) => (BrowserActionResult::err(format!("导航失败：{e}")), true),
                     Err(_) => (
                         BrowserActionResult::err(format!("导航超时（{ACTION_TIMEOUT:?}）")),
                         true,

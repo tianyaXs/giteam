@@ -17,7 +17,8 @@ import {
 } from "../../lib/agent/toolPresentation";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
-import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { CollapsibleTrigger } from "../ui/collapsible";
+import { Tool } from "../ai-elements/tool";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Separator } from "../ui/separator";
 import { cn } from "../../lib/utils";
@@ -487,7 +488,7 @@ export function AgentExecutionPartView({
       </span>
       <strong
         className={cn(
-          "shrink-0 font-medium",
+          "shrink-0 font-normal",
           listItem ? "text-xs" : "text-sm",
           isError ? "text-destructive" : "text-muted-foreground"
         )}
@@ -591,7 +592,7 @@ export function AgentExecutionPartView({
     // 无详情时强制 closed：Root 仍在，Content 高度为 0（AnimatedCollapsibleContent + forceMount）
     const shellOpen = canToggle ? open : false;
     return (
-      <Collapsible
+      <Tool
         className={cn(
           // 始终占住 border 盒模型；折叠时透明，展开才显色——避免「无 border → 有 border」挤布局
           "min-w-0 max-w-full overflow-hidden border transition-[border-color,background-color] duration-200",
@@ -644,7 +645,7 @@ export function AgentExecutionPartView({
             </>
           ) : null}
         </AnimatedCollapsibleContent>
-      </Collapsible>
+      </Tool>
     );
   }
 

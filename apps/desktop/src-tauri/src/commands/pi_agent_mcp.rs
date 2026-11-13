@@ -11,9 +11,7 @@ use giteam_core::pi_agent::{
 };
 
 #[tauri::command]
-pub async fn agent_mcp_list_services(
-    repo_path: String,
-) -> Result<Vec<McpServiceStatus>, String> {
+pub async fn agent_mcp_list_services(repo_path: String) -> Result<Vec<McpServiceStatus>, String> {
     mcp_admin_list_services(Path::new(&repo_path))
         .await
         .map_err(|error| error.to_string())

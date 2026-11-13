@@ -59,11 +59,7 @@ impl RemoteRepoClient {
         fastrand::u64(0..u64::MAX).to_string()
     }
 
-    async fn post(
-        &self,
-        path: &str,
-        body: Value,
-    ) -> Result<Value, RemoteRepoError> {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, RemoteRepoError> {
         if self.base_url.is_empty() {
             return Err(RemoteRepoError::InvalidResponse(
                 "REMOTE_REPO_SERVICE_URL is not configured".to_string(),
@@ -83,7 +79,9 @@ impl RemoteRepoClient {
         let text = resp.text().await.map_err(RemoteRepoError::Http)?;
 
         if !status.is_success() {
-            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
                 return Err(RemoteRepoError::Unauthorized);
             }
             return Err(RemoteRepoError::Remote {
@@ -92,9 +90,8 @@ impl RemoteRepoClient {
             });
         }
 
-        let parsed: ApiResponse = serde_json::from_str(&text).map_err(|e| {
-            RemoteRepoError::InvalidResponse(format!("{} | body: {}", e, text))
-        })?;
+        let parsed: ApiResponse = serde_json::from_str(&text)
+            .map_err(|e| RemoteRepoError::InvalidResponse(format!("{} | body: {}", e, text)))?;
 
         if !parsed.ok {
             if let Some(err) = parsed.error {
@@ -138,10 +135,16 @@ impl RemoteRepoClient {
             "list_operations" => "/v1/workspaces/operations",
             "list_activities" => "/v1/activities/list",
             "repo_gitnexus_status" => "/v1/gitnexus/repo-status",
-            _ => return Err(RemoteRepoError::InvalidResponse(format!("unsupported workspace operation: {operation}"))),
+            _ => {
+                return Err(RemoteRepoError::InvalidResponse(format!(
+                    "unsupported workspace operation: {operation}"
+                )))
+            }
         };
         let mut body = input.as_object().cloned().ok_or_else(|| {
-            RemoteRepoError::InvalidResponse("workspace operation input must be an object".to_string())
+            RemoteRepoError::InvalidResponse(
+                "workspace operation input must be an object".to_string(),
+            )
         })?;
         body.insert("request_id".to_string(), Value::String(self.request_id()));
         self.post(path, Value::Object(body)).await
@@ -156,10 +159,15 @@ impl RemoteRepoClient {
             .get("repos")
             .and_then(Value::as_array)
             .or_else(|| data.as_array())
-            .ok_or_else(|| RemoteRepoError::InvalidResponse("expected repos array from /v1/repos".to_string()))?
+            .ok_or_else(|| {
+                RemoteRepoError::InvalidResponse("expected repos array from /v1/repos".to_string())
+            })?
             .clone();
         rows.into_iter()
-            .map(|row| serde_json::from_value(row).map_err(|e| RemoteRepoError::InvalidResponse(format!("repo list parse: {e}"))) )
+            .map(|row| {
+                serde_json::from_value(row)
+                    .map_err(|e| RemoteRepoError::InvalidResponse(format!("repo list parse: {e}")))
+            })
             .collect()
     }
 
@@ -217,13 +225,22 @@ impl RemoteRepoClient {
         })
     }
 
-    pub async fn list_repo_branches(&self, repo_id: &str) -> Result<Vec<RemoteRepoBranch>, RemoteRepoError> {
-        let data = self.post(
-            "/v1/repos/branches",
-            serde_json::json!({ "repo_id": repo_id, "request_id": self.request_id() }),
-        ).await?;
-        serde_json::from_value(data.get("branches").cloned().unwrap_or_else(|| Value::Array(vec![])))
-            .map_err(|error| RemoteRepoError::InvalidResponse(format!("repo branch parse: {error}")))
+    pub async fn list_repo_branches(
+        &self,
+        repo_id: &str,
+    ) -> Result<Vec<RemoteRepoBranch>, RemoteRepoError> {
+        let data = self
+            .post(
+                "/v1/repos/branches",
+                serde_json::json!({ "repo_id": repo_id, "request_id": self.request_id() }),
+            )
+            .await?;
+        serde_json::from_value(
+            data.get("branches")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![])),
+        )
+        .map_err(|error| RemoteRepoError::InvalidResponse(format!("repo branch parse: {error}")))
     }
 
     pub async fn list_repo_files(
@@ -241,8 +258,9 @@ impl RemoteRepoClient {
             body["ref_or_commit"] = Value::String(value.to_string());
         }
         let data = self.post("/v1/repos/files/list", body).await?;
-        serde_json::from_value(data)
-            .map_err(|error| RemoteRepoError::InvalidResponse(format!("repo file tree parse: {error}")))
+        serde_json::from_value(data).map_err(|error| {
+            RemoteRepoError::InvalidResponse(format!("repo file tree parse: {error}"))
+        })
     }
 
     pub async fn read_repo_file(
@@ -260,8 +278,9 @@ impl RemoteRepoClient {
             body["ref_or_commit"] = Value::String(value.to_string());
         }
         let data = self.post("/v1/repos/files/read", body).await?;
-        serde_json::from_value(data)
-            .map_err(|error| RemoteRepoError::InvalidResponse(format!("repo file content parse: {error}")))
+        serde_json::from_value(data).map_err(|error| {
+            RemoteRepoError::InvalidResponse(format!("repo file content parse: {error}"))
+        })
     }
 
     pub async fn add_repository(
@@ -378,9 +397,8 @@ impl RemoteRepoClient {
         });
         let data = self.post("/v1/sessions/state", body).await?;
 
-        let mut state: SessionState = serde_json::from_value(data).map_err(|e| {
-            RemoteRepoError::InvalidResponse(format!("session state parse: {}", e))
-        })?;
+        let mut state: SessionState = serde_json::from_value(data)
+            .map_err(|e| RemoteRepoError::InvalidResponse(format!("session state parse: {}", e)))?;
 
         if !state.dirty {
             state.modified_count = 0;
@@ -458,9 +476,8 @@ impl RemoteRepoClient {
             }
         };
 
-        let nodes: Vec<FileTreeNode> = serde_json::from_value(data).map_err(|e| {
-            RemoteRepoError::InvalidResponse(format!("file tree parse: {}", e))
-        })?;
+        let nodes: Vec<FileTreeNode> = serde_json::from_value(data)
+            .map_err(|e| RemoteRepoError::InvalidResponse(format!("file tree parse: {}", e)))?;
         Ok(nodes)
     }
 
@@ -476,9 +493,8 @@ impl RemoteRepoClient {
         });
         let data = self.post("/v1/files/read", body).await?;
 
-        let file_content: FileContent = serde_json::from_value(data).map_err(|e| {
-            RemoteRepoError::InvalidResponse(format!("file content parse: {}", e))
-        })?;
+        let file_content: FileContent = serde_json::from_value(data)
+            .map_err(|e| RemoteRepoError::InvalidResponse(format!("file content parse: {}", e)))?;
         Ok(file_content)
     }
 
@@ -542,7 +558,8 @@ mod tests {
 
     #[test]
     fn test_connection_status_soft_offline() {
-        let client = RemoteRepoClient::new("http://localhost:1".to_string(), "test-key".to_string());
+        let client =
+            RemoteRepoClient::new("http://localhost:1".to_string(), "test-key".to_string());
         let status = tauri::async_runtime::block_on(client.connection_status_soft("test-repo"));
         assert!(!status.online);
         assert_eq!(status.repo_id, "test-repo");
