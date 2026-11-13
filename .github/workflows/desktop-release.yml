@@ -163,7 +163,9 @@ jobs:
             | xargs -0 -r grep -l 'packages.microsoft.com' \
             | xargs -r sudo rm -f || true
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # libpipewire-0.3-dev：xcap 的 Linux 捕获后端（pipewire-rs）需要
+          # libspa-sys pkg-config 探测（0.2.57 起引入 xcap 截图依赖后必需）。
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libpipewire-0.3-dev
 
       - name: Install frontend dependencies
         working-directory: apps/desktop
