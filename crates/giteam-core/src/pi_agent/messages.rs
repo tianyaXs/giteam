@@ -19,6 +19,28 @@ pub struct AgentMessage {
     pub role: AgentRole,
     pub created_at_ms: u64,
     pub parts: Vec<AgentPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AgentTokenUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+impl AgentTokenUsage {
+    fn from_pi(usage: &pi::model::Usage) -> Self {
+        Self {
+            input: usage.input,
+            output: usage.output,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
+        }
+    }
 }
 
 /// Prompt 附带的图片。优先 `path`（由桌面端落盘），否则用 `data`（纯 base64）。
@@ -84,6 +106,7 @@ impl AgentMessage {
                     role: AgentRole::User,
                     created_at_ms: timestamp_ms(message.timestamp),
                     parts,
+                    usage: None,
                 }
             }
             pi::sdk::Message::Assistant(message) => {
@@ -99,6 +122,7 @@ impl AgentMessage {
                     output: serde_json::to_value(&*message).unwrap_or(serde_json::Value::Null),
                     is_error: message.is_error,
                 }],
+                usage: None,
             },
             pi::sdk::Message::Custom(message) => Self {
                 id: message_id("custom", message.timestamp),
@@ -109,6 +133,7 @@ impl AgentMessage {
                     content: message.content,
                     details: message.details,
                 }],
+                usage: None,
             },
         }
     }
@@ -122,6 +147,7 @@ impl AgentMessage {
             role: AgentRole::Assistant,
             created_at_ms: timestamp_ms(message.timestamp),
             parts: map_content_blocks(message.content),
+            usage: Some(AgentTokenUsage::from_pi(&message.usage)),
         }
     }
 }
@@ -208,6 +234,7 @@ mod tests {
                     details: None,
                 },
             ],
+            usage: None,
         };
         let json = serde_json::to_value(&message).expect("serialize message");
         let parts = json["parts"].as_array().expect("parts array");
@@ -235,6 +262,7 @@ mod tests {
             parts: vec![AgentPart::Text {
                 text: text.to_string(),
             }],
+            usage: None,
         };
         let messages = assign_stable_message_ids(vec![
             make(AgentRole::Assistant, "a"),
@@ -260,6 +288,7 @@ mod tests {
             role,
             created_at_ms: 1,
             parts: Vec::new(),
+            usage: None,
         };
         let messages = assign_stable_message_ids(vec![
             message("user-1", AgentRole::User),

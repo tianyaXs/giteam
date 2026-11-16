@@ -654,7 +654,10 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
     role: message.role,
     content,
     graphRefs,
-    attachments: images.length > 0 ? images : undefined
+    attachments: images.length > 0 ? images : undefined,
+    usage: message.usage
+      ? { cacheRead: message.usage.cacheRead, input: message.usage.input }
+      : undefined
   };
 }
 
@@ -2052,6 +2055,18 @@ export function App() {
       || !activeAgentSession.loaded
     )
   );
+  // 最近一次 assistant 回复的 prompt 缓存用量（输入框下方命中率展示）。
+  const latestCacheUsage = useMemo(() => {
+    if (!activeAgentSession) return null;
+    const messages = activeAgentSession.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === "assistant" && msg.usage) {
+        return msg.usage;
+      }
+    }
+    return null;
+  }, [activeAgentSession]);
   const activeAgentModel = useMemo(() => {
     return resolveActiveAgentModel({
       activeSessionId: activeAgentSessionId,
@@ -10931,6 +10946,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             <AgentComposerPanel
               permissions={agentActivePermissions}
               activeSessionStale={agentActiveSessionStale}
+              cacheUsage={latestCacheUsage}
               onOpenPermissionsPanel={() => openAgentModulePanel("permissions")}
               onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
               questionLoading={agentQuestionLoading}

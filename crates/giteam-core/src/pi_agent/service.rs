@@ -3692,6 +3692,7 @@ mod title_tests {
             parts: vec![AgentPart::Text {
                 text: "  帮我\n审查一下   最近的改动 ".to_string(),
             }],
+            usage: None,
         }];
         assert_eq!(
             derive_agent_session_title(&messages).as_deref(),

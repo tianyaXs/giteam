@@ -7,6 +7,8 @@ export type AgentChatMessage = {
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
   /** 用户从资产图谱引用的节点（仅展示；模型上下文在发送时已注入）。 */
   graphRefs?: import("./graphContextRefs").GraphContextRef[];
+  /** token 用量（仅 assistant 消息有值；用于缓存命中率展示）。 */
+  usage?: { cacheRead: number; input: number };
 };
 
 export type AgentChatSession = {

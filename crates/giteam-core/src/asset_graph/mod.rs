@@ -448,6 +448,7 @@ mod tests {
                     role: AgentRole::User,
                     created_at_ms: sequence * 1000,
                     parts: vec![AgentPart::Text { text: text.into() }],
+                    usage: None,
                 },
             },
         }

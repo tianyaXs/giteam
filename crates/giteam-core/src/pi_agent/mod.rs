@@ -57,7 +57,7 @@ pub use mcp::{
     repo_config_path as mcp_repo_config_path, McpError, McpMutationResult, McpRuntime,
     McpServiceError, McpServiceInput, McpServiceStatus, McpToolInfo, McpToolSpec, McpToolsSnapshot,
 };
-pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
+pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole, AgentTokenUsage};
 pub use os_controller::{OsActionResult, OsController, SharedOsController};
 pub use prompt::default_system_prompt;
 pub use providers::{

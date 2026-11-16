@@ -1,7 +1,8 @@
 use giteam_core::pi_agent::{
     AgentEvent, AgentEventEnvelope, AgentInteraction, AgentInteractionReply, AgentMessage,
     AgentPart, AgentQuestion, AgentQuestionOption, AgentRole, AgentSessionStatus, AgentTodo,
-    AgentTodoStatus, PiRuntimeInfo, RuntimeCapabilities, AGENT_EVENT_SCHEMA_VERSION,
+    AgentTodoStatus, AgentTokenUsage, PiRuntimeInfo, RuntimeCapabilities,
+    AGENT_EVENT_SCHEMA_VERSION,
 };
 
 #[test]
@@ -75,10 +76,21 @@ fn message_parts_round_trip_without_provider_specific_types() {
                 text: "done".to_string(),
             },
         ],
+        usage: Some(AgentTokenUsage {
+            input: 128,
+            output: 32,
+            cache_read: 1_024,
+            cache_write: 256,
+        }),
     };
 
     let json = serde_json::to_string(&message).expect("message should serialize");
     assert!(!json.to_ascii_lowercase().contains("opencode"));
+    let value: serde_json::Value = serde_json::from_str(&json).expect("message JSON");
+    assert_eq!(value["usage"]["input"], 128);
+    assert_eq!(value["usage"]["cacheRead"], 1_024);
+    assert_eq!(value["usage"]["cacheWrite"], 256);
+    assert!(value["usage"].get("cache_read").is_none());
 
     let decoded: AgentMessage = serde_json::from_str(&json).expect("message should deserialize");
     assert_eq!(decoded, message);

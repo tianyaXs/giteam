@@ -147,11 +147,19 @@ export type AgentPart =
   | { type: "toolResult"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: "custom"; customType: string; content: string; details: unknown };
 
+export type AgentTokenUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
 export type AgentMessage = {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "custom";
   createdAtMs: number;
   parts: AgentPart[];
+  usage?: AgentTokenUsage;
 };
 
 export type AgentEvent = {

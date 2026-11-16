@@ -151,6 +151,8 @@ type AgentComposerPanelProps = {
   onRemoveQueuedFollowUp?: (id: string) => void;
   /** 空态建议 chips 点击回填(并聚焦输入框)。 */
   onFillPrompt?: (text: string) => void;
+  /** 最近一次 assistant 回复的 prompt 缓存用量（命中率展示）。 */
+  cacheUsage?: { cacheRead: number; input: number } | null;
 };
 
 /** 空态建议(ai-elements Suggestions 风格,ChatGPT 式起手 chips)。 */
@@ -233,7 +235,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     onPrimaryAction,
     queuedFollowUps = [],
     onRemoveQueuedFollowUp,
-    onFillPrompt
+    onFillPrompt,
+    cacheUsage
   } = props;
 
   const activeModelDisplay = getModelDisplay(activeModel || "");
@@ -249,6 +252,10 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
   const visiblePermissions = permissions.slice(0, 2);
   const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
+  // prompt 缓存命中率：cacheRead / (cacheRead + input)，仅在有数据时展示。
+  const cacheHitRate = cacheUsage && (cacheUsage.cacheRead + cacheUsage.input) > 0
+    ? Math.round((cacheUsage.cacheRead / (cacheUsage.cacheRead + cacheUsage.input)) * 100)
+    : null;
   const previewStripRef = useRef<HTMLDivElement | null>(null);
   const [emptyGrowUpOffset, setEmptyGrowUpOffset] = useState(0);
 
@@ -707,7 +714,16 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </Suggestions>
             ) : null}
           </div>
-        ) : composerCard}
+        ) : (
+          <>
+            {composerCard}
+            {cacheHitRate !== null ? (
+              <div className="flex items-center justify-end gap-1 px-2 text-[10px] text-muted-foreground/60">
+                <span>缓存命中 {cacheHitRate}%</span>
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );

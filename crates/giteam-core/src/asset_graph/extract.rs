@@ -773,6 +773,7 @@ mod tests {
                 role: AgentRole::User,
                 created_at_ms: 1,
                 parts: vec![AgentPart::Text { text: text.into() }],
+                usage: None,
             },
         }
     }
