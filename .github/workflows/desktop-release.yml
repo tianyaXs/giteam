@@ -16,7 +16,7 @@ jobs:
   # 先单独创建/复用 Release，避免 matrix 多平台同时 create 撞 already_exists
   create-release:
     name: Create release
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     outputs:
@@ -98,7 +98,7 @@ jobs:
           #   os: macos-14
           #   args: "--target x86_64-apple-darwin"
           - name: linux-x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
             args: ""
           - name: windows-x86_64
             os: windows-latest
@@ -152,7 +152,7 @@ jobs:
           shared-key: desktop-release-${{ matrix.name }}
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           # GitHub-hosted Ubuntu images sometimes ship Microsoft apt sources that
           # return 403 Forbidden and break the whole `apt-get update`.
