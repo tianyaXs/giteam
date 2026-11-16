@@ -123,8 +123,11 @@ impl PiSessionConfig {
             Some(discipline) => base_prompt.map(|base| format!("{base}\n\n{discipline}")),
             None => base_prompt,
         };
-        // append 段按「稳定 → 易变」排序：项目记忆（GITEAM.md）→ 工作区快照
-        // （git/平台/验证命令）→ skills 清单 → 调用方显式追加段。
+        // append 段按「稳定 → 易变」排序（对齐 dsh 的 policy-last 设计：
+        // 越靠后的段越容易变，前段命中缓存的概率越高）。
+        // 1) 项目记忆（GITEAM.md，会话级稳定）→ 2) 工作区快照（git/平台/
+        // 验证命令，按天粒度）→ 3) skills 清单（仓库级稳定）→ 4) 跨会话
+        // digest（每次会话/turn 都可能变化，放最后）→ 5) 调用方显式追加段。
         // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集
         // （含祖先目录），此处再注入会导致双重注入。
         // 子 agent（Hermes skip_context_files）：保留记忆与工作区快照，不注入
@@ -142,13 +145,6 @@ impl PiSessionConfig {
         if let Some(memory) = wrap_project_memory(&self.repo_path) {
             append_parts.push(memory);
         }
-        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
-        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
-        if self.session_kind != "subagent" {
-            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
-                append_parts.push(digest);
-            }
-        }
         append_parts.push(super::environment::build_workspace_context(
             &self.repo_path,
             can_execute,
@@ -156,6 +152,13 @@ impl PiSessionConfig {
         if self.session_kind != "subagent" {
             if let Some(skills) = super::skills::build_skills_prompt(&self.repo_path) {
                 append_parts.push(skills);
+            }
+        }
+        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
+        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
+        if self.session_kind != "subagent" {
+            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
+                append_parts.push(digest);
             }
         }
         if let Some(extra) = self.append_system_prompt.as_deref() {
