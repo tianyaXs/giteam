@@ -122,7 +122,12 @@ offset instead of re-reading the whole file.";
             clamp_read_limit(&mut input, &self.config);
         }
         let output = self.inner.execute(tool_call_id, input, on_update).await?;
-        Ok(apply_result_budget(output, tool_call_id, self.inner.name(), &self.config))
+        Ok(apply_result_budget(
+            output,
+            tool_call_id,
+            self.inner.name(),
+            &self.config,
+        ))
     }
 }
 
@@ -170,7 +175,12 @@ fn apply_result_budget(
     }
 
     let full_text = collect_text(&output.content);
-    let spill_path = spill_full_text(config.spill_dir.as_ref(), tool_call_id, tool_name, &full_text);
+    let spill_path = spill_full_text(
+        config.spill_dir.as_ref(),
+        tool_call_id,
+        tool_name,
+        &full_text,
+    );
 
     let preview = head_tail_preview(&full_text, max_chars);
     let footer = match &spill_path {
@@ -191,7 +201,10 @@ Re-read with a smaller offset/limit if you need more.]…",
     output.content = vec![ContentBlock::Text(TextContent::new(format!(
         "{preview}{footer}"
     )))];
-    let mut details = output.details.take().unwrap_or_else(|| Value::Object(Default::default()));
+    let mut details = output
+        .details
+        .take()
+        .unwrap_or_else(|| Value::Object(Default::default()));
     if let Some(obj) = details.as_object_mut() {
         obj.insert("giteamToolBudget".to_string(), Value::Bool(true));
         obj.insert(
@@ -341,12 +354,8 @@ mod tests {
         let input = last_input.lock().expect("lock").clone().expect("input");
         assert_eq!(input["limit"], 400);
 
-        futures::executor::block_on(tool.execute(
-            "c2",
-            serde_json::json!({"path": "a.rs"}),
-            None,
-        ))
-        .expect("execute");
+        futures::executor::block_on(tool.execute("c2", serde_json::json!({"path": "a.rs"}), None))
+            .expect("execute");
         let input = last_input.lock().expect("lock").clone().expect("input");
         assert_eq!(input["limit"], 200);
     }

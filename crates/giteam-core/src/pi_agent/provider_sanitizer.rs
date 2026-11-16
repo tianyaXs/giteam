@@ -35,7 +35,11 @@ pub(crate) fn collapse_repeated_tool_call_id(id: &str) -> Option<String> {
             continue;
         }
         let unit = &trimmed[..period];
-        if trimmed.as_bytes().chunks_exact(period).all(|chunk| chunk == unit.as_bytes()) {
+        if trimmed
+            .as_bytes()
+            .chunks_exact(period)
+            .all(|chunk| chunk == unit.as_bytes())
+        {
             return Some(unit.to_string());
         }
     }
@@ -161,7 +165,10 @@ fn sanitize_stream_event_tool_call_ids(event: pi::sdk::StreamEvent) -> pi::sdk::
                 tool_call,
             }
         }
-        SE::Done { reason, mut message } => {
+        SE::Done {
+            reason,
+            mut message,
+        } => {
             sanitize_assistant_tool_call_ids(&mut message);
             SE::Done { reason, message }
         }
@@ -224,9 +231,7 @@ mod tests {
         }
     }
 
-    fn collect_wrapped(
-        events: Vec<pi::sdk::StreamEvent>,
-    ) -> Vec<pi::sdk::StreamEvent> {
+    fn collect_wrapped(events: Vec<pi::sdk::StreamEvent>) -> Vec<pi::sdk::StreamEvent> {
         futures::executor::block_on(async {
             let provider = ToolCallIdSanitizerProvider::wrap(Arc::new(StubProvider { events }));
             let stream = provider

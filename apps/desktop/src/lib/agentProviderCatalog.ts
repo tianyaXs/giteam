@@ -4,7 +4,7 @@ import {
   parseModelRef,
   resolveProviderAliasWithNames
 } from "./agentModels";
-import { isPresetProviderId } from "./agentProviders";
+import { getProviderDisplayName, isPresetProviderId } from "./agentProviders";
 
 /** 列表置顶的 OpenAI Completions 兼容入口（填 Base URL + API Key）。 */
 export const OPENAI_COMPATIBLE_PROVIDER_ID = "openai-compatible";
@@ -333,6 +333,9 @@ export function getAgentModelDisplayInfo(input: {
   return {
     ref: normalized || "",
     provider: provider || "Auto",
+    // 选择器分组标题应显示用户可读的供应商名（models.json 里填写的 name / 预设名），
+    // 而不是 openai-compatible.gac 这类内部 id。
+    providerLabel: provider ? getProviderDisplayName(provider, input.providerNames) : "Auto",
     modelId,
     label
   };

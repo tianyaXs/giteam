@@ -15,13 +15,13 @@
 
 mod docx;
 mod pptx;
-mod xlsx;
 mod versions;
+mod xlsx;
 
 pub use docx::{EditDocxTool, ReadDocxTool, WriteDocxTool};
 pub use pptx::{EditPptxTool, ReadPptxTool, WritePptxTool};
-pub use versions::{previous_version_count, restore_previous_version};
 pub(crate) use versions::push_version;
+pub use versions::{previous_version_count, restore_previous_version};
 pub use xlsx::{EditXlsxTool, ReadXlsxTool, WriteXlsxTool};
 
 use pi::sdk::{ContentBlock, TextContent, ToolOutput, ToolUpdate};
@@ -142,7 +142,11 @@ pub(crate) fn xml_unescape(text: &str) -> String {
                     .strip_prefix("#x")
                     .or_else(|| entity.strip_prefix("#X"))
                     .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                    .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse::<u32>().ok()))
+                    .or_else(|| {
+                        entity
+                            .strip_prefix('#')
+                            .and_then(|dec| dec.parse::<u32>().ok())
+                    })
                     .and_then(char::from_u32)
                     .map(|ch| ch.to_string());
                 let replacement: Option<&str> = match entity {
@@ -153,9 +157,7 @@ pub(crate) fn xml_unescape(text: &str) -> String {
                     "apos" => Some("'"),
                     _ => None,
                 };
-                let replacement = replacement
-                    .map(|value| value.to_string())
-                    .or(numeric);
+                let replacement = replacement.map(|value| value.to_string()).or(numeric);
                 if let Some(rep) = replacement {
                     out.push_str(&rep);
                     i += semi_rel + 1;
@@ -188,8 +190,6 @@ fn error_output(text: String) -> ToolOutput {
         is_error: true,
     }
 }
-
-
 
 /// 阶段化进度：`on_update` 为 None 时静默跳过（部分运行时不传回调）。
 /// `path` 随 details 下发——前端靠它在右侧面板打开/刷新文件实时预览；

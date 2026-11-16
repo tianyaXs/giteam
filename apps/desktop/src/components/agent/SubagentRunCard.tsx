@@ -4,7 +4,7 @@
  * - 展开区：最近 3 步窗口 + 更早一步淡出不可点；无「更早 N 步」文案
  * - 内部步骤默认收起；定高窗口避免新增步骤顶抖外层标签
  */
-import { ChevronRight } from "lucide-react";
+import { CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentDetailedPart, AgentTodoItem } from "../../lib/agentSessions";
 import { readAgentTodosFromPart } from "../../lib/agentParts";
@@ -13,6 +13,15 @@ import { toolDisplayName } from "../../lib/agent/toolPresentation";
 import { cn } from "../../lib/utils";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
+import {
+  TraceCollapsible,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "../ui/trace";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
@@ -280,64 +289,39 @@ export function SubagentRunCard({
   const taskLabel = isError || interrupted ? "任务失败" : "任务";
 
   return (
-    <Collapsible
+    <TraceCollapsible
       open={open}
       onOpenChange={setOpen}
       className={cn(
-        "grid min-w-0 max-w-full gap-0.5 overflow-hidden",
+        "min-w-0 max-w-full",
         listItem ? "py-0.5" : "py-1"
       )}
     >
-      <CollapsibleTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          className={cn(
-            "h-auto min-h-[28px] w-full min-w-0 justify-start overflow-hidden rounded-md px-0 text-left hover:bg-transparent hover:text-foreground",
-            listItem ? "py-1" : "py-1.5"
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2 overflow-hidden">
-            <span
-              className={cn(
-                "shrink-0 text-xs font-medium text-foreground/80",
-                running && "animate-pulse",
-                (isError || interrupted) && "text-destructive"
-              )}
-            >
-              {taskLabel}
-            </span>
-            <span className="min-w-0 flex-1 overflow-hidden">
-              <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-                <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-                  {titlePreview}
-                </span>
-                <span
-                  className={cn(
-                    "shrink-0 text-[11px] tabular-nums text-muted-foreground",
-                    running && "animate-pulse",
-                    (isError || interrupted) && "text-destructive"
-                  )}
-                >
-                  {statusLabel}
-                </span>
-                <ChevronRight
-                  className={cn(
-                    "size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-200",
-                    open && "rotate-90"
-                  )}
-                  aria-hidden
-                />
-              </span>
-              {metaLine ? (
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground/80">
-                  {metaLine}
-                </span>
-              ) : null}
-            </span>
-          </span>
-        </Button>
-      </CollapsibleTrigger>
+      <TraceCollapsibleTrigger
+        className={cn(
+          "min-w-0 max-w-full",
+          listItem ? "py-1" : "py-1.5"
+        )}
+      >
+        {/* 官方 Subagent 形状:图标=状态(转圈/绿勾/红叹号),running 时标题 shimmer。 */}
+        <TraceLine status={isError || interrupted ? "error" : running ? "running" : undefined}>
+          <TraceIcon>
+            {isError || interrupted ? (
+              <CircleAlertIcon />
+            ) : running ? (
+              <LoaderCircleIcon className="animate-spin" />
+            ) : (
+              <CircleCheckIcon />
+            )}
+          </TraceIcon>
+          <TraceTitle>{titlePreview}</TraceTitle>
+          {statusLabel || metaLine ? (
+            <TraceDescription className="shrink-0 text-[11px]">
+              {[statusLabel, metaLine].filter(Boolean).join(" · ")}
+            </TraceDescription>
+          ) : null}
+        </TraceLine>
+      </TraceCollapsibleTrigger>
 
       <AnimatedCollapsibleContent open={open}>
         <CollapsibleContent forceMount>
@@ -345,6 +329,23 @@ export function SubagentRunCard({
           <div className="flex min-w-0 max-w-md gap-2 pb-1">
             <span className="w-[28px] shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 flex-col gap-1 overflow-hidden">
+              {/* 官方 Details:任务描述置顶,类型用 Badge。 */}
+              {prompt ? (
+                <div className="flex flex-wrap items-start gap-1.5">
+                  <Badge
+                    variant="secondary"
+                    className="mt-0.5 shrink-0 rounded-full px-2 py-0 text-[10px] font-medium normal-case tracking-normal"
+                  >
+                    {subagentType}
+                  </Badge>
+                  <span
+                    className="min-w-0 flex-1 overflow-hidden whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground/90 [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [display:-webkit-box]"
+                    title={prompt}
+                  >
+                    {prompt}
+                  </span>
+                </div>
+              ) : null}
               {summary && summary !== description ? (
                 <div className="text-[12.5px] leading-5 text-muted-foreground">
                   <MarkdownLite source={summary} />
@@ -396,12 +397,6 @@ export function SubagentRunCard({
                 ) : null}
               </div>
 
-              {prompt && !running ? (
-                <pre className="max-w-full whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground/80">
-                  {prompt}
-                </pre>
-              ) : null}
-
               {childSessionId && (completed || isError || interrupted) ? (
                 <div className="flex min-w-0 justify-start pt-0.5">
                   <Button
@@ -422,6 +417,6 @@ export function SubagentRunCard({
           </div>
         </CollapsibleContent>
       </AnimatedCollapsibleContent>
-    </Collapsible>
+    </TraceCollapsible>
   );
 }

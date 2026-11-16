@@ -26,10 +26,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use wait_timeout::ChildExt;
 use pi::sdk::{ContentBlock, Result, TextContent, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::Value;
+use wait_timeout::ChildExt;
 
 use super::shell_resolver::{is_bash_like, resolve_default_shell, shell_invoke_args};
 
@@ -115,7 +115,9 @@ fn matches_long_lived_pattern(unquoted: &str) -> bool {
     let phrase = |p: &str| lower.contains(p);
 
     // 包管理器 dev/start/serve/watch 脚本
-    let pkg = ["npm", "pnpm", "yarn", "bun", "deno"].iter().any(|p| has(p));
+    let pkg = ["npm", "pnpm", "yarn", "bun", "deno"]
+        .iter()
+        .any(|p| has(p));
     let script = ["dev", "serve", "watch"].iter().any(|s| has(s)) || has("start");
     if pkg && script {
         return true;
@@ -132,7 +134,13 @@ fn matches_long_lived_pattern(unquoted: &str) -> bool {
         return true;
     }
     // 各类 dev server / watcher 框架（整词，避免 next/nuxt 之类普通词误伤）
-    for word in ["uvicorn", "gunicorn", "nodemon", "vite", "webpack-dev-server"] {
+    for word in [
+        "uvicorn",
+        "gunicorn",
+        "nodemon",
+        "vite",
+        "webpack-dev-server",
+    ] {
         if has(word) {
             return true;
         }
@@ -393,9 +401,10 @@ impl BackgroundTaskRegistry {
         // command_prefix（如 set -euo pipefail）与 pi 注入的 trap 仅对 POSIX shell
         // 有意义；cmd/powershell 不兼容这些语法，直接跳过，避免整条命令变语法错。
         let command = if is_bash_like(&shell) {
-            command_prefix
-                .filter(|p| !p.trim().is_empty())
-                .map_or_else(|| command.to_string(), |prefix| format!("{prefix}\n{command}"))
+            command_prefix.filter(|p| !p.trim().is_empty()).map_or_else(
+                || command.to_string(),
+                |prefix| format!("{prefix}\n{command}"),
+            )
         } else {
             command.to_string()
         };
@@ -763,10 +772,7 @@ impl GiteamBashTool {
         // 探测 bash(Git Bash)/pwsh/cmd，避免回落 "sh" 报 program not found。前台 bash
         // 不再委托 pi（pi 注入的 trap + 硬编码 -c 在 cmd/powershell 下整条失败），改由
         // run_foreground_blocking 自实现，shell_path/prefix 在此透传给执行器。
-        let shell_path = config
-            .shell_path
-            .clone()
-            .or_else(resolve_default_shell);
+        let shell_path = config.shell_path.clone().or_else(resolve_default_shell);
         let command_prefix = config.shell_command_prefix.clone();
         Self {
             registry,
@@ -844,54 +850,55 @@ impl Tool for GiteamBashTool {
         let input: GiteamBashInput = match serde_json::from_value(input) {
             Ok(parsed) => parsed,
             Err(error) => {
-                return Ok(text_output(
-                    format!("bash 参数无效：{error}"),
-                    None,
-                    true,
-                ));
+                return Ok(text_output(format!("bash 参数无效：{error}"), None, true));
             }
         };
 
         let notices = self.registry.take_completion_notices();
 
         if input.run_in_background {
-            return Ok(match self.registry.spawn(
-                &self.cwd,
-                self.shell_path.as_deref(),
-                self.command_prefix.as_deref(),
-                &input.command,
-            ) {
-                Ok(snapshot) => {
-                    let body = format!(
-                        "Started background shell {} (pid {}, {}).\n\
+            return Ok(
+                match self.registry.spawn(
+                    &self.cwd,
+                    self.shell_path.as_deref(),
+                    self.command_prefix.as_deref(),
+                    &input.command,
+                ) {
+                    Ok(snapshot) => {
+                        let body = format!(
+                            "Started background shell {} (pid {}, {}).\n\
                          Log: {}\n\
                          Use bash_output(shell_id=\"{}\") to read output or wait for exit, \
                          and kill_shell(shell_id=\"{}\") to terminate. Verify readiness with a \
                          health check in a separate foreground call.",
-                        snapshot.shell_id,
-                        snapshot.pid,
-                        snapshot.status,
-                        snapshot.log_path.display(),
-                        snapshot.shell_id,
-                        snapshot.shell_id,
-                    );
-                    text_output(
-                        prepend_notices(notices, body),
-                        Some(serde_json::json!({
-                            "background": true,
-                            "shellId": snapshot.shell_id,
-                            "pid": snapshot.pid,
-                            "logPath": snapshot.log_path,
-                        })),
-                        false,
-                    )
-                }
-                Err(error) => text_output(
-                    prepend_notices(notices, format!("Failed to start background shell: {error}")),
-                    None,
-                    true,
-                ),
-            });
+                            snapshot.shell_id,
+                            snapshot.pid,
+                            snapshot.status,
+                            snapshot.log_path.display(),
+                            snapshot.shell_id,
+                            snapshot.shell_id,
+                        );
+                        text_output(
+                            prepend_notices(notices, body),
+                            Some(serde_json::json!({
+                                "background": true,
+                                "shellId": snapshot.shell_id,
+                                "pid": snapshot.pid,
+                                "logPath": snapshot.log_path,
+                            })),
+                            false,
+                        )
+                    }
+                    Err(error) => text_output(
+                        prepend_notices(
+                            notices,
+                            format!("Failed to start background shell: {error}"),
+                        ),
+                        None,
+                        true,
+                    ),
+                },
+            );
         }
 
         if let Some(guidance) = foreground_guard(&input.command, input.timeout) {
@@ -917,9 +924,9 @@ impl Tool for GiteamBashTool {
             );
             let _ = tx.send(result);
         });
-        let result = rx.await.unwrap_or_else(|_| {
-            ForegroundResult::failed("foreground worker dropped unexpectedly")
-        });
+        let result = rx
+            .await
+            .unwrap_or_else(|_| ForegroundResult::failed("foreground worker dropped unexpectedly"));
         let body = format_foreground_output(&result, &input.command, timeout_secs);
         Ok(text_output(
             prepend_notices(notices, body),
@@ -986,9 +993,10 @@ fn run_foreground_blocking(
         .unwrap_or_else(|| "sh".to_string());
     // command_prefix 仅对 POSIX shell 有意义；cmd/powershell 跳过，避免语法错。
     let full_command = if is_bash_like(&shell) {
-        command_prefix
-            .filter(|p| !p.trim().is_empty())
-            .map_or_else(|| command.to_string(), |prefix| format!("{prefix}\n{command}"))
+        command_prefix.filter(|p| !p.trim().is_empty()).map_or_else(
+            || command.to_string(),
+            |prefix| format!("{prefix}\n{command}"),
+        )
     } else {
         command.to_string()
     };
@@ -1072,7 +1080,10 @@ fn truncate_output(text: &str) -> (String, bool) {
     let lines: Vec<&str> = s.lines().collect();
     if lines.len() > FOREGROUND_MAX_LINES {
         truncated = true;
-        (lines[lines.len() - FOREGROUND_MAX_LINES..].join("\n"), truncated)
+        (
+            lines[lines.len() - FOREGROUND_MAX_LINES..].join("\n"),
+            truncated,
+        )
     } else {
         (s.to_string(), truncated)
     }
@@ -1203,7 +1214,11 @@ impl Tool for BashOutputTool {
             let body = if tasks.is_empty() {
                 "No background shells in this session.".to_string()
             } else {
-                tasks.iter().map(render_snapshot).collect::<Vec<_>>().join("\n")
+                tasks
+                    .iter()
+                    .map(render_snapshot)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             };
             return Ok(text_output(prepend_notices(notices, body), None, false));
         };
@@ -1226,7 +1241,14 @@ impl Tool for BashOutputTool {
             let hint = if known.is_empty() {
                 "No background shells exist in this session.".to_string()
             } else {
-                format!("Known shells:\n{}", known.iter().map(render_snapshot).collect::<Vec<_>>().join("\n"))
+                format!(
+                    "Known shells:\n{}",
+                    known
+                        .iter()
+                        .map(render_snapshot)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
             };
             return Ok(text_output(
                 prepend_notices(notices, format!("Unknown shell_id \"{shell_id}\". {hint}")),
@@ -1376,7 +1398,10 @@ mod tests {
     #[test]
     fn guard_rejects_zero_timeout() {
         let guidance = foreground_guard("sleep 5", Some(0)).expect("timeout 0 must be rejected");
-        assert!(guidance.contains("run_in_background"), "guidance: {guidance}");
+        assert!(
+            guidance.contains("run_in_background"),
+            "guidance: {guidance}"
+        );
     }
 
     #[test]
@@ -1420,10 +1445,7 @@ mod tests {
             "flask run",
             "cargo watch -x test",
         ] {
-            assert!(
-                foreground_guard(cmd, None).is_some(),
-                "should flag: {cmd}"
-            );
+            assert!(foreground_guard(cmd, None).is_some(), "should flag: {cmd}");
         }
     }
 
@@ -1444,10 +1466,7 @@ mod tests {
             "sleep 10 & echo done",
             "sudo nohup ./server &",
         ] {
-            assert!(
-                foreground_guard(cmd, None).is_some(),
-                "should flag: {cmd}"
-            );
+            assert!(foreground_guard(cmd, None).is_some(), "should flag: {cmd}");
         }
     }
 
@@ -1522,7 +1541,11 @@ mod tests {
             .expect("spawn should succeed");
         let killed = registry.kill(&snapshot.shell_id).expect("task exists");
         assert!(!killed.running, "sleep 300 should be terminated");
-        assert!(killed.status.starts_with("killed"), "status: {}", killed.status);
+        assert!(
+            killed.status.starts_with("killed"),
+            "status: {}",
+            killed.status
+        );
         // 进程组确已不在
         let alive = unsafe { libc::kill(-(snapshot.pid as i32), 0) } == 0;
         assert!(!alive, "process group should be gone");

@@ -4,6 +4,11 @@
 <dict>
 	<!-- macOS 深链：Safari「在 Giteam 中打开」依赖 CFBundleURLTypes；
 	     tauri-plugin-deep-link 的 desktop.schemes 不会自动写入本文件，必须显式声明。 -->
+	<!-- macOS 本地网络访问声明：正式包访问局域网 provider（如 http://192.168.x.x）
+	     必须声明 NSLocalNetworkUsageDescription；缺失时未授权进程会立即
+	     "No route to host (os error 65)"，而终端启动的 dev 已继承终端授权所以正常。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Giteam 需要访问局域网内的模型服务。</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -43,7 +43,8 @@ pub struct AssetGraph {
 impl AssetGraph {
     /// 打开（或创建）仓库的记忆库（用户目录；必要时从仓库旁旧路径迁移）。
     pub fn open(repo_path: &Path) -> Result<Self, String> {
-        let canonical = std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+        let canonical =
+            std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
         let db_path = resolve_memory_db_path(&canonical)?;
         let db = store::open(&db_path).map_err(|error| error.to_string())?;
         Ok(Self {
@@ -83,8 +84,7 @@ impl AssetGraph {
             return legacy;
         }
         // 都不存在时返回用户目录规范位置（replay_directory 对不存在目录返回 0）。
-        crate::pi_agent::pi_sessions_dir_for_repo(&self.repo_path)
-            .unwrap_or_else(|| legacy.clone())
+        crate::pi_agent::pi_sessions_dir_for_repo(&self.repo_path).unwrap_or_else(|| legacy.clone())
     }
 
     /// live 事件入口：completed 级事件累积，turn/run 边界批量落库。
@@ -100,8 +100,7 @@ impl AssetGraph {
         if matches!(
             &envelope.event,
             crate::pi_agent::AgentEvent::SessionStatusChanged {
-                status:
-                    crate::pi_agent::AgentSessionStatus::Idle
+                status: crate::pi_agent::AgentSessionStatus::Idle
                     | crate::pi_agent::AgentSessionStatus::Failed
                     | crate::pi_agent::AgentSessionStatus::Aborted,
                 ..
@@ -109,11 +108,7 @@ impl AssetGraph {
         ) {
             self.live.remove(&key);
             if let Some(host) = current_extraction_host(&self.subagent_host) {
-                stage1::schedule_idle_stage1(
-                    host,
-                    self.db_path.clone(),
-                    self.repo_path.clone(),
-                );
+                stage1::schedule_idle_stage1(host, self.db_path.clone(), self.repo_path.clone());
             }
             return;
         }
@@ -131,12 +126,13 @@ impl AssetGraph {
             }
             // 语义抽取（Codex 式 Stage-1）：turn 边界只入队非真空内容，
             // **价值判定交给抽取 agent**（idle/startup 后跑）；热路径不调 LLM、不闪 UI。
-            let is_turn_end =
-                matches!(envelope.event, crate::pi_agent::AgentEvent::TurnCompleted { .. });
+            let is_turn_end = matches!(
+                envelope.event,
+                crate::pi_agent::AgentEvent::TurnCompleted { .. }
+            );
             let is_extraction_child = extraction::is_extract_session(&key.0);
             if is_turn_end && !is_extraction_child {
-                let mut input =
-                    acc.take_extraction_input(envelope.timestamp_ms, envelope.sequence);
+                let mut input = acc.take_extraction_input(envelope.timestamp_ms, envelope.sequence);
                 if input.repo_path.is_empty() {
                     input.repo_path = self.repo_path.to_string_lossy().to_string();
                 }
@@ -246,7 +242,8 @@ fn migrate_sqlite_bundle(from_db: &Path, to_db: &Path) -> Result<(), String> {
             continue;
         }
         if std::fs::rename(&from, &to).is_err() {
-            std::fs::copy(&from, &to).map_err(|e| format!("copy {} failed: {e}", from.display()))?;
+            std::fs::copy(&from, &to)
+                .map_err(|e| format!("copy {} failed: {e}", from.display()))?;
             let _ = std::fs::remove_file(&from);
         }
     }
@@ -284,7 +281,12 @@ pub fn set_extraction_host(host: std::sync::Arc<dyn crate::pi_agent::SubagentHos
         })
         .unwrap_or_default();
     for (db_path, repo_path) in attached_repos {
-        stage1::kick_stage1(host.clone(), db_path, repo_path, stage1::Stage1Trigger::Startup);
+        stage1::kick_stage1(
+            host.clone(),
+            db_path,
+            repo_path,
+            stage1::Stage1Trigger::Startup,
+        );
     }
 }
 
@@ -345,8 +347,8 @@ pub fn attach_repo_with_extraction(
 /// 重新挂载（重建索引用）：保留已挂载实例的抽取宿主——直接 attach_repo
 /// 会把带 host 的实例换成裸实例，语义抽取在第一次重建后静默停止。
 pub fn reattach_repo(repo_path: &Path) -> Result<(usize, usize), String> {
-    let host = attached(repo_path)
-        .and_then(|graph| graph.lock().ok().and_then(|g| g.subagent_host()));
+    let host =
+        attached(repo_path).and_then(|graph| graph.lock().ok().and_then(|g| g.subagent_host()));
     let mut graph = AssetGraph::open(repo_path)?;
     let db_path = graph.db_path().to_path_buf();
     let repo = graph.repo_path.clone();
@@ -374,7 +376,9 @@ pub fn on_event_published(envelope: &crate::pi_agent::AgentEventEnvelope) {
         let canonical = std::fs::canonicalize(&repo).unwrap_or(repo);
         let graph = {
             let Ok(graphs) = graphs().lock() else { return };
-            let Some(graph) = graphs.get(&canonical) else { return };
+            let Some(graph) = graphs.get(&canonical) else {
+                return;
+            };
             Arc::clone(graph)
         };
         let guard = graph.lock();
@@ -390,7 +394,10 @@ pub fn on_event_published(envelope: &crate::pi_agent::AgentEventEnvelope) {
 /// 读取某仓库已挂载的图谱（供 Control HTTP 端点使用）。
 pub fn attached(repo_path: &Path) -> Option<Arc<Mutex<AssetGraph>>> {
     let canonical = std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
-    graphs().lock().ok().and_then(|g| g.get(&canonical).cloned())
+    graphs()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(&canonical).cloned())
 }
 
 /// 抽取队列摘要：优先读已挂载实例；未挂载时直接打开记忆库（只读轮询，不创建目录）。

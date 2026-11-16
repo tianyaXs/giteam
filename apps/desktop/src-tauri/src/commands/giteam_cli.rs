@@ -571,10 +571,8 @@ pub fn giteam_cloud_link(
     // 先确保本机 Host 在听，再拉隧道；否则 Gateway 转发到死端口，手机「能进但没模型」。
     let port = ensure_host_running_for_cloud_relay().unwrap_or(0);
     // Block until WS is up so create/switch returns with「中继已连接」.
-    let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
-        port,
-        std::time::Duration::from_secs(6),
-    )?;
+    let ready =
+        giteam_core::cloud::start_cloud_tunnel_and_wait(port, std::time::Duration::from_secs(6))?;
     if !ready {
         eprintln!("[giteam-cloud] link finished but tunnel not ready within timeout");
     }
@@ -598,7 +596,10 @@ pub fn giteam_cloud_forget_key(key_id: String) -> Result<CloudLinkStatusView, St
 }
 
 #[tauri::command]
-pub fn giteam_cloud_rename_key(key_id: String, name: String) -> Result<CloudLinkStatusView, String> {
+pub fn giteam_cloud_rename_key(
+    key_id: String,
+    name: String,
+) -> Result<CloudLinkStatusView, String> {
     let _ = giteam_core::cloud::rename_access_key_local(&key_id, &name)?;
     Ok(cloud_status_view())
 }
@@ -641,10 +642,8 @@ pub fn giteam_cloud_use_key(access_key: String) -> Result<CloudLinkStatusView, S
     )?;
     let _ = linked;
     let port = ensure_host_running_for_cloud_relay().unwrap_or(0);
-    let ready = giteam_core::cloud::start_cloud_tunnel_and_wait(
-        port,
-        std::time::Duration::from_secs(6),
-    )?;
+    let ready =
+        giteam_core::cloud::start_cloud_tunnel_and_wait(port, std::time::Duration::from_secs(6))?;
     if !ready {
         eprintln!("[giteam-cloud] use_key finished but tunnel not ready within timeout");
     }

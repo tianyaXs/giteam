@@ -21,7 +21,10 @@ pub fn stash_pending_import_url(url: String) {
 /// 取出并清空冷启动深链（前端挂载后调用一次）。
 #[tauri::command]
 pub fn share_take_pending_import() -> Option<String> {
-    PENDING_IMPORT_URL.lock().ok().and_then(|mut slot| slot.take())
+    PENDING_IMPORT_URL
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
 }
 
 /// 取消正在进行的分享导入（若无进行中任务则为空操作）。

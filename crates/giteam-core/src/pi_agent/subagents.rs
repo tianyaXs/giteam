@@ -11,14 +11,7 @@ use async_trait::async_trait;
 /// 子会话的 interaction 事件只经 SubagentChildEvent 投影给父流，前端
 /// 应答卡片只认主 sessionId——子代理提问永远等不到回答，只会挂到
 /// stall 超时把整个 task 判死。歧义应带回摘要由父侧决策。
-pub const PLAN_ENABLED_TOOLS: &[&str] = &[
-    "read",
-    "grep",
-    "find",
-    "ls",
-    "web_fetch",
-    "web_search",
-];
+pub const PLAN_ENABLED_TOOLS: &[&str] = &["read", "grep", "find", "ls", "web_fetch", "web_search"];
 
 /// 子 agent 墙钟超时（秒）：绝对上限（Hermes 旧默认 600）。
 /// 可用环境变量 `GITEAM_SUBAGENT_TIMEOUT_SECS` 覆盖；`0` = 不限时。
@@ -152,7 +145,8 @@ File paths in the input are relative to this workspace unless absolute."
     }
     parts.push(
         "\nTOOLS AVAILABLE TO YOU: (none). \
-Do not attempt tool calls. Reply with the JSON object only.".to_string(),
+Do not attempt tool calls. Reply with the JSON object only."
+            .to_string(),
     );
     parts.join("")
 }
@@ -484,11 +478,15 @@ mod tests {
         assert!(prompt.contains("Never assume the repository lives at /workspace/"));
         assert!(prompt.contains("overlong summaries crowd out the parent's context window"));
         // 能力边界如实陈述：工具集 + 不可再委派。
-        assert!(prompt.contains("TOOLS AVAILABLE TO YOU: read, grep, find, ls, web_fetch, web_search"));
+        assert!(
+            prompt.contains("TOOLS AVAILABLE TO YOU: read, grep, find, ls, web_fetch, web_search")
+        );
         assert!(prompt.contains("you cannot spawn further subagents"));
         // 歧义处理：不能提问（interaction 无人应答），带回摘要由父决策。
         assert!(prompt.contains("You cannot ask the user questions"));
-        assert!(prompt.contains("state the ambiguity and the candidate options in your final summary"));
+        assert!(
+            prompt.contains("state the ambiguity and the candidate options in your final summary")
+        );
         assert!(!prompt.contains("todowrite"));
         assert!(!prompt.contains("switching to Build"));
     }
@@ -499,4 +497,3 @@ mod tests {
         assert!(resolve("").is_err());
     }
 }
-

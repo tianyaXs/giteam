@@ -9,7 +9,12 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      input: "index.html",
+      // 多页构建：index.html 主应用；overlay.html agent 覆盖层（极简入口，
+      // 见 src/os/overlay-main.tsx）。两页完全隔离，覆盖层不引主应用 bundle。
+      input: {
+        main: "index.html",
+        overlay: "overlay.html",
+      },
       output: {
         manualChunks(id) {
           if (id.includes("node_modules/monaco-editor") || id.includes("node_modules/@monaco-editor")) {

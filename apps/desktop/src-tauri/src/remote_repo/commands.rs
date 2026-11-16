@@ -59,7 +59,11 @@ fn normalize_service_url(raw: &str) -> Result<String, String> {
             return Err("服务地址必须是 http(s) URL 或同源路径。".to_string());
         }
         let trimmed = value.trim_end_matches('/');
-        return Ok(if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() });
+        return Ok(if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        });
     }
 
     let mut url = reqwest::Url::parse(value)
@@ -67,7 +71,11 @@ fn normalize_service_url(raw: &str) -> Result<String, String> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err("服务地址仅支持 http 或 https。".to_string());
     }
-    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err("服务地址不能包含用户名、密码、查询参数或片段。".to_string());
     }
     let path = url.path().trim_end_matches('/').to_string();
@@ -101,10 +109,11 @@ fn configured_default_api_key() -> String {
 }
 
 fn service_setting(app_handle: &AppHandle) -> Result<RemoteRepoServiceSetting, String> {
-    let stored = store::get_service_setting(app_handle)?.unwrap_or(store::RemoteRepoServiceStoredSetting {
-        service_url: String::new(),
-        api_key: String::new(),
-    });
+    let stored =
+        store::get_service_setting(app_handle)?.unwrap_or(store::RemoteRepoServiceStoredSetting {
+            service_url: String::new(),
+            api_key: String::new(),
+        });
     let configured_url = stored.service_url;
     let configured_url = normalize_service_url(&configured_url)?;
     let api_key = if stored.api_key.trim().is_empty() {
@@ -135,7 +144,10 @@ fn service_setting(app_handle: &AppHandle) -> Result<RemoteRepoServiceSetting, S
 
 fn client_for_app(app_handle: &AppHandle) -> Result<RemoteRepoClient, String> {
     let setting = service_setting(app_handle)?;
-    Ok(RemoteRepoClient::new(setting.effective_url, setting.api_key))
+    Ok(RemoteRepoClient::new(
+        setting.effective_url,
+        setting.api_key,
+    ))
 }
 
 fn payload_string(payload: &Value, names: &[&str]) -> Option<String> {
@@ -159,7 +171,9 @@ fn payload_string_allow_empty(payload: &Value, names: &[&str]) -> Option<String>
 }
 
 fn payload_bool(payload: &Value, names: &[&str]) -> Option<bool> {
-    names.iter().find_map(|name| payload.get(*name).and_then(Value::as_bool))
+    names
+        .iter()
+        .find_map(|name| payload.get(*name).and_then(Value::as_bool))
 }
 
 fn required_payload_string(payload: &Value, names: &[&str]) -> Result<String, String> {
@@ -178,7 +192,13 @@ fn normalize_connection_status(repo: &RemoteServiceRepo) -> String {
         "ready" | "ok" | "synced" => "connected".to_string(),
         "needs_auth" | "unauthorized" => "auth_required".to_string(),
         "" => {
-            if repo.default_commit.as_deref().unwrap_or("").trim().is_empty() {
+            if repo
+                .default_commit
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
                 if repo.synced == Some(false) {
                     "stale".to_string()
                 } else {
@@ -192,16 +212,27 @@ fn normalize_connection_status(repo: &RemoteServiceRepo) -> String {
     }
 }
 
-fn remote_repo_overview(app_handle: &AppHandle, repo: RemoteServiceRepo) -> Result<RemoteRepoOverview, String> {
+fn remote_repo_overview(
+    app_handle: &AppHandle,
+    repo: RemoteServiceRepo,
+) -> Result<RemoteRepoOverview, String> {
     let ui_state = store::get_ui_state(app_handle, &repo.repo_id)?;
     let connection_status = normalize_connection_status(&repo);
     Ok(RemoteRepoOverview {
         repo_id: repo.repo_id.clone(),
-        display_name: if repo.name.trim().is_empty() { repo.repo_id } else { repo.name },
+        display_name: if repo.name.trim().is_empty() {
+            repo.repo_id
+        } else {
+            repo.name
+        },
         provider: repo.provider,
         remote_url: repo.remote_url.or(repo.origin),
         connection_status,
-        default_ref: if repo.default_ref.trim().is_empty() { "main".to_string() } else { repo.default_ref },
+        default_ref: if repo.default_ref.trim().is_empty() {
+            "main".to_string()
+        } else {
+            repo.default_ref
+        },
         default_commit: repo.default_commit,
         linked_project_ids: Vec::new(),
         pinned: ui_state.pinned,
@@ -212,13 +243,18 @@ fn remote_repo_overview(app_handle: &AppHandle, repo: RemoteServiceRepo) -> Resu
     })
 }
 
-async fn check_service_url(raw_service_url: &str, api_key: &str) -> Result<RemoteRepoServiceCheck, String> {
+async fn check_service_url(
+    raw_service_url: &str,
+    api_key: &str,
+) -> Result<RemoteRepoServiceCheck, String> {
     let service_url = normalize_service_url(raw_service_url)?;
     if service_url.is_empty() {
         return Err("服务地址不能为空。".to_string());
     }
     if service_url.starts_with('/') {
-        return Err("打包 App 需要填写完整的 http(s) 服务地址；同源代理路径只适用于网页预览。".to_string());
+        return Err(
+            "打包 App 需要填写完整的 http(s) 服务地址；同源代理路径只适用于网页预览。".to_string(),
+        );
     }
 
     let url = format!("{service_url}/v1/dashboard");
@@ -243,7 +279,10 @@ async fn check_service_url(raw_service_url: &str, api_key: &str) -> Result<Remot
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    Ok(RemoteRepoServiceCheck { service_url, repo_count })
+    Ok(RemoteRepoServiceCheck {
+        service_url,
+        repo_count,
+    })
 }
 
 fn merge_setting_and_check(
@@ -262,7 +301,8 @@ fn merge_setting_and_check(
 }
 
 fn action_value<T: Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|error| format!("serialize remote repo response failed: {error}"))
+    serde_json::to_value(value)
+        .map_err(|error| format!("serialize remote repo response failed: {error}"))
 }
 
 #[tauri::command]
@@ -275,15 +315,28 @@ pub async fn remote_repo(
         "get_service_url" => action_value(service_setting(&app_handle)?),
         "test_service_url" => {
             let requested = payload_string(&payload, &["serviceUrl", "service_url"])
-                .unwrap_or_else(|| service_setting(&app_handle).map(|setting| setting.effective_url).unwrap_or_default());
+                .unwrap_or_else(|| {
+                    service_setting(&app_handle)
+                        .map(|setting| setting.effective_url)
+                        .unwrap_or_default()
+                });
             let api_key = payload_string_allow_empty(&payload, &["apiKey", "api_key"])
-                .unwrap_or_else(|| service_setting(&app_handle).map(|setting| setting.api_key).unwrap_or_default());
+                .unwrap_or_else(|| {
+                    service_setting(&app_handle)
+                        .map(|setting| setting.api_key)
+                        .unwrap_or_default()
+                });
             action_value(check_service_url(&requested, &api_key).await?)
         }
         "set_service_url" => {
-            let requested = payload_string(&payload, &["serviceUrl", "service_url"]).unwrap_or_default();
+            let requested =
+                payload_string(&payload, &["serviceUrl", "service_url"]).unwrap_or_default();
             let api_key = payload_string_allow_empty(&payload, &["apiKey", "api_key"])
-                .unwrap_or_else(|| service_setting(&app_handle).map(|setting| setting.api_key).unwrap_or_default());
+                .unwrap_or_else(|| {
+                    service_setting(&app_handle)
+                        .map(|setting| setting.api_key)
+                        .unwrap_or_default()
+                });
             let configured_url = normalize_service_url(&requested)?;
             if configured_url.is_empty() && api_key.trim().is_empty() {
                 store::set_service_setting(&app_handle, "", "")?;
@@ -338,11 +391,18 @@ pub async fn remote_repo(
             let repo_id = required_payload_string(&payload, &["repoId", "repo_id"])?;
             let name = required_payload_string(&payload, &["name"])?;
             let remote_url = required_payload_string(&payload, &["remoteUrl", "remote_url"])?;
-            let default_ref = payload_string(&payload, &["defaultRef", "default_ref"]).unwrap_or_else(|| "main".to_string());
+            let default_ref = payload_string(&payload, &["defaultRef", "default_ref"])
+                .unwrap_or_else(|| "main".to_string());
             let auth_method = payload_string(&payload, &["authMethod", "auth_method"]);
             let client = client_for_app(&app_handle)?;
             client
-                .add_repository(&repo_id, &name, &remote_url, &default_ref, auth_method.as_deref())
+                .add_repository(
+                    &repo_id,
+                    &name,
+                    &remote_url,
+                    &default_ref,
+                    auth_method.as_deref(),
+                )
                 .await
                 .map_err(command_error)?;
             action_value(Map::new())
@@ -369,7 +429,10 @@ pub async fn remote_repo(
         "remove_repo" => {
             let repo_id = required_payload_string(&payload, &["repoId", "repo_id"])?;
             let client = client_for_app(&app_handle)?;
-            client.remove_repository(&repo_id).await.map_err(command_error)?;
+            client
+                .remove_repository(&repo_id)
+                .await
+                .map_err(command_error)?;
             action_value(Map::new())
         }
         "set_pinned" => {
@@ -381,7 +444,12 @@ pub async fn remote_repo(
         "list_branches" => {
             let repo_id = required_payload_string(&payload, &["repoId", "repo_id"])?;
             let client = client_for_app(&app_handle)?;
-            action_value(client.list_repo_branches(&repo_id).await.map_err(command_error)?)
+            action_value(
+                client
+                    .list_repo_branches(&repo_id)
+                    .await
+                    .map_err(command_error)?,
+            )
         }
         "list_files" => {
             let repo_id = required_payload_string(&payload, &["repoId", "repo_id"])?;
@@ -446,6 +514,9 @@ mod tests {
         let payload = json!({ "apiKey": "" });
 
         assert_eq!(payload_string(&payload, &["apiKey"]), None);
-        assert_eq!(payload_string_allow_empty(&payload, &["apiKey"]), Some(String::new()));
+        assert_eq!(
+            payload_string_allow_empty(&payload, &["apiKey"]),
+            Some(String::new())
+        );
     }
 }

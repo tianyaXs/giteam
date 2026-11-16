@@ -281,7 +281,9 @@ impl ProviderCatalog {
             .entry("models")
             .or_insert_with(|| serde_json::json!([]));
         let models = models.as_array_mut().ok_or_else(|| {
-            PiAgentError::Provider(format!("models.json provider {provider} models must be an array"))
+            PiAgentError::Provider(format!(
+                "models.json provider {provider} models must be an array"
+            ))
         })?;
         let existing_model_name = models
             .iter()
@@ -300,11 +302,15 @@ impl ProviderCatalog {
             .or(existing_model_name)
             .unwrap_or_else(|| model_id.to_string());
         let new_model = serde_json::json!({ "id": model_id, "name": model_name });
-        if let Some(existing) = models.iter_mut().find(|model| {
-            model.get("id").and_then(serde_json::Value::as_str) == Some(model_id)
-        }) {
+        if let Some(existing) = models
+            .iter_mut()
+            .find(|model| model.get("id").and_then(serde_json::Value::as_str) == Some(model_id))
+        {
             if let Some(obj) = existing.as_object_mut() {
-                obj.insert("id".to_string(), serde_json::Value::String(model_id.to_string()));
+                obj.insert(
+                    "id".to_string(),
+                    serde_json::Value::String(model_id.to_string()),
+                );
                 obj.insert("name".to_string(), serde_json::Value::String(model_name));
             } else {
                 *existing = new_model;
@@ -313,7 +319,12 @@ impl ProviderCatalog {
             models.push(new_model);
         }
         write_models_json(&path, &root)?;
-        if let Some(key) = input.api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()) {
+        if let Some(key) = input
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        {
             self.secrets.set_api_key(provider, key)?;
         }
         Ok(())
@@ -445,7 +456,11 @@ impl ProviderCatalog {
             .and_then(|value| value.as_array())
         {
             for model in prev_models {
-                let Some(id) = model.get("id").and_then(|value| value.as_str()).map(str::trim) else {
+                let Some(id) = model
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                else {
                     continue;
                 };
                 if id.is_empty() {
@@ -467,10 +482,7 @@ impl ProviderCatalog {
         let mut models = ids
             .iter()
             .map(|id| {
-                let name = name_by_id
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| id.clone());
+                let name = name_by_id.get(id).cloned().unwrap_or_else(|| id.clone());
                 serde_json::json!({ "id": id, "name": name })
             })
             .collect::<Vec<_>>();
@@ -643,10 +655,7 @@ impl ProviderCatalog {
             "baseUrl".to_string(),
             serde_json::Value::String(base_url.to_string()),
         );
-        entry.insert(
-            "api".to_string(),
-            serde_json::Value::String(effective_api),
-        );
+        entry.insert("api".to_string(), serde_json::Value::String(effective_api));
         entry.remove("apiKey");
         let models = entry
             .entry("models")
@@ -870,13 +879,17 @@ impl ProviderCatalog {
                 base_candidates.push(from_routing.to_string());
             }
         }
-        let Some((base_url, models_url)) = base_candidates.into_iter().find_map(|candidate| {
-            openai_compat_models_url(&candidate).map(|url| (candidate, url))
-        }) else {
+        let Some((base_url, models_url)) = base_candidates
+            .into_iter()
+            .find_map(|candidate| openai_compat_models_url(&candidate).map(|url| (candidate, url)))
+        else {
             return Ok(Vec::new());
         };
         // kimi-for-coding：auth_header=false → x-api-key；其它默认 Bearer。
-        let use_auth_header = routing.as_ref().map(|defaults| defaults.auth_header).unwrap_or(true);
+        let use_auth_header = routing
+            .as_ref()
+            .map(|defaults| defaults.auth_header)
+            .unwrap_or(true);
         let api = {
             let from_model = template_entry.model.api.trim();
             if !from_model.is_empty() {
@@ -891,7 +904,8 @@ impl ProviderCatalog {
         };
         let headers = template_entry.model.headers.clone();
 
-        let live = self.fetch_live_model_ids(provider, &base_url, &models_url, &key, use_auth_header)?;
+        let live =
+            self.fetch_live_model_ids(provider, &base_url, &models_url, &key, use_auth_header)?;
         let existing: std::collections::HashSet<String> = registry
             .models()
             .iter()
@@ -1110,7 +1124,15 @@ impl ProviderCatalog {
             name: model.name.clone(),
             api: model.api.clone(),
             base_url: model.base_url.clone(),
-            reasoning: model.reasoning,
+            // reasoning 与 image_input 同一类清单缺标记问题：自定义/第三方
+            // provider（openai-compatible、中转 relay）的 pi 清单普遍不标
+            // reasoning，导致前端只给 auto/off 两档（glm-5.3 实测）。乐观规则：
+            // ① 自定义 provider（is_removable）② 第三方 endpoint ③ GLM-5 系列
+            // 显式家族。误乐观（端点真不支持）代价仅是多几档不可用的选项。
+            reasoning: model.reasoning
+                || is_removable_custom_provider_id(&model.provider)
+                || is_third_party_endpoint(&model.base_url)
+                || model.id.to_lowercase().starts_with("glm-5"),
             supports_xhigh: entry.supports_xhigh(),
             // image_input：三轨乐观，避免静默丢图（用户明确要求"默认允许图片"）。
             // ① pi 清单明确标 Image（内置视觉模型如 Claude/GPT-4o）→ 支持；
@@ -1273,7 +1295,10 @@ fn openai_compat_models_url(base_url: &str) -> Option<String> {
     if base.contains("/v1beta") || base.contains("googleapis.com") {
         return None;
     }
-    let root = base.strip_suffix("/messages").unwrap_or(base).trim_end_matches('/');
+    let root = base
+        .strip_suffix("/messages")
+        .unwrap_or(base)
+        .trim_end_matches('/');
     if root.contains("/v1") {
         return Some(format!("{root}/models"));
     }
@@ -1349,9 +1374,9 @@ fn read_models_json(path: &std::path::Path) -> Result<serde_json::Value, PiAgent
 }
 
 fn write_models_json(path: &std::path::Path, root: &serde_json::Value) -> Result<(), PiAgentError> {
-    let parent = path.parent().ok_or_else(|| {
-        PiAgentError::Provider("models.json has no parent directory".to_string())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| PiAgentError::Provider("models.json has no parent directory".to_string()))?;
     std::fs::create_dir_all(parent).map_err(|error| PiAgentError::Provider(error.to_string()))?;
     let payload = serde_json::to_vec_pretty(root)
         .map_err(|error| PiAgentError::Provider(error.to_string()))?;
@@ -1462,7 +1487,9 @@ mod tests {
             api_key: None,
             ..input
         };
-        catalog.save_custom_provider(&second).expect("save second model");
+        catalog
+            .save_custom_provider(&second)
+            .expect("save second model");
         let models = catalog.list_models().expect("list models");
         let acme_models: Vec<_> = models.iter().filter(|m| m.provider == "acme").collect();
         assert_eq!(acme_models.len(), 2);

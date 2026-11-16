@@ -24,8 +24,8 @@ impl AutomationStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)
-            .map_err(|e| AutomationError::Persistence(e.to_string()))?;
+        let conn =
+            Connection::open(path).map_err(|e| AutomationError::Persistence(e.to_string()))?;
         let store = Self { conn };
         store.migrate()?;
         store.reconcile_orphaned_runs_on_startup()?;
@@ -84,7 +84,11 @@ impl AutomationStore {
         self.ensure_column("automation_tasks", "model", "TEXT")?;
         self.ensure_column("automation_tasks", "thinking_level", "TEXT")?;
         self.ensure_column("automation_tasks", "last_viewed_run_at_ms", "INTEGER")?;
-        self.ensure_column("automation_tasks", "notify_channel", "TEXT NOT NULL DEFAULT 'desktop'")?;
+        self.ensure_column(
+            "automation_tasks",
+            "notify_channel",
+            "TEXT NOT NULL DEFAULT 'desktop'",
+        )?;
         self.ensure_column("automation_tasks", "dingtalk_webhook_url", "TEXT")?;
         self.ensure_column("automation_tasks", "dingtalk_sign_secret", "TEXT")?;
         Ok(())
@@ -140,9 +144,8 @@ impl AutomationStore {
             .prepare(&sql)
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
 
-        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<AutomationTask> {
-            Ok(row_to_task(row)?)
-        };
+        let map_row =
+            |row: &rusqlite::Row<'_>| -> rusqlite::Result<AutomationTask> { Ok(row_to_task(row)?) };
 
         let tasks = if let Some(path) = repo_path {
             let rows = stmt
@@ -270,7 +273,11 @@ impl AutomationStore {
             .ok_or_else(|| AutomationError::Persistence("task missing after insert".into()))
     }
 
-    pub fn update_task(&self, id: &str, input: UpdateTaskInput) -> AutomationResult<AutomationTask> {
+    pub fn update_task(
+        &self,
+        id: &str,
+        input: UpdateTaskInput,
+    ) -> AutomationResult<AutomationTask> {
         let mut task = self
             .get_task(id)?
             .ok_or_else(|| AutomationError::NotFound(id.to_string()))?;
@@ -284,7 +291,9 @@ impl AutomationStore {
         if let Some(goal) = input.goal_prompt {
             let g = goal.trim();
             if g.is_empty() {
-                return Err(AutomationError::InvalidInput("goal_prompt is required".into()));
+                return Err(AutomationError::InvalidInput(
+                    "goal_prompt is required".into(),
+                ));
             }
             task.goal_prompt = g.to_string();
         }
@@ -397,7 +406,10 @@ impl AutomationStore {
 
     pub fn delete_task(&self, id: &str) -> AutomationResult<()> {
         self.conn
-            .execute("DELETE FROM automation_runs WHERE task_id = ?1", params![id])
+            .execute(
+                "DELETE FROM automation_runs WHERE task_id = ?1",
+                params![id],
+            )
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
         let n = self
             .conn
@@ -765,10 +777,9 @@ fn normalize_thinking_level(raw: Option<&str>) -> Option<String> {
 }
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationTask> {
-    let session_mode = SessionMode::parse(&row.get::<_, String>(4)?)
-        .unwrap_or(SessionMode::New);
-    let schedule_kind = ScheduleKind::parse(&row.get::<_, String>(9)?)
-        .unwrap_or(ScheduleKind::Interval);
+    let session_mode = SessionMode::parse(&row.get::<_, String>(4)?).unwrap_or(SessionMode::New);
+    let schedule_kind =
+        ScheduleKind::parse(&row.get::<_, String>(9)?).unwrap_or(ScheduleKind::Interval);
     Ok(AutomationTask {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -823,9 +834,8 @@ pub fn global_store() -> AutomationResult<&'static Mutex<AutomationStore>> {
     if let Some(lock) = STORE.get() {
         return Ok(lock);
     }
-    let path = default_db_path().ok_or_else(|| {
-        AutomationError::Persistence("cannot resolve Giteam data dir".into())
-    })?;
+    let path = default_db_path()
+        .ok_or_else(|| AutomationError::Persistence("cannot resolve Giteam data dir".into()))?;
     let store = AutomationStore::open(&path)?;
     let _ = STORE.set(Mutex::new(store));
     STORE
@@ -833,7 +843,9 @@ pub fn global_store() -> AutomationResult<&'static Mutex<AutomationStore>> {
         .ok_or_else(|| AutomationError::Persistence("automation store init race".into()))
 }
 
-pub fn with_store<T>(f: impl FnOnce(&AutomationStore) -> AutomationResult<T>) -> AutomationResult<T> {
+pub fn with_store<T>(
+    f: impl FnOnce(&AutomationStore) -> AutomationResult<T>,
+) -> AutomationResult<T> {
     let lock = global_store()?;
     let store = lock
         .lock()
@@ -954,7 +966,8 @@ mod tests {
 
         let mut input = sample_input(&repo);
         input.notify_channel = Some(NotifyChannel::DingTalk);
-        input.dingtalk_webhook_url = Some("https://oapi.dingtalk.com/robot/send?access_token=test".into());
+        input.dingtalk_webhook_url =
+            Some("https://oapi.dingtalk.com/robot/send?access_token=test".into());
 
         let created = store.create_task(input).unwrap();
         assert_eq!(created.notify_channel, NotifyChannel::DingTalk);

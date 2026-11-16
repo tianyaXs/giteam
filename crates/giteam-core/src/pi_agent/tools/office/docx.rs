@@ -91,7 +91,9 @@ impl Tool for WriteDocxTool {
             .map(|e| e.eq_ignore_ascii_case("docx"))
             != Some(true)
         {
-            return Ok(error_output(format!("path 应指向 .docx 文件（收到 {path_raw}）")));
+            return Ok(error_output(format!(
+                "path 应指向 .docx 文件（收到 {path_raw}）"
+            )));
         }
         let Some(blocks) = input.get("blocks").and_then(Value::as_array) else {
             return Ok(error_output("缺少 blocks 参数".to_string()));
@@ -118,13 +120,13 @@ impl Tool for WriteDocxTool {
         }
 
         emit_progress(
-        &on_update,
-        "parse",
-        5.0,
-        format!("解析 {} 个内容块…", blocks.len()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "parse",
+            5.0,
+            format!("解析 {} 个内容块…", blocks.len()),
+            &target,
+            None,
+            None,
         );
 
         // 分段检查点：每写完一块重建并落盘（文档小，重建开销可忽略），
@@ -138,30 +140,38 @@ impl Tool for WriteDocxTool {
                 )));
             }
             let done = 10.0 + 80.0 * (idx + 1) as f32 / blocks.len() as f32;
-            let kind = written[idx].get("type").and_then(Value::as_str).unwrap_or("paragraph");
+            let kind = written[idx]
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("paragraph");
             emit_progress(
-            &on_update,
-            "render",
-            done,
-            format!("已写入第 {} 个内容块（{kind}）", idx + 1),
-            &target,
-            Some((format!("块 {}/{}", idx + 1, blocks.len()), None)),
-            None,
+                &on_update,
+                "render",
+                done,
+                format!("已写入第 {} 个内容块（{kind}）", idx + 1),
+                &target,
+                Some((format!("块 {}/{}", idx + 1, blocks.len()), None)),
+                None,
             );
         }
 
         emit_progress(
-        &on_update,
-        "write",
-        95.0,
-        format!("落盘 {}…", target.display()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "write",
+            95.0,
+            format!("落盘 {}…", target.display()),
+            &target,
+            None,
+            None,
         );
         let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         Ok(output_with_details(
-            format!("已创建 {}（{} 个内容块，{} 字节）", target.display(), blocks.len(), size),
+            format!(
+                "已创建 {}（{} 个内容块，{} 字节）",
+                target.display(),
+                blocks.len(),
+                size
+            ),
             &target,
             json!({ "bytes": size, "blocks": blocks.len() }),
         ))
@@ -169,11 +179,20 @@ impl Tool for WriteDocxTool {
 }
 
 /// 渲染 + 落盘分离：checkpoint 循环里复用。
-fn write_docx_to_disk(blocks: &[Value], target: &std::path::Path) -> std::result::Result<(), String> {
+fn write_docx_to_disk(
+    blocks: &[Value],
+    target: &std::path::Path,
+) -> std::result::Result<(), String> {
     let mut document = docx_rs::Docx::new();
     for block in blocks {
-        let kind = block.get("type").and_then(Value::as_str).unwrap_or("paragraph");
-        let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
+        let kind = block
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("paragraph");
+        let text = block
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let run = docx_rs::Run::new();
         let paragraph = docx_rs::Paragraph::new();
         let styled = match kind {
@@ -214,7 +233,9 @@ fn extract_ordered_docx_text(block: &str) -> String {
         let rest = &block[i..];
         if rest.starts_with("<w:t>") {
             let inner = &rest["<w:t>".len()..];
-            let Some(end) = inner.find("</w:t>") else { break };
+            let Some(end) = inner.find("</w:t>") else {
+                break;
+            };
             out.push_str(&super::xml_unescape(&inner[..end]));
             i += "<w:t>".len() + end + "</w:t>".len();
             continue;
@@ -222,7 +243,9 @@ fn extract_ordered_docx_text(block: &str) -> String {
         if rest.starts_with("<w:t ") {
             let Some(gt) = rest.find('>') else { break };
             let inner = &rest[gt + 1..];
-            let Some(end) = inner.find("</w:t>") else { break };
+            let Some(end) = inner.find("</w:t>") else {
+                break;
+            };
             out.push_str(&super::xml_unescape(&inner[..end]));
             i += gt + 1 + end + "</w:t>".len();
             continue;
@@ -259,7 +282,9 @@ fn extract_docx_paragraphs(xml: &str) -> Vec<String> {
             break;
         };
         let abs = cursor + rel;
-        let Some(close_rel) = xml[abs..].find("</w:p>") else { break };
+        let Some(close_rel) = xml[abs..].find("</w:p>") else {
+            break;
+        };
         let block = &xml[abs..abs + close_rel];
         let text = extract_ordered_docx_text(block);
         let trimmed = text.trim();
@@ -331,7 +356,12 @@ impl Tool for ReadDocxTool {
         );
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
-            Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),
+            Err(error) => {
+                return Ok(error_output(format!(
+                    "打开 {} 失败：{error}",
+                    target.display()
+                )))
+            }
         };
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(archive) => archive,
@@ -374,13 +404,13 @@ impl Tool for ReadDocxTool {
             Value::Null
         };
         emit_progress(
-        &on_update,
-        "write",
-        95.0,
-        format!("落盘 {}…", target.display()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "write",
+            95.0,
+            format!("落盘 {}…", target.display()),
+            &target,
+            None,
+            None,
         );
         Ok(output_with_details(
             json!({
@@ -460,7 +490,10 @@ mod tests {
             <w:p></w:p>
         </w:body></w:document>"#;
         let paragraphs = extract_docx_paragraphs(xml);
-        assert_eq!(paragraphs, vec!["第一段".to_string(), "第二\t段\n折行".to_string()]);
+        assert_eq!(
+            paragraphs,
+            vec!["第一段".to_string(), "第二\t段\n折行".to_string()]
+        );
     }
 }
 
@@ -477,7 +510,9 @@ fn locate_paragraph_blocks(xml: &str) -> Vec<(usize, usize, bool)> {
         let rest = &xml[i..];
         if rest.starts_with("<w:p>") || rest.starts_with("<w:p ") {
             let Some(gt_rel) = rest.find('>') else { break };
-            let Some(close_rel) = rest.find("</w:p>") else { break };
+            let Some(close_rel) = rest.find("</w:p>") else {
+                break;
+            };
             blocks.push((i, i + close_rel + "</w:p>".len(), false));
             i += close_rel + "</w:p>".len();
             continue;
@@ -509,8 +544,10 @@ fn rebuild_paragraph_block(original: &str, self_closed: bool, text: &str) -> Str
                 .map(|(head, _)| head)
                 .filter(|head| {
                     let head = head.strip_suffix('.').or_else(|| head.strip_suffix('、'));
-                    head.map(|digits| !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
-                        .unwrap_or(false)
+                    head.map(|digits| {
+                        !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+                    })
+                    .unwrap_or(false)
                 });
             match prefix {
                 Some(head) if !value.starts_with(head) => format!("{head} {value}"),
@@ -532,9 +569,15 @@ fn rebuild_paragraph_block(original: &str, self_closed: bool, text: &str) -> Str
         }
     };
     if self_closed {
-        format!("<w:p>{ppr}<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>", super::xml_escape(&text))
+        format!(
+            "<w:p>{ppr}<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+            super::xml_escape(&text)
+        )
     } else {
-        format!("{open_tag}{ppr}<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>", super::xml_escape(&text))
+        format!(
+            "{open_tag}{ppr}<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+            super::xml_escape(&text)
+        )
     }
 }
 
@@ -632,7 +675,12 @@ impl Tool for EditDocxTool {
 
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
-            Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),
+            Err(error) => {
+                return Ok(error_output(format!(
+                    "打开 {} 失败：{error}",
+                    target.display()
+                )))
+            }
         };
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(archive) => archive,
@@ -663,11 +711,26 @@ impl Tool for EditDocxTool {
         for (idx, edit) in edits.iter().enumerate() {
             let text = edit.get("text").and_then(Value::as_str).unwrap_or_default();
             if edit.get("append").and_then(Value::as_bool) == Some(true) {
-                let kind = edit.get("type").and_then(Value::as_str).unwrap_or("paragraph");
+                let kind = edit
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("paragraph");
                 let (ppr, run_prefix, rpr) = match kind {
-                    "heading1" => (String::new(), String::new(), "<w:b/><w:sz w:val=\"36\"/>".to_string()),
-                    "heading2" => (String::new(), String::new(), "<w:b/><w:sz w:val=\"30\"/>".to_string()),
-                    "heading3" => (String::new(), String::new(), "<w:b/><w:sz w:val=\"26\"/>".to_string()),
+                    "heading1" => (
+                        String::new(),
+                        String::new(),
+                        "<w:b/><w:sz w:val=\"36\"/>".to_string(),
+                    ),
+                    "heading2" => (
+                        String::new(),
+                        String::new(),
+                        "<w:b/><w:sz w:val=\"30\"/>".to_string(),
+                    ),
+                    "heading3" => (
+                        String::new(),
+                        String::new(),
+                        "<w:b/><w:sz w:val=\"26\"/>".to_string(),
+                    ),
                     "bullet" => (
                         "<w:ind w:left=\"420\" w:hanging=\"240\"/>".to_string(),
                         "• ".to_string(),
@@ -714,17 +777,19 @@ impl Tool for EditDocxTool {
             let Some((position, note)) = located else {
                 let hint = match_text
                     .map(|needle| format!("找不到包含 {needle:?} 的段落"))
-                    .unwrap_or_else(|| format!("段序号 {ordinal:?} 超出范围（共 {} 段）", blocks.len()));
+                    .unwrap_or_else(|| {
+                        format!("段序号 {ordinal:?} 超出范围（共 {} 段）", blocks.len())
+                    });
                 return Ok(error_output(format!("edits[{}] 定位失败：{hint}", idx + 1)));
             };
             let Some((start, end, self_closed)) = blocks.get(position) else {
                 return Ok(error_output(format!("edits[{}] 段序号越界", idx + 1)));
             };
-            replacements.push((*start, *end, rebuild_paragraph_block(
-                &document_xml[*start..*end],
-                *self_closed,
-                text_value,
-            )));
+            replacements.push((
+                *start,
+                *end,
+                rebuild_paragraph_block(&document_xml[*start..*end], *self_closed, text_value),
+            ));
             change_notes.push(json!({
                 "paragraph": position + 1,
                 "text": text_value,
@@ -749,9 +814,11 @@ impl Tool for EditDocxTool {
         }
         // 追加：插到 body 末尾（sectPr 之前——节属性必须在最后）。
         if !appends.is_empty() {
-            let insert_at = document_xml
-                .rfind("<w:sectPr")
-                .unwrap_or_else(|| document_xml.rfind("</w:body>").unwrap_or(document_xml.len()));
+            let insert_at = document_xml.rfind("<w:sectPr").unwrap_or_else(|| {
+                document_xml
+                    .rfind("</w:body>")
+                    .unwrap_or(document_xml.len())
+            });
             let mut insertion = appends.join("");
             insertion.insert_str(0, "");
             document_xml.insert_str(insert_at, &insertion);
@@ -779,7 +846,12 @@ impl Tool for EditDocxTool {
         }
         let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         Ok(output_with_details(
-            format!("已修改 {}（{} 处变更，{} 字节）", target.display(), change_notes.len(), size),
+            format!(
+                "已修改 {}（{} 处变更，{} 字节）",
+                target.display(),
+                change_notes.len(),
+                size
+            ),
             &target,
             json!({ "bytes": size, "changes": change_notes }),
         ))
@@ -829,12 +901,18 @@ mod edit_tests {
         assert!(!edit.is_error, "edit 失败：{:?}", edit.content);
         let details = edit.details.as_ref().expect("details");
         assert_eq!(
-            details.get("changes").and_then(Value::as_array).map(Vec::len),
+            details
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(2)
         );
 
         let reader = ReadDocxTool::new(cwd);
-        let read = reader.execute("c3", json!({ "path": "report.docx" }), None).await.expect("read");
+        let read = reader
+            .execute("c3", json!({ "path": "report.docx" }), None)
+            .await
+            .expect("read");
         let text = match read.content.first() {
             Some(pi::sdk::ContentBlock::Text(text)) => text.text.clone(),
             other => panic!("期望文本输出，收到 {other:?}"),
@@ -852,7 +930,11 @@ mod edit_tests {
         let cwd = dir.path().to_path_buf();
         let writer = WriteDocxTool::new(cwd.clone());
         writer
-            .execute("c1", json!({ "path": "a.docx", "blocks": [{ "text": "hello" }] }), None)
+            .execute(
+                "c1",
+                json!({ "path": "a.docx", "blocks": [{ "text": "hello" }] }),
+                None,
+            )
             .await
             .expect("write");
         let editor = EditDocxTool::new(cwd.clone());
@@ -913,7 +995,10 @@ mod edit_prefix_tests {
         assert!(!edit.is_error, "edit 失败：{:?}", edit.content);
 
         let reader = ReadDocxTool::new(cwd);
-        let read = reader.execute("c3", json!({ "path": "list.docx" }), None).await.expect("read");
+        let read = reader
+            .execute("c3", json!({ "path": "list.docx" }), None)
+            .await
+            .expect("read");
         let text = match read.content.first() {
             Some(pi::sdk::ContentBlock::Text(text)) => text.text.clone(),
             other => panic!("期望文本输出，收到 {other:?}"),

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use giteam_core::pi_agent::{
-    AgentEventEnvelope, AgentInstalledSkill, AgentInteraction, AgentInteractionReply,
-    AgentMessage, AgentModelInfo, AgentPromptImage, AgentProviderInfo, AgentSkillSourceGroupEntry,
+    AgentEventEnvelope, AgentInstalledSkill, AgentInteraction, AgentInteractionReply, AgentMessage,
+    AgentModelInfo, AgentPromptImage, AgentProviderInfo, AgentSkillSourceGroupEntry,
     CustomProviderInput, PiAgentService, PiRuntimeInfo, PiSessionConfig, PiSessionSummary,
 };
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,9 @@ pub fn agent_steer(session_id: String, message: String) -> Result<AgentSteerOutc
     service()
         .steer(&session_id, &message)
         .map(|outcome| match outcome {
-            giteam_core::pi_agent::SteerOutcome::Queued { run_id } => AgentSteerOutcome::Queued { run_id },
+            giteam_core::pi_agent::SteerOutcome::Queued { run_id } => {
+                AgentSteerOutcome::Queued { run_id }
+            }
             giteam_core::pi_agent::SteerOutcome::Idle => AgentSteerOutcome::Idle,
         })
         .map_err(|error| error.to_string())
@@ -139,14 +141,7 @@ pub fn fetch_skillsmp_skill_search(
     api_key: Option<String>,
 ) -> Result<serde_json::Value, String> {
     giteam_core::skills_market::fetch_skillsmp_skill_search(
-        &repo_path,
-        &query,
-        page,
-        limit,
-        sort_by,
-        category,
-        occupation,
-        api_key,
+        &repo_path, &query, page, limit, sort_by, category, occupation, api_key,
     )
 }
 
@@ -168,8 +163,10 @@ pub async fn agent_create_session(
         repo_path: PathBuf::from(&request.repo_path),
         session_dir: match request.session_dir {
             Some(dir) => PathBuf::from(dir),
-            None => giteam_core::pi_agent::ensure_repo_pi_sessions_dir(Path::new(&request.repo_path))
-                .map_err(|error| error.to_string())?,
+            None => {
+                giteam_core::pi_agent::ensure_repo_pi_sessions_dir(Path::new(&request.repo_path))
+                    .map_err(|error| error.to_string())?
+            }
         },
         session_path: request.session_path.map(PathBuf::from),
         provider: request.provider,
@@ -186,7 +183,10 @@ pub async fn agent_create_session(
         no_session: request.no_session,
         thinking: request.thinking,
         max_tool_iterations: request.max_tool_iterations,
-        browser_controller: Some(super::browser_controller::desktop_browser_controller(app)),
+        browser_controller: Some(super::browser_controller::desktop_browser_controller(
+            app.clone(),
+        )),
+        os_controller: Some(super::os_controller::new_controller(app)),
         parent_session_id: None,
         parent_tool_call_id: None,
         session_kind: "primary".to_string(),
@@ -210,7 +210,9 @@ pub async fn agent_list_sessions() -> Result<Vec<PiSessionSummary>, String> {
 }
 
 #[tauri::command]
-pub async fn agent_list_child_sessions(parent_session_id: String) -> Result<Vec<PiSessionSummary>, String> {
+pub async fn agent_list_child_sessions(
+    parent_session_id: String,
+) -> Result<Vec<PiSessionSummary>, String> {
     service()
         .refresh_sessions_from_catalog()
         .map_err(|error| error.to_string())?;
@@ -389,7 +391,9 @@ pub struct AgentRefreshModelsResponse {
 }
 
 #[tauri::command]
-pub fn agent_refresh_provider_models(provider: String) -> Result<AgentRefreshModelsResponse, String> {
+pub fn agent_refresh_provider_models(
+    provider: String,
+) -> Result<AgentRefreshModelsResponse, String> {
     let added = service()
         .refresh_provider_models(&provider)
         .map_err(|error| error.to_string())?;

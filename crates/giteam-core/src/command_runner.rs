@@ -170,7 +170,10 @@ fn command_for_program<S: AsRef<OsStr>>(program: PathBuf, args: &[S]) -> Command
                 line.push(' ');
                 if raw.is_empty() {
                     line.push_str("\"\"");
-                } else if raw.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '&' | '|' | '<' | '>')) {
+                } else if raw
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '"' | '&' | '|' | '<' | '>'))
+                {
                     line.push('"');
                     line.push_str(&raw.replace('"', "\"\""));
                     line.push('"');
@@ -312,12 +315,9 @@ pub fn run_shell_script_in_dir(
 ) -> Result<String, String> {
     let shell = resolve_login_shell().ok_or_else(|| "no usable shell found".to_string())?;
     match shell_kind(&shell) {
-        "cmd" => run_and_capture_in_dir_with_timeout(
-            &shell,
-            &["/C", script],
-            repo_path,
-            timeout_secs,
-        ),
+        "cmd" => {
+            run_and_capture_in_dir_with_timeout(&shell, &["/C", script], repo_path, timeout_secs)
+        }
         "powershell" => run_and_capture_in_dir_with_timeout(
             &shell,
             &["-NoProfile", "-Command", script],
@@ -368,10 +368,10 @@ pub fn run_and_capture_in_dir_with_timeout<S: AsRef<OsStr>>(
     let now = std::time::Instant::now();
     let stdout_path = make_temp_log_path("stdout");
     let stderr_path = make_temp_log_path("stderr");
-    let stdout_file = File::create(&stdout_path)
-        .map_err(|e| format!("failed creating stdout temp file: {e}"))?;
-    let stderr_file = File::create(&stderr_path)
-        .map_err(|e| format!("failed creating stderr temp file: {e}"))?;
+    let stdout_file =
+        File::create(&stdout_path).map_err(|e| format!("failed creating stdout temp file: {e}"))?;
+    let stderr_file =
+        File::create(&stderr_path).map_err(|e| format!("failed creating stderr temp file: {e}"))?;
 
     let path_env = build_path_env();
     let resolved_program = resolve_program(program, &path_env);

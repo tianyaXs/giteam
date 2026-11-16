@@ -106,9 +106,7 @@ impl Tool for ApprovalTool {
             InteractionResolution::Reply(AgentInteractionReply::Reject) => {
                 Ok(denied_output(&tool, "用户拒绝了本次调用"))
             }
-            InteractionResolution::Timeout => {
-                Ok(denied_output(&tool, "等待审批超时，已自动拒绝"))
-            }
+            InteractionResolution::Timeout => Ok(denied_output(&tool, "等待审批超时，已自动拒绝")),
             InteractionResolution::Aborted => Ok(denied_output(&tool, "任务已中止")),
             InteractionResolution::Shutdown => Ok(denied_output(&tool, "服务已关闭")),
             // 种类不匹配的回复按拒绝处理（fail-closed）
@@ -151,7 +149,9 @@ mod tests {
     #[test]
     fn readonly_bash_input_rejects_mutating_or_malformed() {
         assert!(!readonly_bash_input(&json!({ "command": "rm -rf /tmp/x" })));
-        assert!(!readonly_bash_input(&json!({ "command": "git status && rm x" })));
+        assert!(!readonly_bash_input(
+            &json!({ "command": "git status && rm x" })
+        ));
         assert!(!readonly_bash_input(&json!({})));
         assert!(!readonly_bash_input(&json!({ "command": 1 })));
         assert!(!readonly_bash_input(&json!({ "cmd": "git status" })));

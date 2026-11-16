@@ -27,7 +27,9 @@ pub fn is_readonly_command(command: &str) -> bool {
     if ['$', '`', '<', '>'].iter().any(|ch| command.contains(*ch)) {
         return false;
     }
-    split_segments(command).iter().all(|segment| segment_is_readonly(segment))
+    split_segments(command)
+        .iter()
+        .all(|segment| segment_is_readonly(segment))
 }
 
 /// 按 shell 控制操作符拆段（字符级；引号内操作符同样拆分，见上文注释）。
@@ -73,7 +75,9 @@ fn segment_is_readonly(segment: &str) -> bool {
         "find" => !args
             .iter()
             .any(|arg| FIND_WRITE_FLAGS.iter().any(|flag| arg.starts_with(flag))),
-        "sort" => !args.iter().any(|arg| *arg == "-o" || arg.starts_with("--output")),
+        "sort" => !args
+            .iter()
+            .any(|arg| *arg == "-o" || arg.starts_with("--output")),
         "git" => git_subcommand_is_readonly(args),
         name => ALWAYS_READONLY.contains(&name),
     }
@@ -82,7 +86,13 @@ fn segment_is_readonly(segment: &str) -> bool {
 /// `VAR=value` 形式（key 是合法 shell 标识符）。
 fn is_env_assignment(token: &str) -> bool {
     match token.split_once('=') {
-        Some((key, _)) => !key.is_empty() && key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') && !key.starts_with('-'),
+        Some((key, _)) => {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                && !key.starts_with('-')
+        }
         None => false,
     }
 }
@@ -90,7 +100,10 @@ fn is_env_assignment(token: &str) -> bool {
 /// git 子命令只读判定。无条件只读集 + 条件子命令（branch/tag/config/stash）
 /// 逐参数核查；`--output` 写文件能力全局否决。
 fn git_subcommand_is_readonly(args: &[&str]) -> bool {
-    if args.iter().any(|arg| *arg == "--output" || arg.starts_with("--output=")) {
+    if args
+        .iter()
+        .any(|arg| *arg == "--output" || arg.starts_with("--output="))
+    {
         return false;
     }
     let Some(sub) = args.first().copied() else {

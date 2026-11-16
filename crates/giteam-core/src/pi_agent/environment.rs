@@ -80,7 +80,11 @@ fn preapproved_summary(repo_path: &Path) -> Option<String> {
     if rules.is_empty() {
         return None;
     }
-    let shown: Vec<&str> = rules.iter().take(MAX_ALLOW_RULES_SHOWN).map(String::as_str).collect();
+    let shown: Vec<&str> = rules
+        .iter()
+        .take(MAX_ALLOW_RULES_SHOWN)
+        .map(String::as_str)
+        .collect();
     let overflow = rules.len().saturating_sub(shown.len());
     let mut summary = format!(
         "- Pre-approved by the user (run without asking): {}",
@@ -403,12 +407,19 @@ mod tests {
         // bare 仓库充当 remote，clone 后本地多提交 → ahead 计数出现。
         let remote = tempfile::tempdir().expect("remote dir");
         let run_in = |dir: &Path, args: &[&str]| {
-            Command::new("git").args(args).current_dir(dir).output().expect("git")
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git")
         };
         run_in(remote.path(), &["init", "-q", "--bare"]);
         run_in(remote.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
         let clone = tempfile::tempdir().expect("clone dir");
-        run_in(clone.path(), &["clone", "-q", remote.path().to_str().unwrap(), "."]);
+        run_in(
+            clone.path(),
+            &["clone", "-q", remote.path().to_str().unwrap(), "."],
+        );
         run_in(clone.path(), &["config", "user.email", "t@l"]);
         run_in(clone.path(), &["config", "user.name", "t"]);
         run_in(clone.path(), &["checkout", "-q", "-b", "main"]);
@@ -428,6 +439,3 @@ mod tests {
         );
     }
 }
-
-
-

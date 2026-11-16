@@ -20,8 +20,8 @@ pub use admin::{
 };
 pub use config::{parse_opencode_entry, McpServiceInput};
 pub use runtime::{
-    add_service, load_for_repo, load_with_base, refresh_tools, remove_service,
-    repo_config_path, McpRuntime, McpToolSpec,
+    add_service, load_for_repo, load_with_base, refresh_tools, remove_service, repo_config_path,
+    McpRuntime, McpToolSpec,
 };
 
 use thiserror::Error;

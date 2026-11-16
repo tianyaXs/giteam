@@ -5,8 +5,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use tauri::{AppHandle, Manager, Theme, Window};
 use tauri::utils::config::Color;
+use tauri::{AppHandle, Manager, Theme, Window};
 
 const ATTACHMENT_SAMPLE_BYTES: usize = 4096;
 
@@ -464,7 +464,8 @@ fn prompt_attachment_dir(repo_path: &str) -> Result<PathBuf, String> {
     }
     giteam_core::pi_agent::ensure_workspace_giteam_gitignore(&root);
     let dir = root.join(".giteam").join("prompt-attachments");
-    fs::create_dir_all(&dir).map_err(|error| format!("failed to create attachment dir: {error}"))?;
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("failed to create attachment dir: {error}"))?;
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
         let _ = fs::write(ignore, "*\n!.gitignore\n");
@@ -637,6 +638,20 @@ pub fn read_local_attachment_preview(path: &str) -> Result<UiAttachmentPreview, 
 }
 
 /// UI debug 日志落盘（前端 appendAgentDebugLog 同步写入，便于离线排查）。
+/// 超过上限时滚动为 ui-debug.log.1（单文件轮转，避免无限增长——曾累积到 266MB）。
+const UI_DEBUG_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+fn rotate_ui_debug_log_if_needed(log_path: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if meta.len() < UI_DEBUG_LOG_MAX_BYTES {
+        return;
+    }
+    let rotated = log_path.with_extension("log.1");
+    let _ = std::fs::rename(log_path, rotated);
+}
+
 #[tauri::command]
 pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -649,7 +664,13 @@ pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
             .unwrap_or(0);
         let text = format!("{stamp} {line}\n");
         use std::io::Write as _;
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(base.join("ui-debug.log")) {
+        let log_path = base.join("ui-debug.log");
+        rotate_ui_debug_log_if_needed(&log_path);
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
             let _ = file.write_all(text.as_bytes());
         }
         Ok(())
@@ -674,7 +695,9 @@ pub async fn office_restore_previous_version(path: String) -> Result<bool, Strin
 pub async fn office_previous_version_count(path: String) -> Result<usize, String> {
     let target = std::path::PathBuf::from(path.trim());
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(giteam_core::pi_agent::office_previous_version_count(&target))
+        Ok(giteam_core::pi_agent::office_previous_version_count(
+            &target,
+        ))
     })
     .await
     .unwrap_or_else(|e| Err(format!("查询版本数失败：{e}")))

@@ -59,8 +59,7 @@ pub fn mcp_config_path_in(base: &Path, repo_path: &Path) -> PathBuf {
 ///
 /// 无配置文件/空配置时返回空快照的 runtime，不报错。
 pub async fn load_for_repo(repo_path: &Path) -> Result<Arc<McpRuntime>, McpError> {
-    let base = super::super::secrets::default_data_dir()
-        .ok_or(McpError::NoHomeDir)?;
+    let base = super::super::secrets::default_data_dir().ok_or(McpError::NoHomeDir)?;
     load_with_base(&base, repo_path).await
 }
 
@@ -213,7 +212,9 @@ mod tests {
     #[tokio::test]
     async fn empty_config_yields_empty_runtime() {
         let base = temp_base("empty");
-        let runtime = load_with_base(&base, Path::new("/tmp/repo-empty")).await.unwrap();
+        let runtime = load_with_base(&base, Path::new("/tmp/repo-empty"))
+            .await
+            .unwrap();
         assert!(runtime.tools.is_empty());
         assert!(runtime.service_errors.is_empty());
         // 配置文件由 mcpstore 惰性落盘（首次写入时创建），此处只需父目录就绪。

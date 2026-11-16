@@ -160,8 +160,8 @@ async fn resolve_session(
     }
     match mode {
         SessionMode::New => {
-            let session_dir = ensure_repo_pi_sessions_dir(Path::new(repo_path))
-                .map_err(|e| e.to_string())?;
+            let session_dir =
+                ensure_repo_pi_sessions_dir(Path::new(repo_path)).map_err(|e| e.to_string())?;
             let config = PiSessionConfig {
                 repo_path: repo,
                 session_dir,
@@ -177,6 +177,7 @@ async fn resolve_session(
                 thinking: None,
                 max_tool_iterations: None,
                 browser_controller: None,
+                os_controller: None,
                 parent_session_id: None,
                 parent_tool_call_id: None,
                 session_kind: "primary".to_string(),
@@ -192,7 +193,10 @@ async fn resolve_session(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "session_id required for existing mode".to_string())?;
-            let _ = service.session_summary(sid).await.map_err(|e| e.to_string())?;
+            let _ = service
+                .session_summary(sid)
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(sid.to_string())
         }
     }
@@ -233,7 +237,9 @@ fn post_reply(session_webhook: Option<&str>, text: &str) -> Result<SendMessageRe
     send_markdown("Giteam", md, false, &[])
 }
 
-fn precheck(payload: &OutgoingPayload) -> Result<(String, String, SessionMode, Option<String>), String> {
+fn precheck(
+    payload: &OutgoingPayload,
+) -> Result<(String, String, SessionMode, Option<String>), String> {
     let settings = get_settings();
     if !settings.allow_trigger {
         return Err("dingtalk trigger disabled".into());
@@ -278,19 +284,18 @@ pub async fn execute_outgoing(payload: OutgoingPayload) -> OutgoingTriggerResult
     );
 
     let service = PiAgentService::global();
-    let session_id = match resolve_session(service, &repo, session_mode, session_id_cfg.as_deref())
-        .await
-    {
-        Ok(id) => id,
-        Err(err) => {
-            return OutgoingTriggerResult {
-                accepted: false,
-                message: err,
-                session_id: None,
-                reply: None,
-            };
-        }
-    };
+    let session_id =
+        match resolve_session(service, &repo, session_mode, session_id_cfg.as_deref()).await {
+            Ok(id) => id,
+            Err(err) => {
+                return OutgoingTriggerResult {
+                    accepted: false,
+                    message: err,
+                    session_id: None,
+                    reply: None,
+                };
+            }
+        };
 
     if service.has_active_run_for_session(&session_id) {
         return OutgoingTriggerResult {

@@ -36,9 +36,7 @@ fn clamp_output(mut text: String) -> String {
         end -= 1;
     }
     text.truncate(end);
-    text.push_str(
-        "\n…（结果已达 8KB 预算上限；请用更精确的查询词或 asset_search 收窄范围）",
-    );
+    text.push_str("\n…（结果已达 8KB 预算上限；请用更精确的查询词或 asset_search 收窄范围）");
     text
 }
 
@@ -137,7 +135,10 @@ impl Tool for AssetContextTool {
         } else {
             lines.push("### Anchors（匹配节点）".into());
             for hit in bundle.matched_nodes.iter().take(8) {
-                lines.push(format!("- [{}] {} ({})", hit.node_type, hit.label, hit.node_id));
+                lines.push(format!(
+                    "- [{}] {} ({})",
+                    hit.node_type, hit.label, hit.node_id
+                ));
             }
         }
         if !bundle.neighbors.is_empty() {
@@ -441,7 +442,12 @@ impl Tool for AssetTraceTool {
                 "未找到从「{from}」到「{to}」的路径（可先用 asset_search 确认两端节点）。"
             )));
         }
-        let mut lines = vec![format!("## 路径 {} → {}（{} 跳）", from, to, hops.len().saturating_sub(1))];
+        let mut lines = vec![format!(
+            "## 路径 {} → {}（{} 跳）",
+            from,
+            to,
+            hops.len().saturating_sub(1)
+        )];
         for (idx, hop) in hops.iter().enumerate() {
             if idx == 0 {
                 lines.push(format!("1. [{}] {}", hop.node_type, hop.label));

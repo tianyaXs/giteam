@@ -10,14 +10,25 @@ async fn main() {
     for s in &sessions {
         let mark = target
             .as_deref()
-            .map(|t| if s.session_id.starts_with(t) { " <<<" } else { "" })
+            .map(|t| {
+                if s.session_id.starts_with(t) {
+                    " <<<"
+                } else {
+                    ""
+                }
+            })
             .unwrap_or("");
         println!(
             "{} kind={} updated={} title={}{}",
             &s.session_id[..8.min(s.session_id.len())],
             s.session_kind,
             s.updated_at_ms,
-            s.title.clone().unwrap_or_default().chars().take(40).collect::<String>(),
+            s.title
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(40)
+                .collect::<String>(),
             mark
         );
     }

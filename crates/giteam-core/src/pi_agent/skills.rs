@@ -83,9 +83,7 @@ const REMOTE_REPO_SKILL_FILES: &[BuiltinAgentSkillFile] = &[
     },
     BuiltinAgentSkillFile {
         path: "references/api.md",
-        contents: include_str!(
-            "../../resources/agent-skills/giteam-remote-repo/references/api.md"
-        ),
+        contents: include_str!("../../resources/agent-skills/giteam-remote-repo/references/api.md"),
     },
     BuiltinAgentSkillFile {
         path: "references/mcp-tools.md",
@@ -107,9 +105,7 @@ const REMOTE_REPO_SKILL_FILES: &[BuiltinAgentSkillFile] = &[
     },
     BuiltinAgentSkillFile {
         path: "mcp/mcp_server.py",
-        contents: include_str!(
-            "../../resources/agent-skills/giteam-remote-repo/mcp/mcp_server.py"
-        ),
+        contents: include_str!("../../resources/agent-skills/giteam-remote-repo/mcp/mcp_server.py"),
     },
 ];
 
@@ -179,10 +175,7 @@ fn collect_pi_skills(repo_path: &str) -> Vec<AgentInstalledSkill> {
                 source: skill.source.clone(),
                 disable_model_invocation: skill.disable_model_invocation,
                 agents: vec!["pi".to_string()],
-                source_group: source_group_map
-                    .get(&base_dir)
-                    .cloned()
-                    .unwrap_or_default(),
+                source_group: source_group_map.get(&base_dir).cloned().unwrap_or_default(),
             }
         })
         .collect()
@@ -224,10 +217,13 @@ fn write_builtin_agent_skill(
     global: bool,
 ) -> Result<PathBuf, String> {
     let target_dir = builtin_agent_skill_target_dir(repo_path, skill, global)?;
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("create builtin skill dir failed: {e}"))?;
+    fs::create_dir_all(&target_dir).map_err(|e| format!("create builtin skill dir failed: {e}"))?;
     for file in skill.files {
-        if file.path.split('/').any(|segment| segment == ".." || segment.is_empty()) {
+        if file
+            .path
+            .split('/')
+            .any(|segment| segment == ".." || segment.is_empty())
+        {
             return Err(format!("invalid builtin skill file path: {}", file.path));
         }
         let path = target_dir.join(file.path);
@@ -534,7 +530,10 @@ mod tests {
         assert_eq!(hit.scope, "project");
         assert_eq!(hit.source, "project");
         assert_eq!(hit.agents, vec!["pi".to_string()]);
-        assert!(hit.path.replace('\\', "/").ends_with(".pi/skills/demo-collect-skill"));
+        assert!(hit
+            .path
+            .replace('\\', "/")
+            .ends_with(".pi/skills/demo-collect-skill"));
         assert_eq!(hit.description, "a demo skill");
 
         let _ = fs::remove_dir_all(repo);

@@ -264,6 +264,8 @@ import {
   pickPreferredAgentContent,
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
+  livePartsHaveVisibleContent,
+  unionAgentParts,
   dedupeAgentDuplicateTextParts,
   hasVisibleTimelineGroups,
   isPauseFailureText,
@@ -320,7 +322,7 @@ import {
   type AgentMessagePageCacheEntry,
   type ChatSessionSummary,
   type AgentTodoItem,
-  mergeHistoryMessagesPreservingLive,
+  mergeHistoryWithLiveTimeline,
   reconcilePromptTailFromHistory
 } from "./lib/agentSessions";
 import {
@@ -614,6 +616,12 @@ function mergeCompletedUserChatMessage(
   const display = normalizeUserMessageForDisplay(mapped, previous);
   return {
     ...mapped,
+    // 替换乐观行时保留本地 id：服务端确认会把行 id 从 local 换成 server id，
+    // Virtuoso computeItemKey 视为「旧行删除+新行插入」→ 卸载重挂（尺寸缓存丢失
+    // 按 defaultItemHeight 估算再实测 → 整列跳动）+ React 子树全新（markdown
+    // 词级淡入重播）= 用户观感「每次发消息其他消息闪一下后变正常」。
+    // local→server 映射已由 serverIdByLocalId 承担，归并/对账路径不依赖行内 id。
+    id: previous?.id || mapped.id,
     content: display.content,
     graphRefs: display.graphRefs,
     attachments: previous?.attachments || mapped.attachments
@@ -1235,8 +1243,6 @@ export function App() {
     rememberSavedModel: rememberAgentSavedModel,
     selectDraftModel: selectAgentDraftModel
   } = useAgentModelSelection(`${AGENT_MODEL_SELECTION_KEY}:global`);
-  const [showAgentModelPicker, setShowAgentModelPicker] = useState(false);
-  const [agentModelPickerSearch, setAgentModelPickerSearch] = useState("");
   const [showAgentProviderPicker, setShowAgentProviderPicker] = useState(false);
   const [agentProviderPickerSearch, setAgentProviderPickerSearch] = useState("");
   const [agentProviderPickerProvider, setAgentProviderPickerProvider] = useState("");
@@ -1293,7 +1299,7 @@ export function App() {
   const [agentDraftAgent, setAgentDraftAgent] = useState<ComposerAgentName>(() => normalizeComposerAgentName(loadLocalString(AGENT_COMPOSER_SELECTION_KEY, "build")));
   const [agentSessionAgent, setAgentSessionAgent] = useState<Record<string, string>>({});
   const [showAgentThinkingPicker, setShowAgentThinkingPicker] = useState(false);
-  const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "auto")));
+  const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "off")));
   const [agentSessionThinkingLevel, setAgentSessionThinkingLevel] = useState<Record<string, AgentThinkingLevel>>({});
   const [agentAutoAcceptPermissions, setAgentAutoAcceptPermissions] = useState(() => loadLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, false));
   const [agentPermissionLoading, setAgentPermissionLoading] = useState(false);
@@ -1410,7 +1416,6 @@ export function App() {
   const agentRightPaneRef = useRef<HTMLDivElement | null>(null);
   const topologyViewportRef = useRef<HTMLDivElement | null>(null);
   const topologyDragStateRef = useRef<null | { x: number; y: number; left: number; top: number }>(null);
-  const agentModelPickerRef = useRef<HTMLDivElement | null>(null);
   const agentLoadingOlderRef = useRef(false);
   const agentSessionsRepoIdRef = useRef("");
   const agentMessageCache = useAgentMessageCache();
@@ -2504,12 +2509,6 @@ export function App() {
     selectAgentSession("", "draft-clear", { draft: true });
     setAgentPromptInput("");
   }
-  const agentSavedModelCandidates = useMemo(() => {
-    const q = agentModelPickerSearch.trim().toLowerCase();
-    if (!q) return agentSavedModels;
-    return agentSavedModels.filter((m) => m.toLowerCase().includes(q));
-  }, [agentSavedModels, agentModelPickerSearch]);
-
   const agentConfiguredModelCandidates = useMemo(() => {
     // Picker shows configured models + locally enabled models (OpenCode-like local visibility semantics).
     return buildConfiguredModelCandidates({
@@ -2521,13 +2520,11 @@ export function App() {
       hiddenModels: agentHiddenModels,
       connectedProviders: agentConnectedProviders,
       liveModelsByProvider: agentModelsByProvider,
-      providerNames: agentProviderNames,
-      search: agentModelPickerSearch
+      providerNames: agentProviderNames
     });
   }, [
     agentConfiguredProviders,
     agentConfiguredModelsByProvider,
-    agentModelPickerSearch,
     agentHiddenModels,
     agentEnabledModels,
     agentConnectedProviders,
@@ -2968,6 +2965,16 @@ export function App() {
       const title =
         clipAgentSessionTitle(firstUser?.content) ||
         `Session ${sid.slice(0, 8)}`;
+      const currentSession = agentSessionsRef.current.find((session) => session.id === sid);
+      if (currentSession && currentSession.messages.length > 0 && page.items.length === 0) {
+        // 服务端拉空但本地有消息：几乎必然是读取异常而非会话真空。空表替换会
+        // 把本地 user 消息全清掉（回补只保 assistant），表现为「暂停后只剩
+        // assistant 行」——跳过本次对账保留现状。
+        appendAgentDebugLog(
+          `session.remote.snapshot sid=${sid} server empty, keep local ${currentSession.messages.length}`
+        );
+        return;
+      }
       const nextSession: AgentChatSession = {
         id: sid,
         title,
@@ -2982,28 +2989,27 @@ export function App() {
       if (sameWorkspace) {
         setAgentSessions((prev) => {
           const existing = prev.find((session) => session.id === sid);
-          const bootstrap = opts?.reason === "remote-bootstrap";
           if (existing) {
-            let nextMessages = page.items;
-            if (bootstrap) {
-              // 启动快照可能还只有用户消息；保留本地已流式写入的 assistant，只补缺失 id。
-              const byId = new Map(existing.messages.map((item) => [item.id, item]));
-              nextMessages = page.items.map((item) => {
-                const live = byId.get(item.id);
-                if (
-                  live?.role === "assistant" &&
-                  String(live.content || "").length > String(item.content || "").length
-                ) {
-                  return { ...item, content: live.content };
-                }
-                return item;
-              });
-              for (const live of existing.messages) {
-                if (!page.items.some((item) => item.id === live.id)) {
-                  nextMessages.push(live);
-                }
+            // 终态/首包对账时服务端 JSONL 可能落后于本地流式状态（abort 回滚 /
+            // write-behind 未落盘）：以本地时间线为骨架归并——服务端缺失的
+            // assistant 原位保留（正文同 id 取更长方），否则 run.failed 对账会把
+            // 已输出内容清空、或把保留行挪到暂停后新发消息之后造成时序错乱
+            // （2026-11-10 / 2026-11-12 实证）。
+            const nextMessages = mergeHistoryWithLiveTimeline(
+              page.items,
+              existing.messages,
+              {
+                serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+                // 与 loadAgentSessionMessages 同判据：reasoning-only 保留行
+                // （长思考期间暂停）不算空白，不能被对账过滤掉。
+                hasLiveParts: (messageId) =>
+                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
               }
-            }
+            );
+            appendAgentDebugLog(
+              `session.remote.snapshot sid=${sid} reason=${opts?.reason || "event"} ` +
+              `server=${page.items.length} local=${existing.messages.length} merged=${nextMessages.length}`
+            );
             return prev.map((session) =>
               session.id === sid
                 ? {
@@ -3268,7 +3274,17 @@ export function App() {
           const bag = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
           const pendingId = bag.shift() || "";
           agentPendingLocalUserIdsBySessionRef.current[sid] = bag;
+          // 替换乐观行保留本地 id 后，必须补写 local→server 映射：归并对账
+          // （mergeHistoryWithLiveTimeline）按「行内 id 直配或映射」配对——user 行
+          // 没有 ensureLocalAssistant 式的常驻映射通道，漏写会让 load/snapshot 把
+          // user 行判「无对应」丢弃、history 版本尾随追加到保留行后面（时序错乱）。
+          if (pendingId && mapped.id) {
+            commitAgentServerMessageIdByLocalId((prev) => (
+              prev[pendingId] === mapped.id ? prev : { ...prev, [pendingId]: mapped.id }
+            ));
+          }
           let replacedOptimistic = false;
+          let fallbackReplacedLocalId = "";
           let messages = session.messages.flatMap((item) => {
             if (item.id === mapped.id) {
               replacedOptimistic = true;
@@ -3294,6 +3310,7 @@ export function App() {
               && String(item.content || "").trim() === userText
             ) {
               replacedOptimistic = true;
+              fallbackReplacedLocalId = item.id;
               return [mergeCompletedUserChatMessage(
                 { ...mapped, attachments: item.attachments || mapped.attachments },
                 item
@@ -3301,6 +3318,12 @@ export function App() {
             }
             return [item];
           });
+          // 兜底替换同样保留本地 id → 必须补映射（归并对账配对依据）。
+          if (fallbackReplacedLocalId && mapped.id) {
+            commitAgentServerMessageIdByLocalId((prev) => (
+              prev[fallbackReplacedLocalId] === mapped.id ? prev : { ...prev, [fallbackReplacedLocalId]: mapped.id }
+            ));
+          }
           if (!replacedOptimistic) {
             if (pendingId) {
               const restore = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
@@ -3924,9 +3947,16 @@ export function App() {
           const existingParts = Array.isArray(existing?.parts) ? existing.parts : [];
           const incomingParts = Array.isArray(detail.parts) ? detail.parts : [];
           const liveParts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
-          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）。
-          // 有 live 或已有更丰富 details 时不要用瘦 history 盖掉。
-          if (liveParts.length > 0 || existingParts.length > incomingParts.length) {
+          // 暂停/中止后 history 往往比 live 瘦（无批并行子卡、无 timeline）：
+          // 有 live 时用并集补齐缺失工具而不是让瘦 history 独占；无 live 时 history 直接盖掉。
+          if (liveParts.length > 0) {
+            next[messageId] = {
+              ...detail,
+              parts: unionAgentParts(liveParts, detail.parts)
+            };
+            continue;
+          }
+          if (existingParts.length > incomingParts.length) {
             if (!existing) next[messageId] = detail;
             continue;
           }
@@ -3988,20 +4018,15 @@ export function App() {
           }
           return item;
         });
-        // history 可能缺最终 assistant（JSONL 未落盘）：保留 live 末尾气泡，避免闪过后被抹掉。
-        mapped = mergeHistoryMessagesPreservingLive(mapped, currentSession.messages, {
-          hasLiveParts: (messageId) => {
-            const parts =
-              agentLivePartsByServerMessageIdRef.current[messageId]
-              || [];
-            return parts.some((part) => {
-              const type = String((part as { type?: string }).type || "");
-              if (type === "text") return Boolean(String((part as { text?: string }).text || "").trim());
-              return false;
-            });
-          },
+        // history 可能缺 assistant（JSONL write-behind 未落盘 / 暂停回滚）：以本地
+        // 时间线为骨架归并，保留行留在原位——尾部追加会把它们挪到暂停后新发消息
+        // 之后，时序错乱（2026-11-12 实证）。
+        mapped = mergeHistoryWithLiveTimeline(mapped, currentSession.messages, {
+          hasLiveParts: (messageId) =>
+            livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId]),
           pickContent: (historyContent, liveContent) =>
-            pickPreferredAgentContent(historyContent, liveContent)
+            pickPreferredAgentContent(historyContent, liveContent),
+          serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
         });
       }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
@@ -4034,6 +4059,11 @@ export function App() {
         const preserved = session.messages.filter(
           (msg) => !mappedIds.has(msg.id) && msg.role === "assistant" && isPauseFailureText(msg.error || "")
         );
+        // 历史拉空但本地有消息：同 snapshot 对账守卫，空表替换会清掉 user 消息。
+        if (mapped.length === 0 && session.messages.length > 0) {
+          appendAgentDebugLog(`agent.messages loaded ${id} empty history, keep local ${session.messages.length}`);
+          return session;
+        }
         return {
           ...session,
           messages: [...mapped, ...preserved],
@@ -4099,7 +4129,7 @@ export function App() {
     } catch (e) {
       appendAgentDebugLog(`session.messages load more ${id} failed: ${e}`);
     } finally {
-      // virtuoso 在 data 前部插入时自动保持视觉锚点，无需手动 scrollTop 调整。
+      // 头部插入由 AgentMessageStream 的 Virtuoso firstItemIndex 官方协议保持视觉锚点。
       agentLoadingOlderRef.current = false;
     }
   }
@@ -6927,6 +6957,13 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 const bag = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
                 const pendingId = bag.shift() || "";
                 agentPendingLocalUserIdsBySessionRef.current[sessionId] = bag;
+                // 同 3269 区：替换保留本地 id 后必须补写 local→server 映射，
+                // 否则归并对账配不上对，user 行被丢、history 版本尾随错序。
+                if (pendingId && mappedUser.id) {
+                  commitAgentServerMessageIdByLocalId((prev) => (
+                    prev[pendingId] === mappedUser.id ? prev : { ...prev, [pendingId]: mappedUser.id }
+                  ));
+                }
                 const liveId = currentServerAssistantId || currentLocalAssistantId;
                 const liveActive = Boolean(liveId) && !frozenAssistantMessageIds.has(liveId);
                 updateAgentSessionById(sessionId, (session) => {
@@ -7770,13 +7807,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             updateAgentSessionById(sessionId, (session) => {
               const result = reconcilePromptTailFromHistory(session.messages, historyChat, {
                 pickContent: pickPreferredAgentContent,
-                hasLiveParts: (messageId) => {
-                  const parts = agentLivePartsByServerMessageIdRef.current[messageId] || [];
-                  return parts.some((part) => {
-                    const type = String((part as { type?: string }).type || "");
-                    return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-                  });
-                }
+                hasLiveParts: (messageId) =>
+                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
               });
               touchedAssistantIds = result.touchedAssistantIds;
               if (!result.changed) return session;
@@ -7785,17 +7817,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             const touchedIdSet = new Set(touchedAssistantIds);
             const detailsPatch: Record<string, AgentDetailedMessage> = {};
             for (const agentMsg of agentMessages) {
-              if (agentMsg.role !== "assistant" || !touchedIdSet.has(agentMsg.id)) continue;
+              if (agentMsg.role !== "assistant") continue;
+              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
+              const isTouched = touchedIdSet.has(agentMsg.id);
+              // 本回合有 live 的行即使正文没变化也要 union：流式漏事件的工具
+              // （如 review 回合只收到部分 toolCall）在结束后由 JSONL 补齐。
+              if (liveParts.length === 0 && !isTouched) continue;
               const textBlocks = agentMsg.parts
                 .filter(
                   (part): part is Extract<AgentPart, { type: "text" }> =>
                     part.type === "text" && Boolean(part.text.trim())
                 )
                 .map((part) => part.text);
-              let liveHasText = livePartsHaveTextPart(
-                agentLivePartsByServerMessageIdRef.current[agentMsg.id]
-              );
-              if (textBlocks.length > 0) {
+              let liveHasText = livePartsHaveTextPart(liveParts);
+              if (textBlocks.length > 0 && isTouched) {
                 commitAgentLiveParts((prev) => {
                   const current = prev[agentMsg.id] || [];
                   const { parts, changed } = appendMissingTextPartsToLive(current, textBlocks);
@@ -7804,13 +7839,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   return { ...prev, [agentMsg.id]: parts };
                 });
               }
-              // live 已有 text part 时不再写 details：避免 fetched text:0 与 live text:soft 双轨。
-              if (liveHasText) continue;
+              // live 已有 text part 时不再用 history 独占盖掉：union 补齐缺失工具，
+              // 正文/思考按「更长的一份」去重，避免 fetched 与 live 双轨。
               const incoming = agentMessageToDetailedMessage(agentMsg, toolResults);
-              const liveParts = agentLivePartsByServerMessageIdRef.current[agentMsg.id] || [];
               if (liveParts.length === 0) {
-                detailsPatch[agentMsg.id] = incoming;
+                if (!liveHasText) detailsPatch[agentMsg.id] = incoming;
+                continue;
               }
+              detailsPatch[agentMsg.id] = {
+                info: incoming.info,
+                parts: unionAgentParts(liveParts, incoming.parts)
+              };
             }
             if (Object.keys(detailsPatch).length > 0) {
               setAgentDetailsByMessageId((prev) => {
@@ -7822,6 +7861,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   if (existingParts.length > incomingParts.length) continue;
                   next[messageId] = incoming;
                 }
+                agentDetailsByMessageIdRef.current = next;
                 return next;
               });
             }
@@ -8072,7 +8112,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         return;
       }
       if (trigger === "model") {
-        setShowAgentModelPicker(true);
+        setSettingsInitialSection("models");
+        setShowSettings(true);
         return;
       }
       if (trigger === "agent") {
@@ -9849,12 +9890,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }, [activeAgentModel]);
 
   useEffect(() => {
-    if (!showAgentModelPicker) return;
-    // Keep previous list until refresh resolves to avoid open-time flicker.
-    void refreshAgentServerConfig();
-  }, [showAgentModelPicker]);
-
-  useEffect(() => {
     if (rightPaneTab !== "terminal") return;
     if (!selectedRepo?.path) {
       setTerminalTabs((prev) => prev.map((tab) => ({ ...tab, output: "", seq: 0, alive: false })));
@@ -9961,7 +9996,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       refreshTimer = null;
       void refresh();
     }, activeAgentSessionBusy ? 1200 : 600);
-    const interval = window.setInterval(() => void refresh(), activeAgentSessionBusy ? 1500 : 5000);
+    // 空闲低频兜底：busy/idle 状态已由 giteam://agent-event 事件实时驱动（含手机端
+    // 发起的会话），列表轮询只为标题/排序兜底；间隔从 5s 放宽到 30s 降低空闲 IPC。
+    const interval = window.setInterval(() => void refresh(), activeAgentSessionBusy ? 1500 : 30000);
     return () => {
       stopped = true;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
@@ -10276,7 +10313,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   function jumpAgentToLatest() {
     locateInFlightRef.current = false;
     setAgentAutoFollowLatest(true);
-    agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+    setAgentShowJumpLatest(false);
+    // 官方 Chat 的按钮是“切回 live edge”而非只做一次滚动：这里同样切到钉底跟随。
+    // rAF 循环在 Virtuoso 补测量、DOM 实测校正后继续钉到当前最新 max；一次性 scrollToIndex
+    // 只算一次落点，长消息补测后会停在旧 max，表现为“要点多次”。
+    setAgentStickResetSignal((value) => value + 1);
   }
 
   useEffect(() => {
@@ -10934,6 +10975,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               onActivateSlashCommand={activateAgentSlashCommand}
               promptInputRef={agentInputRef}
               promptInput={agentPromptInput}
+              onFillPrompt={(text) => {
+                captureAgentPromptHistoryDraft(text);
+                setAgentPromptInput(text);
+                agentInputRef.current?.focus();
+              }}
               onPromptCompositionStart={() => {
                 agentInputComposingRef.current = true;
               }}
@@ -11052,11 +11098,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 appendAgentAttachments(attachments.filter(Boolean) as AgentAttachment[]);
                 event.currentTarget.value = "";
               }}
-              modelPickerRef={agentModelPickerRef}
-              showModelPicker={showAgentModelPicker}
-              onToggleModelPicker={() => setShowAgentModelPicker((prev) => !prev)}
-              modelPickerSearch={agentModelPickerSearch}
-              onModelPickerSearchChange={setAgentModelPickerSearch}
               activeAgent={activeAgentAgent}
               onApplyAgent={applyAgentAgent}
               activeThinkingLevel={activeAgentThinkingLevel}
@@ -11074,7 +11115,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               getModelDisplay={getAgentModelDisplay}
               onApplyModel={(modelRef) => {
                 void applyAgentModel(modelRef);
-                setShowAgentModelPicker(false);
               }}
               onOpenModelSettings={() => {
                 setSettingsInitialSection("models");
@@ -11082,7 +11122,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 setAgentProviderPickerSearch("");
                 setAgentProviderPickerProvider(agentModelProvider);
                 setAgentProviderPickerModelSearch("");
-                setShowAgentModelPicker(false);
               }}
               labels={{
                 model: appText.model,
@@ -11599,8 +11638,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       await fetchAgentModels(pid).catch(() => [] as string[]);
       ensureProviderExists(pid);
       setShowAgentCustomProvider(false);
-      setShowAgentModelPicker(true);
-      setAgentModelPickerSearch("");
       setMessage(`Saved configuration: ${full}`);
     } catch (e) {
       setError(String(e));

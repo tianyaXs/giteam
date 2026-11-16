@@ -15,13 +15,9 @@ mod types;
 
 pub use notify::deliver_run_notification;
 pub use runner::{execute_task, RunOutcome};
-pub use schedule::{
-    compute_next_run_at, preset_daily, preset_weekdays, preset_weekly,
-};
+pub use schedule::{compute_next_run_at, preset_daily, preset_weekdays, preset_weekly};
 pub use scheduler::{run_now, start_scheduler, NotifyHook};
-pub use store::{
-    default_db_path, global_store, with_store, AutomationStore,
-};
+pub use store::{default_db_path, global_store, with_store, AutomationStore};
 pub use types::{
     now_ms, should_notify_run, AutomationRun, AutomationTask, CreateTaskInput, NotifyChannel,
     RunStatus, RunTrigger, ScheduleKind, SessionMode, TaskFilter, UpdateTaskInput,

@@ -38,7 +38,14 @@ fn label_of(tab_id: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
         .collect();
-    format!("{BROWSER_LABEL_PREFIX}{}", if safe.is_empty() { "default" } else { safe.as_str() })
+    format!(
+        "{BROWSER_LABEL_PREFIX}{}",
+        if safe.is_empty() {
+            "default"
+        } else {
+            safe.as_str()
+        }
+    )
 }
 
 /// 子 webview → 前端的导航/状态事件 payload。url/state/title 任一为 None 表示「不更新」，

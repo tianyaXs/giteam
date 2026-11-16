@@ -275,7 +275,10 @@ pub fn disconnect_mobile_client(jti: &str) -> Result<(), String> {
     if settings.device_token.trim().is_empty() || settings.cloud_base_url.trim().is_empty() {
         return Err("cloud link incomplete".into());
     }
-    let url = join_url(&settings.cloud_base_url, "/cloud/v1/device/clients/disconnect");
+    let url = join_url(
+        &settings.cloud_base_url,
+        "/cloud/v1/device/clients/disconnect",
+    );
     let resp = client()?
         .post(&url)
         .header(

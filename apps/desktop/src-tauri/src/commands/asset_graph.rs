@@ -116,10 +116,7 @@ pub async fn asset_graph_subgraph(
 /// 按应用会话 id 反查会话节点 id：面板打开时相机飞到当前会话附近用。
 /// 未挂载/未收录该会话时返回 null（前端回退到全图 fit）。
 #[tauri::command]
-pub async fn asset_graph_session_node(
-    repo_path: String,
-    session_id: String,
-) -> serde_json::Value {
+pub async fn asset_graph_session_node(repo_path: String, session_id: String) -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(graph) = giteam_core::asset_graph::attached(std::path::Path::new(&repo_path))
         else {
@@ -194,7 +191,8 @@ fn time_range(from_ms: Option<i64>, to_ms: Option<i64>) -> Option<(i64, i64)> {
 #[tauri::command]
 pub async fn asset_graph_extraction_queue(repo_path: String) -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(move || {
-        let s = giteam_core::asset_graph::extraction_queue_summary(std::path::Path::new(&repo_path));
+        let s =
+            giteam_core::asset_graph::extraction_queue_summary(std::path::Path::new(&repo_path));
         serde_json::json!({
             "pending": s.pending,
             "claimed": s.claimed,

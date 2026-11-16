@@ -201,7 +201,9 @@ fn find_system(bin: ManagedBin) -> Option<PathBuf> {
         }
         // GUI 冷启动 PATH 可能不完整；再试裸命令名。
         if binary_works(Path::new(name)) {
-            return which::which(name).ok().or_else(|| Some(PathBuf::from(name)));
+            return which::which(name)
+                .ok()
+                .or_else(|| Some(PathBuf::from(name)));
         }
     }
     None
@@ -223,7 +225,11 @@ fn binary_works(path: &Path) -> bool {
 fn download_and_install(bin: ManagedBin, bin_dir: &Path, target: &Path) -> Result<(), String> {
     let (url, archive_name) = release_asset(bin)?;
     let archive_path = bin_dir.join(&archive_name);
-    let extract_dir = bin_dir.join(format!(".extract-{}-{}", bin.display_name(), std::process::id()));
+    let extract_dir = bin_dir.join(format!(
+        ".extract-{}-{}",
+        bin.display_name(),
+        std::process::id()
+    ));
 
     download_file(&url, &archive_path)?;
     let _ = fs::remove_dir_all(&extract_dir);
@@ -284,9 +290,8 @@ fn release_asset(bin: ManagedBin) -> Result<(String, String), String> {
                 _ => return Err(format!("unsupported platform for fd: {os}-{arch}")),
             };
             let name = format!("fd-v{FD_VERSION}-{triple}.{ext}");
-            let url = format!(
-                "https://github.com/sharkdp/fd/releases/download/v{FD_VERSION}/{name}"
-            );
+            let url =
+                format!("https://github.com/sharkdp/fd/releases/download/v{FD_VERSION}/{name}");
             Ok((url, name))
         }
     }
@@ -335,7 +340,8 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     let tmp = dest.with_extension(" partial");
     {
         let mut file = fs::File::create(&tmp).map_err(|e| format!("create temp: {e}"))?;
-        file.write_all(&bytes).map_err(|e| format!("write temp: {e}"))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("write temp: {e}"))?;
     }
     fs::rename(&tmp, dest).map_err(|e| format!("finalize download: {e}"))?;
     Ok(())
@@ -348,7 +354,12 @@ fn extract_archive(archive: &Path, dest: &Path, archive_name: &str) -> Result<()
         #[cfg(not(windows))]
         let tar = "tar";
         Command::new(tar)
-            .args(["xf", &archive.to_string_lossy(), "-C", &dest.to_string_lossy()])
+            .args([
+                "xf",
+                &archive.to_string_lossy(),
+                "-C",
+                &dest.to_string_lossy(),
+            ])
             .status()
     } else {
         Command::new("tar")

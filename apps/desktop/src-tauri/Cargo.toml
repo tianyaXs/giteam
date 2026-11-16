@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.53"
+version = "0.2.57"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -17,7 +17,9 @@ giteam-core = { path = "../../../crates/giteam-core", features = ["tauri-app"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon", "unstable"] }
+# macos-private-api：透明窗口（macOS）硬前置，后续 agent 覆盖层（虚拟光标/引导高亮）
+# 依赖；keyviz 同款配置。见 docs/computer-use-overlay-research.md §3。
+tauri = { version = "2", features = ["tray-icon", "unstable", "macos-private-api"] }
 tauri-plugin-window-state = "2"
 rusqlite = { version = "0.39", features = ["bundled"] }
 wait-timeout = "0.2"
@@ -41,6 +43,23 @@ futures = "0.3"
 # 0.9 已默认绑 tokio（无 tokio-runtime feature）；default 不含 fetcher，用系统 Chrome 不下载。
 chromiumoxide = "0.9"
 
+# agent 操作电脑（computer_use）底座，选型依据 docs/computer-use-overlay-research.md §1：
+# enigo 键鼠注入——钉 git main：crates.io 0.6.1（2025-08）缺 Tauri 键盘布局崩溃修复
+# （PR#510，2025-11-30 合并未发版），等 0.7 发版后切回 crates.io（追踪 issue#538）。
+# rev 锁 64ccb967a791bed54c7bed3cbe1586f32bfa99c1（2026-11-09 main）。
+enigo = { git = "https://github.com/enigo-rs/enigo", rev = "64ccb967a791bed54c7bed3cbe1586f32bfa99c1" }
+# xcap 截屏——多显示器 + scale_factor 语义清晰；macOS 旧 CG API 的 Sequoia 警告
+# 风险见调研 §8（xcap#160）。
+xcap = "0.9"
+# 截图 JPEG 压缩（q75 长边 1600px，单图 ~150KB；PNG 6.7MB 会把端点打到零产出）。
+# xcap 0.9.8 的 image 只带 png 编码器——运行时报「The image format `Jpeg` is
+# not supported」的根因就是依赖树里没有 jpeg feature。与 xcap 共用同一 image
+# 编译单元（feature unification 并集），显式开启即可让 xcap::image 编码 JPEG。
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# 中文/IME 安全键入：enigo 合成键盘事件在输入法激活时会被拦截（ASCII 正常、
+# 中文 3 连败实证），type 动作对非 ASCII 文本自动切换「写剪贴板+粘贴」路径。
+arboard = "3"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -48,6 +67,10 @@ libc = "0.2"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["std", "NSButton", "NSControl", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "objc2-core-foundation"] }
+# agent 覆盖层窗口转 NSPanel：普通 NSWindow 在 release 打包后置顶失效、盖不住全屏
+# 空间（tauri#9556/#5566）；NonActivatingPanel + FullScreenAuxiliary 配方照
+# tauri-macos-spotlight-example。rev 锁 v2.1 分支头（2026-11-10）。
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "3ffa93ed14e0f8e857e43619b4157f2a685d35a4" }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.3.1"

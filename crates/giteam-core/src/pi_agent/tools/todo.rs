@@ -174,7 +174,9 @@ fn todo_output(todos: &[AgentTodo], note: Option<&str>) -> ToolOutput {
         summary.push_str(&format!("变更说明：{note}。"));
     }
     ToolOutput {
-        content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(summary))],
+        content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(
+            summary,
+        ))],
         details: Some(serde_json::json!({ "todos": todos, "note": note })),
         is_error: false,
     }
@@ -223,8 +225,14 @@ mod tests {
 
     #[test]
     fn parse_todos_rejects_empty_content_and_bad_status() {
-        assert!(parse_todos(&serde_json::json!({"todos": [{"id": "a", "content": "  ", "status": "pending"}]})).is_err());
-        assert!(parse_todos(&serde_json::json!({"todos": [{"id": "a", "content": "x", "status": "done"}]})).is_err());
+        assert!(parse_todos(
+            &serde_json::json!({"todos": [{"id": "a", "content": "  ", "status": "pending"}]})
+        )
+        .is_err());
+        assert!(parse_todos(
+            &serde_json::json!({"todos": [{"id": "a", "content": "x", "status": "done"}]})
+        )
+        .is_err());
     }
 
     #[test]

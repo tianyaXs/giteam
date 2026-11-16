@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::channel::oneshot;
 use serde_json::Value;
 
-use super::events::{publish_event, AgentEvent, EventBufferBus, EventSubscriberBus, PiEventTranslator};
+use super::events::{
+    publish_event, AgentEvent, EventBufferBus, EventSubscriberBus, PiEventTranslator,
+};
 use super::service::AgentEventSink;
 use super::types::{AgentInteraction, AgentInteractionReply};
 
@@ -42,7 +44,7 @@ impl InteractionRunContext {
     }
 }
 
-/// 工具风险分级。read 直通；write/execute/network 一律先审批。
+/// 工具风险分级。read 直通；write/execute/network/system 一律先审批。
 /// 未知工具按 write 处理（fail-closed）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionRisk {
@@ -52,6 +54,9 @@ pub enum InteractionRisk {
     /// 网络访问（web_fetch/web_search）：抓取外部数据进 context，首次审批、
     /// 按 `always_rule_key` 域名/后端粒度放行（见 `.giteam/permissions.json`）。
     Network,
+    /// OS 控制（computer_use）：AX 树语义操作 / 键鼠注入 / 截屏。逐次审批，
+    /// 「总是允许」仅会话内工具名粒度——OS 控制不做跨会话持久放行。
+    System,
 }
 
 impl InteractionRisk {
@@ -67,6 +72,7 @@ impl InteractionRisk {
             | "read_xlsx" | "read_docx" | "read_pptx" => Self::Read,
             "bash" | "kill_shell" => Self::Execute,
             "web_fetch" | "web_search" | "browser_use" => Self::Network,
+            "computer_use" => Self::System,
             _ => Self::Write,
         }
     }
@@ -83,6 +89,7 @@ impl InteractionRisk {
             Self::Write => "write",
             Self::Execute => "execute",
             Self::Network => "network",
+            Self::System => "system",
         }
     }
 }
@@ -93,7 +100,10 @@ impl InteractionRisk {
 #[must_use]
 pub fn always_rule_key(tool: &str, input: &Value) -> String {
     let target: Option<String> = match tool {
-        "bash" => input.get("command").and_then(Value::as_str).map(str::to_string),
+        "bash" => input
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         // web_fetch 按域名粒度：同站点一次「总是允许」覆盖后续页面。
         "web_fetch" => input.get("url").and_then(Value::as_str).and_then(url_host),
         // web_search 按后端粒度：搜索无固定目标，同一后端一次放行后续查询。
@@ -101,7 +111,10 @@ pub fn always_rule_key(tool: &str, input: &Value) -> String {
         // browser_use 按域名粒度：navigate 有 url 时同站点一次放行后续操作；
         // click/type 等无 url 的操作退化为工具名粒度（同会话内 always 放行）。
         "browser_use" => input.get("url").and_then(Value::as_str).and_then(url_host),
-        _ => input.get("path").and_then(Value::as_str).map(str::to_string),
+        _ => input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     };
     match target.filter(|target| !target.is_empty()) {
         Some(target) => format!("{tool}:{target}"),
@@ -369,31 +382,37 @@ impl InteractionStore {
 
     #[must_use]
     pub fn list_pending(&self, session_id: Option<&str>) -> Vec<AgentInteraction> {
-        self.pending.lock().map_or_else(|_| Vec::new(), |pending| {
-            pending
-                .values()
-                .filter(|entry| {
-                    session_id.is_none_or(|session_id| {
-                        interaction_session_id(&entry.interaction) == session_id
+        self.pending.lock().map_or_else(
+            |_| Vec::new(),
+            |pending| {
+                pending
+                    .values()
+                    .filter(|entry| {
+                        session_id.is_none_or(|session_id| {
+                            interaction_session_id(&entry.interaction) == session_id
+                        })
                     })
-                })
-                .map(|entry| entry.interaction.clone())
-                .collect()
-        })
+                    .map(|entry| entry.interaction.clone())
+                    .collect()
+            },
+        )
     }
 
     /// 拒绝指定 run 的全部 pending（abort / run 结束时释放等待中的工具 future）。
     pub fn reject_run(&self, session_id: &str, run_id: &str, resolution: &str) {
-        let ids: Vec<String> = self.pending.lock().map_or_else(|_| Vec::new(), |pending| {
-            pending
-                .iter()
-                .filter(|(_, entry)| {
-                    interaction_session_id(&entry.interaction) == session_id
-                        && entry.context.run_id == run_id
-                })
-                .map(|(id, _)| id.clone())
-                .collect()
-        });
+        let ids: Vec<String> = self.pending.lock().map_or_else(
+            |_| Vec::new(),
+            |pending| {
+                pending
+                    .iter()
+                    .filter(|(_, entry)| {
+                        interaction_session_id(&entry.interaction) == session_id
+                            && entry.context.run_id == run_id
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            },
+        );
         for id in ids {
             if let Some(pending) = self.take_pending(&id) {
                 let _ = pending.sender.send(InteractionResolution::Aborted);
@@ -408,13 +427,16 @@ impl InteractionStore {
 
     /// 拒绝指定 session 的全部 pending（删除会话时）。
     pub fn reject_session(&self, session_id: &str, resolution: &str) {
-        let ids: Vec<String> = self.pending.lock().map_or_else(|_| Vec::new(), |pending| {
-            pending
-                .iter()
-                .filter(|(_, entry)| interaction_session_id(&entry.interaction) == session_id)
-                .map(|(id, _)| id.clone())
-                .collect()
-        });
+        let ids: Vec<String> = self.pending.lock().map_or_else(
+            |_| Vec::new(),
+            |pending| {
+                pending
+                    .iter()
+                    .filter(|(_, entry)| interaction_session_id(&entry.interaction) == session_id)
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            },
+        );
         for id in ids {
             if let Some(pending) = self.take_pending(&id) {
                 let _ = pending.sender.send(InteractionResolution::Aborted);
@@ -530,7 +552,9 @@ fn redact_secret_patterns(text: &str) -> String {
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }
 
 #[cfg(test)]
@@ -538,7 +562,13 @@ mod tests {
     use super::*;
     use crate::pi_agent::{AgentEventEnvelope, AGENT_EVENT_SCHEMA_VERSION};
 
-    fn test_context(session_id: &str, run_id: &str) -> (InteractionRunContext, std::sync::mpsc::Receiver<AgentEventEnvelope>) {
+    fn test_context(
+        session_id: &str,
+        run_id: &str,
+    ) -> (
+        InteractionRunContext,
+        std::sync::mpsc::Receiver<AgentEventEnvelope>,
+    ) {
         let (sink_tx, sink_rx) = std::sync::mpsc::channel();
         let context = InteractionRunContext {
             session_id: session_id.to_string(),
@@ -582,7 +612,9 @@ mod tests {
         });
         thread::sleep(Duration::from_millis(50));
 
-        store.reply("int-1", AgentInteractionReply::Once).expect("first reply");
+        store
+            .reply("int-1", AgentInteractionReply::Once)
+            .expect("first reply");
         assert!(store.reply("int-1", AgentInteractionReply::Reject).is_err());
 
         let resolution = waiter.join().expect("waiter should finish");
@@ -617,7 +649,9 @@ mod tests {
             )
             .is_err());
         // 种类不匹配不消费 pending，后续有效回复仍生效
-        store.reply("int-2", AgentInteractionReply::Reject).expect("valid reply");
+        store
+            .reply("int-2", AgentInteractionReply::Reject)
+            .expect("valid reply");
         let resolution = waiter.join().expect("waiter should finish");
         assert!(matches!(
             resolution,
@@ -684,7 +718,9 @@ mod tests {
         let resolution_a = waiter_a.join().expect("run-a waiter should finish");
         assert!(matches!(resolution_a, InteractionResolution::Aborted));
         // run-b 不受影响，仍可正常回复
-        store.reply("int-b", AgentInteractionReply::Once).expect("reply run-b");
+        store
+            .reply("int-b", AgentInteractionReply::Once)
+            .expect("reply run-b");
         let resolution_b = waiter_b.join().expect("run-b waiter should finish");
         assert!(matches!(
             resolution_b,
@@ -702,14 +738,23 @@ mod tests {
             always_rule_key("write", &serde_json::json!({"path": "/tmp/a.txt"})),
             "write:/tmp/a.txt"
         );
-        assert_eq!(always_rule_key("webfetch", &serde_json::json!({})), "webfetch");
+        assert_eq!(
+            always_rule_key("webfetch", &serde_json::json!({})),
+            "webfetch"
+        );
         // web_fetch 细粒度按域名（忽略端口/路径）。
         assert_eq!(
-            always_rule_key("web_fetch", &serde_json::json!({"url": "https://doc.rust-lang.org/book/"})),
+            always_rule_key(
+                "web_fetch",
+                &serde_json::json!({"url": "https://doc.rust-lang.org/book/"})
+            ),
             "web_fetch:doc.rust-lang.org"
         );
         assert_eq!(
-            always_rule_key("web_fetch", &serde_json::json!({"url": "http://EXAMPLE.com:8080/x?q=1"})),
+            always_rule_key(
+                "web_fetch",
+                &serde_json::json!({"url": "http://EXAMPLE.com:8080/x?q=1"})
+            ),
             "web_fetch:example.com"
         );
         assert_eq!(
@@ -736,8 +781,14 @@ mod tests {
         assert_eq!(InteractionRisk::for_tool("task"), InteractionRisk::Read);
         assert!(InteractionRisk::for_tool("write").requires_approval());
         assert_eq!(InteractionRisk::for_tool("bash"), InteractionRisk::Execute);
-        assert_eq!(InteractionRisk::for_tool("web_fetch"), InteractionRisk::Network);
-        assert_eq!(InteractionRisk::for_tool("web_search"), InteractionRisk::Network);
+        assert_eq!(
+            InteractionRisk::for_tool("web_fetch"),
+            InteractionRisk::Network
+        );
+        assert_eq!(
+            InteractionRisk::for_tool("web_search"),
+            InteractionRisk::Network
+        );
         assert!(InteractionRisk::for_tool("web_fetch").requires_approval());
         assert!(InteractionRisk::for_tool("unknown_tool").requires_approval());
     }
@@ -760,11 +811,13 @@ mod tests {
     #[test]
     fn envelope_schema_version_is_stable() {
         let (context, _rx) = test_context("s1", "r1");
-        let envelope = context.translator.envelope(AgentEvent::InteractionResolved {
-            id: "int-1".to_string(),
-            resolution: "once".to_string(),
-            automatic: false,
-        });
+        let envelope = context
+            .translator
+            .envelope(AgentEvent::InteractionResolved {
+                id: "int-1".to_string(),
+                resolution: "once".to_string(),
+                automatic: false,
+            });
         assert_eq!(envelope.schema_version, AGENT_EVENT_SCHEMA_VERSION);
         assert_eq!(envelope.run_id.as_deref(), Some("r1"));
     }

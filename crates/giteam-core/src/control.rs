@@ -189,7 +189,8 @@ struct PiControlAutoApproveRequest {
 }
 
 fn pi_session_dir(repo_path: &str) -> Result<PathBuf, String> {
-    crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path)).map_err(|error| error.to_string())
+    crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path))
+        .map_err(|error| error.to_string())
 }
 
 fn pi_error_response(error: PiAgentError) -> (u16, Value) {
@@ -203,9 +204,7 @@ fn pi_error_response(error: PiAgentError) -> (u16, Value) {
         | PiAgentError::Persistence(_)
         | PiAgentError::Secret(_)
         | PiAgentError::Provider(_)
-        | PiAgentError::SessionAlreadyExists(_) => {
-            500
-        }
+        | PiAgentError::SessionAlreadyExists(_) => 500,
     };
     (status, serde_json::json!({ "error": error.to_string() }))
 }
@@ -454,7 +453,9 @@ fn build_mobile_models_response() -> Result<Value, String> {
     for m in &pi_models {
         let id = format!("{}/{}", m.provider, m.model_id);
         if !m.name.trim().is_empty() {
-            label_by_id.entry(id.clone()).or_insert_with(|| m.name.clone());
+            label_by_id
+                .entry(id.clone())
+                .or_insert_with(|| m.name.clone());
         }
         if m.has_credential {
             credentialed.push(id);
@@ -1198,7 +1199,10 @@ fn is_terminal_agent_event(event: &AgentEvent) -> bool {
     )
 }
 
-fn write_agent_sse_event(stream: &mut TcpStream, event: &AgentEventEnvelope) -> Result<bool, String> {
+fn write_agent_sse_event(
+    stream: &mut TcpStream,
+    event: &AgentEventEnvelope,
+) -> Result<bool, String> {
     let terminal = is_terminal_agent_event(&event.event);
     let payload = serde_json::to_value(event)
         .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
@@ -1314,20 +1318,18 @@ fn handle_agent_events_sse(mut stream: TcpStream, req: &HttpRequest) {
 
     loop {
         match receiver.recv_timeout(Duration::from_secs(20)) {
-            Ok(event) => {
-                match write_agent_sse_event(&mut stream, &event) {
-                    Ok(true) => {
-                        let _ = write_sse_event(
-                            &mut stream,
-                            "end",
-                            &serde_json::json!({ "runId": run_id }),
-                        );
-                        break;
-                    }
-                    Ok(false) => {}
-                    Err(_) => break,
+            Ok(event) => match write_agent_sse_event(&mut stream, &event) {
+                Ok(true) => {
+                    let _ = write_sse_event(
+                        &mut stream,
+                        "end",
+                        &serde_json::json!({ "runId": run_id }),
+                    );
+                    break;
                 }
-            }
+                Ok(false) => {}
+                Err(_) => break,
+            },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if write_sse_event(
                     &mut stream,
@@ -1386,17 +1388,26 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/graph/summary" {
         let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
         let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
-            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+            return (
+                404,
+                serde_json::json!({ "error": "asset graph not mounted for repo" }),
+            );
         };
         let Ok(graph) = graph.lock() else {
             return (500, serde_json::json!({ "error": "asset graph busy" }));
         };
-        return (200, serde_json::to_value(graph.query().counts()).unwrap_or(Value::Null));
+        return (
+            200,
+            serde_json::to_value(graph.query().counts()).unwrap_or(Value::Null),
+        );
     }
     if req.method == "GET" && req.path == "/api/v1/graph/search" {
         let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
         let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
-            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+            return (
+                404,
+                serde_json::json!({ "error": "asset graph not mounted for repo" }),
+            );
         };
         let Ok(graph) = graph.lock() else {
             return (500, serde_json::json!({ "error": "asset graph busy" }));
@@ -1404,15 +1415,15 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         let q = req.query.get("q").map(String::as_str).unwrap_or("");
         let node_type = req.query.get("type").map(String::as_str);
         let hits = graph.query().search(q, node_type, 30);
-        return (
-            200,
-            serde_json::json!({ "query": q, "hits": hits }),
-        );
+        return (200, serde_json::json!({ "query": q, "hits": hits }));
     }
     if req.method == "GET" && req.path == "/api/v1/graph/subgraph" {
         let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
         let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
-            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+            return (
+                404,
+                serde_json::json!({ "error": "asset graph not mounted for repo" }),
+            );
         };
         let Ok(graph) = graph.lock() else {
             return (500, serde_json::json!({ "error": "asset graph busy" }));
@@ -1441,7 +1452,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/graph/full" {
         let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
         let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
-            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+            return (
+                404,
+                serde_json::json!({ "error": "asset graph not mounted for repo" }),
+            );
         };
         let Ok(graph) = graph.lock() else {
             return (500, serde_json::json!({ "error": "asset graph busy" }));
@@ -1469,7 +1483,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
     if req.method == "GET" && req.path == "/api/v1/graph/sessions" {
         let repo_path = req.query.get("repoPath").map(String::as_str).unwrap_or("");
         let Some(graph) = crate::asset_graph::attached(Path::new(repo_path)) else {
-            return (404, serde_json::json!({ "error": "asset graph not mounted for repo" }));
+            return (
+                404,
+                serde_json::json!({ "error": "asset graph not mounted for repo" }),
+            );
         };
         let Ok(graph) = graph.lock() else {
             return (500, serde_json::json!({ "error": "asset graph busy" }));
@@ -1580,7 +1597,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             Ok(v) => v,
             Err(e) => return (400, serde_json::json!({ "error": e })),
         };
-        return match apply_mobile_model_visibility(raw.get("enabledModels"), raw.get("hiddenModels")) {
+        return match apply_mobile_model_visibility(
+            raw.get("enabledModels"),
+            raw.get("hiddenModels"),
+        ) {
             Ok(state) => (200, state),
             Err(e) => (500, serde_json::json!({ "error": e })),
         };
@@ -1704,10 +1724,9 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         // 失败只记日志——图谱是旁路能力，绝不阻塞会话创建。
         if crate::asset_graph::attached(Path::new(&repo_path)).is_none() {
             let attach_result = match PiAgentService::global().asset_graph_subagent_host() {
-                Some(host) => crate::asset_graph::attach_repo_with_extraction(
-                    Path::new(&repo_path),
-                    host,
-                ),
+                Some(host) => {
+                    crate::asset_graph::attach_repo_with_extraction(Path::new(&repo_path), host)
+                }
                 None => crate::asset_graph::attach_repo(Path::new(&repo_path)),
             };
             match attach_result {
@@ -1738,6 +1757,7 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             max_tool_iterations: request.max_tool_iterations,
             // HTTP/CLI 路径无桌面端内置浏览器，browser_use 不可用。
             browser_controller: None,
+            os_controller: None,
             parent_session_id: None,
             parent_tool_call_id: None,
             session_kind: "primary".to_string(),
@@ -2234,10 +2254,10 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
                 serde_json::json!({ "error": "sessionId and level are required" }),
             );
         }
-        return match pi_block_on(PiAgentService::global().set_thinking_level(
-            request.session_id.as_str(),
-            request.level.as_str(),
-        )) {
+        return match pi_block_on(
+            PiAgentService::global()
+                .set_thinking_level(request.session_id.as_str(), request.level.as_str()),
+        ) {
             Ok(()) => (200, serde_json::json!({ "ok": true })),
             Err(error) => pi_error_response(error),
         };
@@ -2318,10 +2338,9 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
         if request.session_id.trim().is_empty() {
             return (400, serde_json::json!({ "error": "sessionId is required" }));
         }
-        return match pi_block_on(PiAgentService::global().set_auto_approve(
-            request.session_id.as_str(),
-            request.enabled,
-        )) {
+        return match pi_block_on(
+            PiAgentService::global().set_auto_approve(request.session_id.as_str(), request.enabled),
+        ) {
             Ok(()) => (200, serde_json::json!({ "ok": true })),
             Err(error) => pi_error_response(error),
         };
@@ -2503,14 +2522,12 @@ pub fn start_control_server_with_settings(settings: ControlServerSettings) -> Re
         }
         let (listener, bound_port) =
             try_bind_control_listener(settings.host.as_str(), settings.port)?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| {
-                format!(
-                    "control server set_nonblocking failed on {}:{}: {e}",
-                    settings.host, bound_port
-                )
-            })?;
+        listener.set_nonblocking(true).map_err(|e| {
+            format!(
+                "control server set_nonblocking failed on {}:{}: {e}",
+                settings.host, bound_port
+            )
+        })?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
         let host_for_thread = settings.host.clone();
@@ -2649,7 +2666,10 @@ mod tests {
         );
         assert_eq!(status, 404);
         let (status, _) = handle_api_request(
-            get("/api/v1/graph/search", &[("repoPath", repo_str.as_str()), ("q", "x")]),
+            get(
+                "/api/v1/graph/search",
+                &[("repoPath", repo_str.as_str()), ("q", "x")],
+            ),
             None,
         );
         assert_eq!(status, 404);

@@ -143,7 +143,9 @@ pub fn automation_create_task(request: CreateTaskRequest) -> Result<AutomationTa
         timezone: request.timezone,
         notify_on_success: request.notify_on_success,
         notify_on_failure: request.notify_on_failure,
-        notify_channel: Some(parse_notify_channel(request.notify_channel.as_deref().unwrap_or("desktop"))),
+        notify_channel: Some(parse_notify_channel(
+            request.notify_channel.as_deref().unwrap_or("desktop"),
+        )),
         dingtalk_webhook_url: request.dingtalk_webhook_url,
         dingtalk_sign_secret: request.dingtalk_sign_secret,
         enabled: request.enabled,
@@ -175,10 +177,7 @@ pub fn automation_update_task(request: UpdateTaskRequest) -> Result<AutomationTa
         timezone: request.timezone,
         notify_on_success: request.notify_on_success,
         notify_on_failure: request.notify_on_failure,
-        notify_channel: request
-            .notify_channel
-            .as_deref()
-            .map(parse_notify_channel),
+        notify_channel: request.notify_channel.as_deref().map(parse_notify_channel),
         dingtalk_webhook_url: request.dingtalk_webhook_url,
         dingtalk_sign_secret: request.dingtalk_sign_secret,
     };
@@ -196,7 +195,10 @@ pub fn automation_delete_task(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn automation_list_runs(task_id: String, limit: Option<usize>) -> Result<Vec<AutomationRun>, String> {
+pub fn automation_list_runs(
+    task_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<AutomationRun>, String> {
     let limit = limit.unwrap_or(20).clamp(1, 100);
     automation::with_store(|s| s.list_runs(&task_id, limit)).map_err(map_err)
 }

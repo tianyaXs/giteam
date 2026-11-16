@@ -84,7 +84,10 @@ fn join_url(base: &str, path: &str) -> String {
     )
 }
 
-fn check_status(resp: reqwest::blocking::Response, what: &str) -> ShareResult<reqwest::blocking::Response> {
+fn check_status(
+    resp: reqwest::blocking::Response,
+    what: &str,
+) -> ShareResult<reqwest::blocking::Response> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
@@ -137,7 +140,9 @@ pub fn parse_share_url(raw: &str) -> ShareResult<(String, String)> {
         .unwrap_or("")
         .to_string();
     if share_id.is_empty() {
-        return Err(ShareError::InvalidInput(format!("missing shareId in url: {raw}")));
+        return Err(ShareError::InvalidInput(format!(
+            "missing shareId in url: {raw}"
+        )));
     }
     let prefix = path[..pos].trim_end_matches('/');
     let base = format!(
@@ -195,9 +200,7 @@ pub fn upload_share_parts(
         let mut buf = vec![0u8; part_size];
         let mut filled = 0usize;
         while filled < part_size {
-            let read = file
-                .read(&mut buf[filled..])
-                .map_err(ShareError::Io)?;
+            let read = file.read(&mut buf[filled..]).map_err(ShareError::Io)?;
             if read == 0 {
                 break;
             }
@@ -229,7 +232,10 @@ pub fn finalize_share(
     device_token: &str,
     share_id: &str,
 ) -> ShareResult<FinalizeShareResponse> {
-    let url = join_url(cloud_base_url, &format!("/cloud/v1/shares/{share_id}/finalize"));
+    let url = join_url(
+        cloud_base_url,
+        &format!("/cloud/v1/shares/{share_id}/finalize"),
+    );
     let resp = client()?
         .post(&url)
         .header("Authorization", format!("Bearer {}", device_token.trim()))
@@ -259,13 +265,7 @@ pub fn download_share_artifact(
     artifact: &str,
     expected_sha256: &str,
 ) -> ShareResult<std::path::PathBuf> {
-    download_share_artifact_with_progress(
-        cloud_base_url,
-        share_id,
-        artifact,
-        expected_sha256,
-        None,
-    )
+    download_share_artifact_with_progress(cloud_base_url, share_id, artifact, expected_sha256, None)
 }
 
 pub fn download_share_artifact_with_progress(
@@ -418,7 +418,8 @@ mod tests {
 
     #[test]
     fn parses_https_share_url() {
-        let (base, id) = parse_share_url("https://cloud.example.com/s/shr_0123456789abcdef").unwrap();
+        let (base, id) =
+            parse_share_url("https://cloud.example.com/s/shr_0123456789abcdef").unwrap();
         assert_eq!(base, "https://cloud.example.com");
         assert_eq!(id, "shr_0123456789abcdef");
     }

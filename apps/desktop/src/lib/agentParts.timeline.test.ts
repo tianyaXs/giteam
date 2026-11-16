@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAgentActivityRows,
   buildAgentAssistantRenderGroups,
   dedupeAgentToolParts,
   isAgentRenderablePart,
@@ -52,7 +53,7 @@ function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "" {
 }
 
 function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]) {
-  const out: Array<{ kind: string; batchKind?: string; count?: number }> = [];
+  const out: Array<AgentAssistantRenderGroup | { kind: "tool-batch"; batchKind?: string; count?: number }> = [];
   let pendingKind: "shell" | "edit" | "" = "";
   let pending: AgentAssistantRenderGroup[] = [];
   const flush = () => {
@@ -64,7 +65,7 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]) {
         count: pending.filter((group) => group.kind === "part").length
       });
     } else {
-      pending.forEach((group) => out.push({ kind: group.kind }));
+      pending.forEach((group) => out.push(group));
     }
     pendingKind = "";
     pending = [];
@@ -77,7 +78,7 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]) {
     const nextKind = getBatchKind(group);
     if (!nextKind) {
       flush();
-      out.push({ kind: group.kind });
+      out.push(group);
       return;
     }
     if (pendingKind && pendingKind !== nextKind) flush();
@@ -88,10 +89,13 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]) {
   return out;
 }
 
-function timelineFromParts(parts: AgentDetailedPart[], showReasoning: boolean) {
+function timelineFromParts(parts: AgentDetailedPart[], showReasoning: boolean, liftProcessParts = true) {
   const renderParts = parts.filter(isAgentRenderablePart);
   return buildBatchedTimelineGroups(
-    buildDisplayTimelineGroups(buildAgentAssistantRenderGroups(renderParts), showReasoning)
+    buildDisplayTimelineGroups(
+      buildAgentAssistantRenderGroups(renderParts, { liftProcessParts }),
+      showReasoning
+    )
   );
 }
 
@@ -141,6 +145,55 @@ describe("agent timeline grouping", () => {
       .filter((group) => group.kind === "tool-batch")
       .map((group) => group.count);
     expect(shellCounts).toEqual([2, 2]);
+  });
+
+  it("renders interleaved tools below streaming text in chronological order mid-stream", () => {
+    // 流式中途帧：正文后到达的工具必须出现在正文下方（真实时序位置），
+    // 不得 lift 堆到顶部——否则结束后才重排成穿插，造成布局跳变。
+    const streamingParts: AgentDetailedPart[] = [
+      { id: "text:0", type: "text", text: "先重读关键文件：" },
+      { id: "call_a", type: "toolCall", toolName: "bash", status: "running" }
+    ];
+    const timeline = timelineFromParts(streamingParts, false, true);
+    const activityRows = buildAgentActivityRows(timeline, {
+      keyOf: (group) => group.key,
+      textOf: (group) => {
+        const part = group.part as { type?: string; text?: string } | undefined;
+        return group.kind === "part" && String(part?.type || "") === "text"
+          ? String(part?.text || "").trim()
+          : "";
+      }
+    });
+    expect(activityRows.map((row) => row.kind)).toEqual(["text", "segment"]);
+    expect(activityRows[0].kind === "text" && activityRows[0].text).toBe("先重读关键文件：");
+  });
+
+  it("keeps interleaved tools and text in chronological order once streaming completes", () => {
+    // 完成/history parts 就是真实 JSONL 时序：不得再 lift 成“所有工具 → 所有正文”，
+    // 否则两次正文之间的操作会被压进同一个段卡。
+    const parts: AgentDetailedPart[] = [
+      { id: "text_intro", type: "text", text: "先重读关键文件：" },
+      { id: "call_a", type: "toolCall", toolName: "bash", status: "completed" },
+      { id: "call_b", type: "toolCall", toolName: "write", status: "completed" },
+      { id: "text_done", type: "text", text: "Review 完成。" }
+    ];
+    const timeline = timelineFromParts(parts, false, false);
+    const activityRows = buildAgentActivityRows(timeline, {
+      keyOf: (group) => group.key,
+      textOf: (group) => {
+        const part = group.part as { type?: string; text?: string } | undefined;
+        return group.kind === "part" && String(part?.type || "") === "text"
+          ? String(part?.text || "").trim()
+          : "";
+      }
+    });
+    // write 是普通 part（会作为段卡步骤保留）；text 是段落分隔，必须按时序切开。
+    // 注意别用 read：context 类工具（read/grep…）会被收进探索组，改变组形态。
+    expect(activityRows.map((row) => row.kind)).toEqual(["text", "segment", "text"]);
+    expect(activityRows.filter((row) => row.kind === "text").map((row) => row.text)).toEqual([
+      "先重读关键文件：",
+      "Review 完成。"
+    ]);
   });
 
   it("dedupes duplicate toolCall ids so live ghosts do not inflate counts", () => {

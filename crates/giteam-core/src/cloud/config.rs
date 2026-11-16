@@ -126,11 +126,7 @@ pub fn get_cloud_link_settings() -> CloudLinkSettings {
         return CloudLinkSettings::default();
     };
     let mut cfg = serde_json::from_str::<CloudLinkSettings>(&raw).unwrap_or_default();
-    cfg.cloud_base_url = cfg
-        .cloud_base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+    cfg.cloud_base_url = cfg.cloud_base_url.trim().trim_end_matches('/').to_string();
     if cfg.cloud_base_url.is_empty() {
         cfg.cloud_base_url = DEFAULT_CLOUD_BASE_URL.to_string();
     }
@@ -166,16 +162,13 @@ pub fn get_cloud_link_settings() -> CloudLinkSettings {
 }
 
 pub fn set_cloud_link_settings(settings: &CloudLinkSettings) -> Result<(), String> {
-    let path = cloud_settings_path().ok_or_else(|| "cannot resolve cloud-link.json path".to_string())?;
+    let path =
+        cloud_settings_path().ok_or_else(|| "cannot resolve cloud-link.json path".to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let mut next = settings.clone();
-    next.cloud_base_url = next
-        .cloud_base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+    next.cloud_base_url = next.cloud_base_url.trim().trim_end_matches('/').to_string();
     let raw = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
     fs::write(&path, raw).map_err(|e| e.to_string())
 }
@@ -201,7 +194,10 @@ pub fn remember_access_key(
             n.to_string()
         }
     };
-    if let Some(existing) = settings.access_keys.iter_mut().find(|k| k.access_key == key || k.id == id)
+    if let Some(existing) = settings
+        .access_keys
+        .iter_mut()
+        .find(|k| k.access_key == key || k.id == id)
     {
         if !display.is_empty() {
             existing.name = display.clone();
@@ -226,7 +222,10 @@ pub fn remember_access_key(
 }
 
 /// Rename a key in the local vault. Does not call the server.
-pub fn rename_access_key_local(key_id_or_secret: &str, name: &str) -> Result<CloudLinkSettings, String> {
+pub fn rename_access_key_local(
+    key_id_or_secret: &str,
+    name: &str,
+) -> Result<CloudLinkSettings, String> {
     let needle = key_id_or_secret.trim();
     let display = name.trim();
     if needle.is_empty() {
@@ -255,7 +254,9 @@ pub fn rename_access_key_local(key_id_or_secret: &str, name: &str) -> Result<Clo
 pub fn forget_access_key_local(key_id_or_secret: &str) -> Result<CloudLinkSettings, String> {
     let mut settings = get_cloud_link_settings();
     let needle = key_id_or_secret.trim();
-    settings.access_keys.retain(|k| k.id != needle && k.access_key != needle);
+    settings
+        .access_keys
+        .retain(|k| k.id != needle && k.access_key != needle);
     if settings.access_key == needle
         || access_key_id_local(&settings.access_key) == needle
         || settings

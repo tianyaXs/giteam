@@ -111,9 +111,8 @@ mod proxy {
 
     fn proxy() -> &'static Arc<ProxyState> {
         PROXY.get_or_init(|| {
-            let server = Server::http("127.0.0.1:0").expect(
-                "failed to bind Windows HTTPS egress proxy on 127.0.0.1:0",
-            );
+            let server = Server::http("127.0.0.1:0")
+                .expect("failed to bind Windows HTTPS egress proxy on 127.0.0.1:0");
             let port = server
                 .server_addr()
                 .to_ip()
@@ -187,10 +186,7 @@ mod proxy {
         }
     }
 
-    fn handle_request(
-        mut request: tiny_http::Request,
-        state: &ProxyState,
-    ) -> Result<(), String> {
+    fn handle_request(mut request: tiny_http::Request, state: &ProxyState) -> Result<(), String> {
         let url = request.url().to_string();
         let (path, query) = match url.split_once('?') {
             Some((p, q)) => (p.to_string(), Some(q.to_string())),
@@ -218,10 +214,8 @@ mod proxy {
             "OPTIONS" => reqwest::Method::OPTIONS,
             other => {
                 let _ = request.respond(
-                    Response::from_string(format!(
-                        "unsupported method for https egress: {other}"
-                    ))
-                    .with_status_code(StatusCode(405)),
+                    Response::from_string(format!("unsupported method for https egress: {other}"))
+                        .with_status_code(StatusCode(405)),
                 );
                 return Ok(());
             }
@@ -249,9 +243,8 @@ mod proxy {
             Ok(resp) => resp,
             Err(err) => {
                 let msg = format!("upstream HTTPS request failed: {err}");
-                let _ = request.respond(
-                    Response::from_string(msg.clone()).with_status_code(StatusCode(502)),
-                );
+                let _ = request
+                    .respond(Response::from_string(msg.clone()).with_status_code(StatusCode(502)));
                 return Err(msg);
             }
         };
@@ -265,8 +258,7 @@ mod proxy {
             let Ok(raw_value) = value.to_str() else {
                 continue;
             };
-            if let Ok(header) = Header::from_bytes(name.as_str().as_bytes(), raw_value.as_bytes())
-            {
+            if let Ok(header) = Header::from_bytes(name.as_str().as_bytes(), raw_value.as_bytes()) {
                 headers.push(header);
             }
         }
@@ -402,10 +394,7 @@ mod tests {
         let path = a.strip_prefix(&prefix).expect("loopback prefix");
         let full = format!("/{path}/models");
         let (id, suffix) = split_route_path(&full).expect("route");
-        assert_eq!(
-            proxy::route_upstream(&id).as_deref(),
-            Some(upstream)
-        );
+        assert_eq!(proxy::route_upstream(&id).as_deref(), Some(upstream));
         assert_eq!(suffix, "/models");
     }
 }

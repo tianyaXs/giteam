@@ -3,52 +3,6 @@
   box-sizing: border-box;
 }
 
-/* 字号设置滑块：细 track + 圆形 thumb，自适应明暗主题。 */
-.gt-range {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-  cursor: pointer;
-  outline: none;
-}
-.gt-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--text);
-  border: 2px solid var(--bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  transition: transform 0.12s ease;
-}
-.gt-range::-webkit-slider-thumb:hover {
-  transform: scale(1.18);
-}
-.gt-range:active::-webkit-slider-thumb {
-  transform: scale(1.1);
-}
-.gt-range:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.gt-range::-moz-range-track {
-  height: 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-}
-.gt-range::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--text);
-  border: 2px solid var(--bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  cursor: pointer;
-}
-
 html,
 body,
 #root {

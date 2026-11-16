@@ -111,9 +111,15 @@ impl ExtractionInput {
             lines.push(snippet(&self.assistant_text, 1500));
         }
         if !self.file_keys.is_empty() {
-            lines.push("\n## Files touched (repo-relative paths usable as relation endpoints)".to_string());
-            let paths: Vec<String> =
-                self.file_keys.iter().map(|(p, _)| p.clone()).take(15).collect();
+            lines.push(
+                "\n## Files touched (repo-relative paths usable as relation endpoints)".to_string(),
+            );
+            let paths: Vec<String> = self
+                .file_keys
+                .iter()
+                .map(|(p, _)| p.clone())
+                .take(15)
+                .collect();
             lines.push(paths.join("\n"));
         }
         if !self.commands.is_empty() {
@@ -131,7 +137,14 @@ impl ExtractionInput {
                 "\n## Existing entities (REUSE these ids when the same concept appears; do not invent parallel slugs)"
                     .to_string(),
             );
-            lines.push(known_entities.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+            lines.push(
+                known_entities
+                    .iter()
+                    .take(40)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
         lines.push(
             "\nRemember: entity types decision/feature/module/tech_concept/error_pattern/api/tradeoff/open_task; \
@@ -278,7 +291,8 @@ pub fn spawn_extraction(
         } else {
             std::path::PathBuf::from(&input.repo_path)
         };
-        let _ = run_extraction_job(host, input, db_path, repo_path, ExtractionPublishMode::Full).await;
+        let _ =
+            run_extraction_job(host, input, db_path, repo_path, ExtractionPublishMode::Full).await;
     })
 }
 
@@ -286,14 +300,22 @@ fn default_extraction_provider() -> Option<String> {
     std::env::var("GITEAM_EXTRACT_PROVIDER")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("GITEAM_RP_PROVIDER").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("GITEAM_RP_PROVIDER")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
 }
 
 fn default_extraction_model() -> Option<String> {
     std::env::var("GITEAM_EXTRACT_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| std::env::var("GITEAM_RP_MODEL").ok().filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            std::env::var("GITEAM_RP_MODEL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
 }
 
 /// 执行一次抽取 job（Stage-1 worker 调用）。
@@ -394,20 +416,25 @@ pub async fn run_extraction_job(
     }
     mark_turn_extracted(&db, input.turn_key.as_deref());
     let mut titled = false;
-    if let Some(intent) = extraction.intent.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(intent) = extraction
+        .intent
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         // 强 intent 覆盖；弱 intent（如「继续」）不覆盖已有好标题。
-        titled = try_apply_session_intent(
-            &db,
-            &anchors.session_key,
-            input.turn_key.as_deref(),
-            intent,
-        );
+        titled =
+            try_apply_session_intent(&db, &anchors.session_key, input.turn_key.as_deref(), intent);
     }
     // LLM 省略 session_intent 时：用用户原文确定性回填，避免落成「未命名会话」。
     if !titled {
         if let Some(fallback) = fallback_session_title(&input.user_text) {
             if session_title_is_weak(&db, &anchors.session_key) {
-                apply_intent_labels(&db, &anchors.session_key, input.turn_key.as_deref(), &fallback);
+                apply_intent_labels(
+                    &db,
+                    &anchors.session_key,
+                    input.turn_key.as_deref(),
+                    &fallback,
+                );
             }
         }
     }
@@ -420,7 +447,10 @@ pub async fn run_extraction_job(
     let wrote = extraction.should_write_semantics()
         && (extraction.entity_count > 0
             || extraction.relation_count > 0
-            || extraction.intent.as_ref().is_some_and(|s| !s.trim().is_empty()));
+            || extraction
+                .intent
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty()));
     // 仅高质量或高优先才发记忆完成卡（低质量不渲染事件）。
     let emit_event = wrote && extraction.should_emit_memory_event();
     if wrote {
@@ -480,7 +510,9 @@ pub async fn run_extraction_job(
 /// 加载语义实体目录（供 resolve + prompt）。
 /// 默认排除已废止实体（superseded_by / closed_by / status 终态），对齐
 /// Graphiti「当前有效事实」视图；历史仍在图中可经边追溯。
-pub fn load_entity_catalog(db_path: &std::path::Path) -> Vec<crate::asset_graph::entity::CatalogEntity> {
+pub fn load_entity_catalog(
+    db_path: &std::path::Path,
+) -> Vec<crate::asset_graph::entity::CatalogEntity> {
     use crate::asset_graph::entity::{catalog_from_node, is_retired_status, CatalogEntity};
 
     let Ok(db) = store::open(db_path) else {
@@ -558,18 +590,15 @@ fn is_weak_session_title(label: &str) -> bool {
     }
     // 口头承接/寒暄：留给 LLM session_intent 提炼，不当作最终标题锁死。
     const WEAK: &[&str] = &[
-        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗",
-        "ok", "okay", "yes", "y", "hi", "hello", "thanks", "thx",
+        "继续", "好的", "好", "嗯", "嗯嗯", "谢谢", "你好", "在吗", "ok", "okay", "yes", "y", "hi",
+        "hello", "thanks", "thx",
     ];
     let lower = t.to_lowercase();
     WEAK.iter().any(|w| lower == *w || t == *w)
 }
 
 fn fallback_session_title(user_text: &str) -> Option<String> {
-    let line = user_text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())?;
+    let line = user_text.lines().map(str::trim).find(|l| !l.is_empty())?;
     let title = snippet(line, 40);
     if is_weak_session_title(&title) {
         return None;
@@ -678,7 +707,10 @@ fn snippet(text: &str, max_chars: usize) -> String {
 /// 从 Value 工具入参提取文件相对路径。
 #[must_use]
 pub fn file_paths_from_input(tool_name: &str, input: &Value) -> Vec<String> {
-    if !matches!(tool_name, "edit" | "write" | "read" | "multiedit" | "create" | "ls") {
+    if !matches!(
+        tool_name,
+        "edit" | "write" | "read" | "multiedit" | "create" | "ls"
+    ) {
         return Vec::new();
     }
     for field in ["file_path", "path", "notebook_path"] {
@@ -811,12 +843,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(try_apply_session_intent(
-            &db,
-            "session:k",
-            None,
-            "继续",
-        ));
+        assert!(try_apply_session_intent(&db, "session:k", None, "继续",));
         let (label, props): (String, String) = db
             .query_row(
                 "SELECT label, props FROM nodes WHERE key = 'session:k' AND type = 'session'",

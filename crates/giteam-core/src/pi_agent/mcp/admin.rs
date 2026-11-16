@@ -205,9 +205,7 @@ pub async fn admin_connect_service_with_base(
 ) -> Result<McpServiceStatus, McpError> {
     let runtime = management_runtime(base, repo_path).await?;
     let scope = runtime.store.for_store();
-    let service = scope
-        .find_service(ServiceTarget::ServiceName(name))
-        .await?;
+    let service = scope.find_service(ServiceTarget::ServiceName(name)).await?;
     let service = service.restart_service().await?;
     service.wait_service(ADMIN_CONNECT_TIMEOUT).await?;
     Ok(service_status(&service).await)
@@ -220,9 +218,7 @@ pub async fn admin_disconnect_service_with_base(
 ) -> Result<McpServiceStatus, McpError> {
     let runtime = management_runtime(base, repo_path).await?;
     let scope = runtime.store.for_store();
-    let service = scope
-        .find_service(ServiceTarget::ServiceName(name))
-        .await?;
+    let service = scope.find_service(ServiceTarget::ServiceName(name)).await?;
     service.disconnect_service().await?;
     Ok(service_status(&service).await)
 }
@@ -360,7 +356,10 @@ for line in sys.stdin:
         let script = write_echo_script();
 
         // 初始为空。
-        assert!(admin_list_services_with_base(&base, &repo).await.unwrap().is_empty());
+        assert!(admin_list_services_with_base(&base, &repo)
+            .await
+            .unwrap()
+            .is_empty());
 
         // 添加 → 服务就绪、工具可发现。
         admin_add_service_with_base(&base, &repo, &echo_input(&script))
@@ -395,11 +394,18 @@ for line in sys.stdin:
         admin_remove_service_with_base(&base, &repo, "echo")
             .await
             .unwrap();
-        assert!(admin_list_services_with_base(&base, &repo).await.unwrap().is_empty());
-        assert!(admin_remove_service_with_base(&base, &repo, "echo").await.is_err());
+        assert!(admin_list_services_with_base(&base, &repo)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(admin_remove_service_with_base(&base, &repo, "echo")
+            .await
+            .is_err());
 
         // authenticate 显式不支持。
-        assert!(admin_authenticate_service_with_base(&base, &repo, "echo").await.is_err());
+        assert!(admin_authenticate_service_with_base(&base, &repo, "echo")
+            .await
+            .is_err());
 
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_file(&script);

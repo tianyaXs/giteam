@@ -88,7 +88,11 @@ fn content_types_xml(slide_count: usize) -> String {
 fn presentation_xml(slide_count: usize) -> String {
     let mut sld_id_lst = String::new();
     for i in 1..=slide_count {
-        sld_id_lst.push_str(&format!(r#"<p:sldId id="{}" r:id="rId{}"/>"#, 255 + i, i + 1));
+        sld_id_lst.push_str(&format!(
+            r#"<p:sldId id="{}" r:id="rId{}"/>"#,
+            255 + i,
+            i + 1
+        ));
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -138,24 +142,39 @@ fn build_pptx_buffer(slides: &[Value]) -> std::result::Result<Vec<u8>, String> {
         };
         put("[Content_Types].xml", &content_types_xml(slides.len()))?;
         put("_rels/.rels", RELS_ROOT)?;
-        put("docProps/core.xml", &core_props_xml(
-            slides
-                .first()
-                .and_then(|s| s.get("title"))
-                .and_then(Value::as_str)
-                .unwrap_or("Giteam 演示文稿"),
-        ))?;
+        put(
+            "docProps/core.xml",
+            &core_props_xml(
+                slides
+                    .first()
+                    .and_then(|s| s.get("title"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Giteam 演示文稿"),
+            ),
+        )?;
         put("docProps/app.xml", APP_PROPS)?;
         put("ppt/presentation.xml", &presentation_xml(slides.len()))?;
-        put("ppt/_rels/presentation.xml.rels", &presentation_rels_xml(slides.len()))?;
+        put(
+            "ppt/_rels/presentation.xml.rels",
+            &presentation_rels_xml(slides.len()),
+        )?;
         put("ppt/presProps.xml", PRES_PROPS)?;
         put("ppt/theme/theme1.xml", THEME)?;
         put("ppt/slideMasters/slideMaster1.xml", SLIDE_MASTER)?;
-        put("ppt/slideMasters/_rels/slideMaster1.xml.rels", SLIDE_MASTER_RELS)?;
+        put(
+            "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+            SLIDE_MASTER_RELS,
+        )?;
         put("ppt/slideLayouts/slideLayout1.xml", SLIDE_LAYOUT)?;
-        put("ppt/slideLayouts/_rels/slideLayout1.xml.rels", SLIDE_LAYOUT_RELS)?;
+        put(
+            "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+            SLIDE_LAYOUT_RELS,
+        )?;
         for (idx, slide) in slides.iter().enumerate() {
-            let title = slide.get("title").and_then(Value::as_str).unwrap_or_default();
+            let title = slide
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let bullets: Vec<String> = slide
                 .get("bullets")
                 .and_then(Value::as_array)
@@ -167,7 +186,10 @@ fn build_pptx_buffer(slides: &[Value]) -> std::result::Result<Vec<u8>, String> {
                 })
                 .unwrap_or_default();
             let n = idx + 1;
-            put(&format!("ppt/slides/slide{n}.xml"), &slide_xml(title, &bullets))?;
+            put(
+                &format!("ppt/slides/slide{n}.xml"),
+                &slide_xml(title, &bullets),
+            )?;
             put(&format!("ppt/slides/_rels/slide{n}.xml.rels"), SLIDE_RELS)?;
         }
         archive
@@ -250,7 +272,9 @@ impl Tool for WritePptxTool {
             .map(|e| e.eq_ignore_ascii_case("pptx"))
             != Some(true)
         {
-            return Ok(error_output(format!("path 应指向 .pptx 文件（收到 {path_raw}）")));
+            return Ok(error_output(format!(
+                "path 应指向 .pptx 文件（收到 {path_raw}）"
+            )));
         }
         let Some(slides) = input.get("slides").and_then(Value::as_array) else {
             return Ok(error_output("缺少 slides 参数".to_string()));
@@ -277,13 +301,13 @@ impl Tool for WritePptxTool {
         }
 
         emit_progress(
-        &on_update,
-        "parse",
-        5.0,
-        format!("解析 {} 页幻灯片…", slides.len()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "parse",
+            5.0,
+            format!("解析 {} 页幻灯片…", slides.len()),
+            &target,
+            None,
+            None,
         );
 
         // 分页检查点：每写完一页重建并落盘，前端预览跟随到该页（slide:N）。
@@ -300,30 +324,38 @@ impl Tool for WritePptxTool {
                 )));
             }
             let done = 10.0 + 80.0 * (idx + 1) as f32 / slides.len() as f32;
-            let title = written[idx].get("title").and_then(Value::as_str).unwrap_or_default();
+            let title = written[idx]
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             emit_progress(
-            &on_update,
-            "render",
-            done,
-            format!("已写入第 {} 页「{title}」", idx + 1),
-            &target,
-            Some((format!("slide:{}", idx + 1), None)),
-            None,
+                &on_update,
+                "render",
+                done,
+                format!("已写入第 {} 页「{title}」", idx + 1),
+                &target,
+                Some((format!("slide:{}", idx + 1), None)),
+                None,
             );
         }
 
         emit_progress(
-        &on_update,
-        "write",
-        95.0,
-        format!("落盘 {}…", target.display()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "write",
+            95.0,
+            format!("落盘 {}…", target.display()),
+            &target,
+            None,
+            None,
         );
         let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         Ok(output_with_details(
-            format!("已创建 {}（{} 页，{} 字节）", target.display(), slides.len(), size),
+            format!(
+                "已创建 {}（{} 页，{} 字节）",
+                target.display(),
+                slides.len(),
+                size
+            ),
             &target,
             json!({
                 "bytes": size,
@@ -353,9 +385,13 @@ pub(crate) fn extract_slide_texts(xml: &str) -> Vec<String> {
     let mut i = 0usize;
     while i < xml.len() {
         let rest = &xml[i..];
-        let Some(open_rel) = rest.find("<a:t>") else { break };
+        let Some(open_rel) = rest.find("<a:t>") else {
+            break;
+        };
         let inner = &rest[open_rel + "<a:t>".len()..];
-        let Some(end) = inner.find("</a:t>") else { break };
+        let Some(end) = inner.find("</a:t>") else {
+            break;
+        };
         let unescaped = super::xml_unescape(&inner[..end]);
         let trimmed = unescaped.trim();
         if !trimmed.is_empty() {
@@ -416,17 +452,22 @@ impl Tool for ReadPptxTool {
             .unwrap_or(READ_DEFAULT_SLIDES);
 
         emit_progress(
-        &on_update,
-        "parse",
-        20.0,
-        format!("打开 {}…", target.display()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "parse",
+            20.0,
+            format!("打开 {}…", target.display()),
+            &target,
+            None,
+            None,
         );
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
-            Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),
+            Err(error) => {
+                return Ok(error_output(format!(
+                    "打开 {} 失败：{error}",
+                    target.display()
+                )))
+            }
         };
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(archive) => archive,
@@ -454,13 +495,13 @@ impl Tool for ReadPptxTool {
             return Ok(error_output("该演示文稿没有幻灯片".to_string()));
         }
         emit_progress(
-        &on_update,
-        "read",
-        60.0,
-        format!("读取 {} 页…", slide_entries.len()),
-        &target,
-        None,
-        None,
+            &on_update,
+            "read",
+            60.0,
+            format!("读取 {} 页…", slide_entries.len()),
+            &target,
+            None,
+            None,
         );
         let mut slides: Vec<Value> = Vec::new();
         let total = slide_entries.len();
@@ -674,7 +715,12 @@ impl Tool for EditPptxTool {
 
         let file = match std::fs::File::open(&target) {
             Ok(file) => file,
-            Err(error) => return Ok(error_output(format!("打开 {} 失败：{error}", target.display()))),
+            Err(error) => {
+                return Ok(error_output(format!(
+                    "打开 {} 失败：{error}",
+                    target.display()
+                )))
+            }
         };
         let mut archive = match zip::ZipArchive::new(file) {
             Ok(archive) => archive,
@@ -689,7 +735,9 @@ impl Tool for EditPptxTool {
             .file_names()
             .filter_map(|name| {
                 let name = name.ok()?;
-                let digits = name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?;
+                let digits = name
+                    .strip_prefix("ppt/slides/slide")?
+                    .strip_suffix(".xml")?;
                 Some((digits.parse::<usize>().ok()?, name.to_string()))
             })
             .collect();
@@ -757,7 +805,12 @@ impl Tool for EditPptxTool {
             }
         }
         let title = title
-            .or_else(|| input.get("title").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| {
+                input
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| format!("第 {slide_number} 页"));
         let bullets = bullets.unwrap_or_else(|| {
             input
@@ -790,8 +843,14 @@ impl Tool for EditPptxTool {
             let bytes = match super::rebuild_zip_with_replacements(
                 &target,
                 &[
-                    ("[Content_Types].xml".to_string(), content_types_xml(count + 1).into_bytes()),
-                    ("ppt/presentation.xml".to_string(), presentation_xml(count + 1).into_bytes()),
+                    (
+                        "[Content_Types].xml".to_string(),
+                        content_types_xml(count + 1).into_bytes(),
+                    ),
+                    (
+                        "ppt/presentation.xml".to_string(),
+                        presentation_xml(count + 1).into_bytes(),
+                    ),
                     (
                         "ppt/_rels/presentation.xml.rels".to_string(),
                         presentation_rels_xml(count + 1).into_bytes(),
@@ -894,7 +953,10 @@ mod edit_tests {
         assert!(!append.is_error);
 
         let reader = ReadPptxTool::new(cwd);
-        let read = reader.execute("c4", json!({ "path": "deck.pptx" }), None).await.expect("read");
+        let read = reader
+            .execute("c4", json!({ "path": "deck.pptx" }), None)
+            .await
+            .expect("read");
         let text = match read.content.first() {
             Some(pi::sdk::ContentBlock::Text(text)) => text.text.clone(),
             other => panic!("期望文本输出，收到 {other:?}"),
@@ -905,7 +967,7 @@ mod edit_tests {
         assert_eq!(slides[0]["texts"][0], "2024 年度报告", "标题已改");
         assert_eq!(slides[0]["texts"][1], "2024", "未提供的 bullets 保留");
         assert_eq!(slides[1]["texts"][0], "数据", "未触碰页原样");
-        assert_eq!(slides[2]["title"]  , Value::Null, "占位");
+        assert_eq!(slides[2]["title"], Value::Null, "占位");
         assert_eq!(slides[2]["texts"][0], "展望");
     }
 
@@ -915,12 +977,20 @@ mod edit_tests {
         let cwd = dir.path().to_path_buf();
         let writer = WritePptxTool::new(cwd.clone());
         writer
-            .execute("c1", json!({ "path": "a.pptx", "slides": [{ "title": "S" }] }), None)
+            .execute(
+                "c1",
+                json!({ "path": "a.pptx", "slides": [{ "title": "S" }] }),
+                None,
+            )
             .await
             .expect("write");
         let editor = EditPptxTool::new(cwd.clone());
         let edit = editor
-            .execute("c2", json!({ "path": "a.pptx", "slide": 5, "title": "x" }), None)
+            .execute(
+                "c2",
+                json!({ "path": "a.pptx", "slide": 5, "title": "x" }),
+                None,
+            )
             .await
             .expect("edit");
         assert!(edit.is_error);

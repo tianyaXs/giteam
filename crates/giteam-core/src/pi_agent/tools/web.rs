@@ -15,8 +15,8 @@ use pi::sdk::{Result, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::Value;
 
-use super::approval::denied_output;
 use super::super::interactions::web_search_backend;
+use super::approval::denied_output;
 
 /// `web_fetch` 返回内容的默认字符上限（超出 head+tail 截断）。
 const DEFAULT_MAX_CHARS: usize = 20_000;
@@ -379,7 +379,10 @@ impl Tool for WebSearchTool {
 }
 
 /// 调 DuckDuckGo Lite（HTML 表格结果页）→ html2text 转纯文本 → 截断。
-async fn duckduckgo_lite(client: &reqwest::Client, query: &str) -> std::result::Result<String, String> {
+async fn duckduckgo_lite(
+    client: &reqwest::Client,
+    query: &str,
+) -> std::result::Result<String, String> {
     let resp = client
         .post("https://lite.duckduckgo.com/lite/")
         .form(&[("q", query), ("kl", "us-en")])
@@ -401,9 +404,9 @@ async fn duckduckgo_lite(client: &reqwest::Client, query: &str) -> std::result::
 
 fn fetch_error_output(url: &str, reason: &str) -> ToolOutput {
     ToolOutput {
-        content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(format!(
-            "web_fetch 抓取 {url} 失败：{reason}"
-        )))],
+        content: vec![pi::sdk::ContentBlock::Text(pi::sdk::TextContent::new(
+            format!("web_fetch 抓取 {url} 失败：{reason}"),
+        ))],
         details: None,
         is_error: true,
     }
@@ -415,8 +418,14 @@ mod tests {
 
     #[test]
     fn domain_of_strips_port_path_and_lowercases() {
-        assert_eq!(domain_of("https://Doc.Rust-Lang.org/book/"), Some("doc.rust-lang.org".into()));
-        assert_eq!(domain_of("http://example.com:8080/x?q=1"), Some("example.com".into()));
+        assert_eq!(
+            domain_of("https://Doc.Rust-Lang.org/book/"),
+            Some("doc.rust-lang.org".into())
+        );
+        assert_eq!(
+            domain_of("http://example.com:8080/x?q=1"),
+            Some("example.com".into())
+        );
         assert_eq!(domain_of("not a url"), Some("not a url".into()));
         assert_eq!(domain_of(""), None);
     }
@@ -473,9 +482,12 @@ mod tests {
         let no_url = futures::executor::block_on(tool.execute("", serde_json::json!({}), None))
             .expect("ok output");
         assert!(no_url.is_error);
-        let blocked =
-            futures::executor::block_on(tool.execute("", serde_json::json!({"url": "http://127.0.0.1/"}), None))
-                .expect("ok output");
+        let blocked = futures::executor::block_on(tool.execute(
+            "",
+            serde_json::json!({"url": "http://127.0.0.1/"}),
+            None,
+        ))
+        .expect("ok output");
         assert!(blocked.is_error);
     }
 }

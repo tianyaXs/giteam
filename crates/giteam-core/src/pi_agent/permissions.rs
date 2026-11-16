@@ -88,7 +88,10 @@ mod tests {
         // 去重：重复追加不新增。
         append_allow_rule(dir.path(), "bash:npm run build").unwrap();
         let rules = load_allow_rules(dir.path());
-        assert_eq!(rules, vec!["bash:npm run build".to_string(), "read".to_string()]);
+        assert_eq!(
+            rules,
+            vec!["bash:npm run build".to_string(), "read".to_string()]
+        );
         let _ = rule_list(&PermissionsFile::default());
     }
 

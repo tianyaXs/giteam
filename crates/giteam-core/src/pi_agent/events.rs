@@ -490,8 +490,7 @@ impl PiEventTranslator {
                         content_index,
                         partial,
                     } => {
-                        let (tool_call_id, tool_name) =
-                            tool_call_identity(&partial, content_index);
+                        let (tool_call_id, tool_name) = tool_call_identity(&partial, content_index);
                         // 流式早期可能只有 name、尚无 id；空 id 若落到前端会 makeId()
                         // 造出幽灵工具，过程中「已运行 N 条」虚高，结束后 history 对账又变少。
                         if tool_call_id.trim().is_empty() {

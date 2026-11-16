@@ -41,10 +41,8 @@ async fn main() {
         }
     }
 
-    let session_dir = std::env::temp_dir().join(format!(
-        "giteam-extraction-live-{}",
-        std::process::id()
-    ));
+    let session_dir =
+        std::env::temp_dir().join(format!("giteam-extraction-live-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&session_dir);
 
     let config = PiSessionConfig {
@@ -62,6 +60,7 @@ async fn main() {
         thinking: Some("off".into()),
         max_tool_iterations: Some(1),
         browser_controller: None,
+        os_controller: None,
         parent_session_id: None,
         parent_tool_call_id: None,
         session_kind: "primary".to_string(),
@@ -76,9 +75,8 @@ async fn main() {
         summary.session_id, summary.provider, summary.model
     );
 
-    let db_path = giteam_core::pi_agent::memory_db_path_for_repo(&args.repo).unwrap_or_else(|| {
-        args.repo.join(".giteam").join("asset-graph.db")
-    });
+    let db_path = giteam_core::pi_agent::memory_db_path_for_repo(&args.repo)
+        .unwrap_or_else(|| args.repo.join(".giteam").join("asset-graph.db"));
     let before = count_sem_nodes(&db_path);
     println!("[ok] db {} sem_nodes_before={}", db_path.display(), before);
 
@@ -144,10 +142,7 @@ async fn main() {
         session_id: parent_id.clone(),
         run_id: run_id.clone(),
         turn_key: Some(format!("turn:live-{}", now_ms())),
-        session_key: format!(
-            "session:live-{}",
-            &parent_id[..8.min(parent_id.len())]
-        ),
+        session_key: format!("session:live-{}", &parent_id[..8.min(parent_id.len())]),
         user_text: args.user_text.clone(),
         assistant_text: args.assistant_text.clone(),
         file_keys: args
@@ -259,10 +254,12 @@ async fn main() {
         let entities = parsed
             .entity_summaries
             .iter()
-            .map(|(etype, title)| giteam_core::pi_agent::MemoryExtractionEntity {
-                entity_type: etype.clone(),
-                title: title.clone(),
-            })
+            .map(
+                |(etype, title)| giteam_core::pi_agent::MemoryExtractionEntity {
+                    entity_type: etype.clone(),
+                    title: title.clone(),
+                },
+            )
             .collect();
         p.completed(
             parsed.entity_count as u32,
@@ -351,7 +348,11 @@ async fn main() {
         match reqwest_get(&path).await {
             Ok(body) => {
                 let preview: String = body.chars().take(500).collect();
-                println!("[api] GET {} => {}", path.split('?').next().unwrap_or(&path), preview);
+                println!(
+                    "[api] GET {} => {}",
+                    path.split('?').next().unwrap_or(&path),
+                    preview
+                );
             }
             Err(e) => println!("[api] skip ({e})"),
         }

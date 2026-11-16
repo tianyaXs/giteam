@@ -11,8 +11,8 @@ use pi::sdk::{Result, Tool, ToolOutput, ToolUpdate};
 use pi::tools::ToolEffects;
 use serde_json::Value;
 
-use super::approval::denied_output;
 use super::super::interactions::InteractionHub;
+use super::approval::denied_output;
 
 /// 包裹 read 工具：执行成功后把读取的路径登记到 hub 的 read 历史。
 /// 失败的读取不登记，避免模型把"读失败"误当作"已读"。
@@ -52,10 +52,7 @@ impl Tool for ReadRecorderTool {
         input: Value,
         on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
     ) -> Result<ToolOutput> {
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .map(PathBuf::from);
+        let path = input.get("path").and_then(Value::as_str).map(PathBuf::from);
         let output = self.inner.execute(tool_call_id, input, on_update).await?;
         if !output.is_error {
             if let Some(path) = path {
@@ -163,10 +160,8 @@ mod tests {
     }
 
     fn temp_file() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "giteam-edit-guard-{}.txt",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("giteam-edit-guard-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&path, "hello").expect("write temp file");
         path
     }
@@ -186,15 +181,23 @@ mod tests {
         );
 
         // 未 read：拒绝，inner 不执行。
-        let out = futures::executor::block_on(guard.execute("c1", serde_json::json!({"path": file}), None))
-            .expect("execute");
+        let out = futures::executor::block_on(guard.execute(
+            "c1",
+            serde_json::json!({"path": file}),
+            None,
+        ))
+        .expect("execute");
         assert!(out.is_error);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         // read 后：放行。
         hub.mark_read(file.clone());
-        let out = futures::executor::block_on(guard.execute("c2", serde_json::json!({"path": file}), None))
-            .expect("execute");
+        let out = futures::executor::block_on(guard.execute(
+            "c2",
+            serde_json::json!({"path": file}),
+            None,
+        ))
+        .expect("execute");
         assert!(!out.is_error);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -216,8 +219,12 @@ mod tests {
             }),
             Arc::clone(&hub),
         );
-        futures::executor::block_on(failing.execute("c1", serde_json::json!({"path": file.clone()}), None))
-            .expect("execute");
+        futures::executor::block_on(failing.execute(
+            "c1",
+            serde_json::json!({"path": file.clone()}),
+            None,
+        ))
+        .expect("execute");
         assert!(!hub.was_read(&file));
 
         // 成功的 read 登记。
@@ -229,8 +236,12 @@ mod tests {
             }),
             Arc::clone(&hub),
         );
-        futures::executor::block_on(ok.execute("c2", serde_json::json!({"path": file.clone()}), None))
-            .expect("execute");
+        futures::executor::block_on(ok.execute(
+            "c2",
+            serde_json::json!({"path": file.clone()}),
+            None,
+        ))
+        .expect("execute");
         assert!(hub.was_read(&file));
 
         let _ = std::fs::remove_file(&file);

@@ -87,8 +87,12 @@ pub fn parse_session_jsonl(repo_path: &str, text: &str) -> Option<ReplayOutcome>
                 });
             }
             Some("message") => {
-                let Some(state) = state.as_mut() else { continue };
-                let Some(message) = record.get("message") else { continue };
+                let Some(state) = state.as_mut() else {
+                    continue;
+                };
+                let Some(message) = record.get("message") else {
+                    continue;
+                };
                 let timestamp_ms = record
                     .get("timestamp")
                     .and_then(Value::as_str)
@@ -212,7 +216,11 @@ pub fn parse_session_jsonl(repo_path: &str, text: &str) -> Option<ReplayOutcome>
                         let Some((name, args)) = state.pending.remove(&call_id) else {
                             continue;
                         };
-                        let name = if reported_name.is_empty() { name } else { reported_name };
+                        let name = if reported_name.is_empty() {
+                            name
+                        } else {
+                            reported_name
+                        };
                         state.acc.ingest(&state.env(
                             sequence,
                             timestamp_ms,
@@ -288,7 +296,9 @@ pub fn replay_directory(
         .collect();
     files.sort();
     for path in files {
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
         let size = i64::try_from(meta.len()).unwrap_or(0);
         let modified_ms = meta
             .modified()
@@ -303,7 +313,9 @@ pub fn replay_directory(
                 continue;
             }
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         if let Some(outcome) = parse_session_jsonl(repo_path, &text) {
             let _ = store::write_batch(db, &outcome.batch);
         }
@@ -336,7 +348,16 @@ mod tests {
         assert_eq!(outcome.session_id, "s-uuid-1");
         let batch = outcome.batch;
         let types: Vec<&str> = batch.nodes.iter().map(|n| n.node_type).collect();
-        for expected in ["session", "message", "tool_call", "command", "error", "file", "turn", "run"] {
+        for expected in [
+            "session",
+            "message",
+            "tool_call",
+            "command",
+            "error",
+            "file",
+            "turn",
+            "run",
+        ] {
             assert!(types.contains(&expected), "missing {expected}: {types:?}");
         }
         let session = batch
@@ -347,7 +368,14 @@ mod tests {
         assert_eq!(session.props["intent"], "修一下构建失败");
         assert!(session.props.get("sessionId").is_some());
         let edges: Vec<&str> = batch.edges.iter().map(|e| e.edge_type).collect();
-        for expected in ["has_turn", "has_message", "used_tool", "executed", "failed_with", "modified"] {
+        for expected in [
+            "has_turn",
+            "has_message",
+            "used_tool",
+            "executed",
+            "failed_with",
+            "modified",
+        ] {
             assert!(edges.contains(&expected), "missing {expected}: {edges:?}");
         }
     }
@@ -397,7 +425,11 @@ mod tests {
         assert_eq!(indexed, 2);
         assert_eq!(skipped, 0);
         let messages: i64 = db
-            .query_row("SELECT COUNT(*) FROM nodes WHERE type = 'message'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE type = 'message'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(messages >= 2);
 
@@ -406,7 +438,11 @@ mod tests {
         assert_eq!(indexed2, 0);
         assert_eq!(skipped2, 2);
         let messages2: i64 = db
-            .query_row("SELECT COUNT(*) FROM nodes WHERE type = 'message'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM nodes WHERE type = 'message'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(messages, messages2);
     }

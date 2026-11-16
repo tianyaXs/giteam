@@ -53,25 +53,37 @@ fn parse_action(input: &Value) -> std::result::Result<BrowserAction, String> {
                 return Err("url 必须是 http(s) 协议".to_string());
             }
             if is_ssrf_allow_loopback(url) {
-                return Err("目标地址属于私网/链路本地，已拒绝（SSRF 防护；loopback 已放行）".to_string());
+                return Err(
+                    "目标地址属于私网/链路本地，已拒绝（SSRF 防护；loopback 已放行）".to_string(),
+                );
             }
-            Ok(BrowserAction::Navigate { url: url.to_string() })
+            Ok(BrowserAction::Navigate {
+                url: url.to_string(),
+            })
         }
         "click" => Ok(BrowserAction::Click {
-            selector: get_str("selector").ok_or_else(|| "click 需要 selector".to_string())?.to_string(),
+            selector: get_str("selector")
+                .ok_or_else(|| "click 需要 selector".to_string())?
+                .to_string(),
         }),
         "type" => {
             let selector = get_str("selector")
                 .ok_or_else(|| "type 需要 selector".to_string())?
                 .to_string();
-            let text = input.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = input
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             Ok(BrowserAction::Type { selector, text })
         }
         "read_dom" => Ok(BrowserAction::ReadDom {
             selector: get_str("selector").map(str::to_string),
         }),
         "eval_read" => Ok(BrowserAction::EvalRead {
-            js: get_str("js").ok_or_else(|| "eval_read 需要 js".to_string())?.to_string(),
+            js: get_str("js")
+                .ok_or_else(|| "eval_read 需要 js".to_string())?
+                .to_string(),
         }),
         "screenshot" => Ok(BrowserAction::Screenshot),
         other => Err(format!("未知 action：{other}")),
@@ -80,7 +92,7 @@ fn parse_action(input: &Value) -> std::result::Result<BrowserAction, String> {
 
 /// 解析 dataURL（`data:<mime>;base64,<data>`）为 `(mime, base64_data)`。
 /// screenshot 回传的 image 是 dataURL，pi 的 `ImageContent.data` 需纯 base64。
-fn parse_data_url(url: &str) -> Option<(String, String)> {
+pub(crate) fn parse_data_url(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("data:")?;
     let (header, data) = rest.split_once(',')?;
     let mime = header
@@ -138,7 +150,11 @@ impl Tool for BrowserUseTool {
         let Some(controller) = &self.controller else {
             return Ok(denied_output("browser_use", "内置浏览器仅在桌面端可用"));
         };
-        let action_str = input.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+        let action_str = input
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let action = match parse_action(&input) {
             Ok(action) => action,
             Err(message) => return Ok(denied_output("browser_use", &message)),

@@ -48,18 +48,20 @@ describe("agent text dedupe", () => {
     expect(buildAgentReplyMarkdownFromParts(parts)).toBe(once);
   });
 
-  it("lifts tool calls that arrived after text to sit above the reply", () => {
+  it("lifts late pre-text tools above the reply but keeps interleaved order after text", () => {
     const parts = [
+      { id: "t0", type: "toolCall", toolName: "web_fetch" },
       { id: "text:0", type: "text", text: "南京今天多云" },
       { id: "t1", type: "toolCall", toolName: "web_fetch" },
-      { id: "t2", type: "toolCall", toolName: "web_fetch" },
-      { id: "t3", type: "toolCall", toolName: "web_fetch" }
+      { id: "text:1", type: "text", text: "气温 23°C" },
+      { id: "t2", type: "toolCall", toolName: "web_fetch" }
     ] as AgentDetailedPart[];
     expect(liftAgentProcessPartsBeforeText(parts).map((p) => String((p as { id?: string }).id))).toEqual([
+      "t0",
+      "text:0",
       "t1",
-      "t2",
-      "t3",
-      "text:0"
+      "text:1",
+      "t2"
     ]);
   });
 });

@@ -147,7 +147,12 @@ fn redact_copy_whole(src: &Path, dst: &Path, stats: &mut RedactionStats) -> Shar
     Ok(())
 }
 
-fn copy_dir_filtered(src: &Path, dst: &Path, stats: &mut RedactionStats, redact: bool) -> ShareResult<u64> {
+fn copy_dir_filtered(
+    src: &Path,
+    dst: &Path,
+    stats: &mut RedactionStats,
+    redact: bool,
+) -> ShareResult<u64> {
     let mut count = 0u64;
     if !src.is_dir() {
         return Ok(0);
@@ -171,7 +176,12 @@ fn copy_dir_filtered(src: &Path, dst: &Path, stats: &mut RedactionStats, redact:
 }
 
 /// 导出 catalog 中属于该仓库的记录（按 canonical repoPath 匹配）。
-fn export_catalog_records(repo: &Path, dst: &Path, stats: &mut RedactionStats, redact: bool) -> ShareResult<usize> {
+fn export_catalog_records(
+    repo: &Path,
+    dst: &Path,
+    stats: &mut RedactionStats,
+    redact: bool,
+) -> ShareResult<usize> {
     let Some(catalog_path) = crate::pi_agent::default_data_dir()
         .map(|root| root.join("pi-sessions").join("catalog.json"))
     else {
@@ -208,7 +218,12 @@ fn export_catalog_records(repo: &Path, dst: &Path, stats: &mut RedactionStats, r
 }
 
 /// `VACUUM INTO` 取记忆库一致性快照，然后对文本列做脱敏。
-fn export_memory_db(repo: &Path, dst: &Path, redact: bool, stats: &mut RedactionStats) -> ShareResult<bool> {
+fn export_memory_db(
+    repo: &Path,
+    dst: &Path,
+    redact: bool,
+    stats: &mut RedactionStats,
+) -> ShareResult<bool> {
     let Some(src) = crate::pi_agent::memory_db_path_for_repo(repo) else {
         return Ok(false);
     };
@@ -418,10 +433,10 @@ pub fn export_package(repo_path: &Path, opts: &ExportOptions) -> ShareResult<Exp
 
     let mut warnings = Vec::new();
     let head = run_git(&repo, &["rev-parse", "HEAD"])?;
-    let branch = run_git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .unwrap_or_default();
-    let upstream_url = run_git(&repo, &["config", "--get", "remote.origin.url"])
-        .unwrap_or_default();
+    let branch =
+        run_git(&repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
+    let upstream_url =
+        run_git(&repo, &["config", "--get", "remote.origin.url"]).unwrap_or_default();
     let dirty = !run_git(&repo, &["status", "--porcelain"])
         .unwrap_or_default()
         .is_empty();
@@ -435,7 +450,8 @@ pub fn export_package(repo_path: &Path, opts: &ExportOptions) -> ShareResult<Exp
         .to_string();
 
     // 1) git bundle
-    let staging = std::env::temp_dir().join(format!("giteam-share-{}-{}", std::process::id(), now_ms()));
+    let staging =
+        std::env::temp_dir().join(format!("giteam-share-{}-{}", std::process::id(), now_ms()));
     fs::create_dir_all(&staging)?;
     let bundle_path = staging.join("repo.bundle");
     let bundle_refs: Vec<String> = if opts.all_refs {
@@ -501,7 +517,8 @@ pub fn export_package(repo_path: &Path, opts: &ExportOptions) -> ShareResult<Exp
 
     let attachments_src = repo.join(".giteam").join("prompt-attachments");
     let attachments_dst = context_dir.join("attachments");
-    let attachment_count = copy_dir_filtered(&attachments_src, &attachments_dst, &mut stats, redact_on)?;
+    let attachment_count =
+        copy_dir_filtered(&attachments_src, &attachments_dst, &mut stats, redact_on)?;
     let has_attachments = attachment_count > 0;
 
     let review_record_count = if opts.include_reviews {
@@ -522,7 +539,11 @@ pub fn export_package(repo_path: &Path, opts: &ExportOptions) -> ShareResult<Exp
         },
         repo: ShareRepoInfo {
             name: repo_name,
-            default_branch: if branch.is_empty() { "HEAD".to_string() } else { branch },
+            default_branch: if branch.is_empty() {
+                "HEAD".to_string()
+            } else {
+                branch
+            },
             head_commit: head,
             upstream_url,
             bundle_refs,
@@ -562,7 +583,10 @@ pub fn export_package(repo_path: &Path, opts: &ExportOptions) -> ShareResult<Exp
 
     let context_root = staging.join("_context_root");
     fs::create_dir_all(&context_root)?;
-    fs::rename(staging.join("manifest.json"), context_root.join("manifest.json"))?;
+    fs::rename(
+        staging.join("manifest.json"),
+        context_root.join("manifest.json"),
+    )?;
     fs::rename(context_dir, context_root.join("context"))?;
 
     let context_out = opts.out_file.clone().unwrap_or_else(|| {
@@ -712,12 +736,19 @@ mod tests {
         }
         let mut stats = RedactionStats::default();
         redact_memory_db(&db_path, &mut stats).expect("redact should accept integer edge ids");
-        assert!(stats.hits >= 2, "expected redaction hits, got {}", stats.hits);
+        assert!(
+            stats.hits >= 2,
+            "expected redaction hits, got {}",
+            stats.hits
+        );
         let conn = Connection::open(&db_path).unwrap();
         let edge_props: String = conn
             .query_row("SELECT props FROM edges WHERE id = 1", [], |row| row.get(0))
             .unwrap();
-        assert!(!edge_props.contains("sk-edgekey"), "edge props should be redacted: {edge_props}");
+        assert!(
+            !edge_props.contains("sk-edgekey"),
+            "edge props should be redacted: {edge_props}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

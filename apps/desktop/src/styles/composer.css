@@ -1,0 +1,76 @@
+/* Composer style isolation ─────────────────────────────────────
+   The composer subtree is pinned to the official shadcn/ai-elements
+   baseline (16px inherited, normal weight) so app-wide density rules
+   (body 13px, custom button/textarea recipes) cannot leak in.
+   Scope: .giteam-composer on the InputGroup root. */
+.giteam-composer {
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.giteam-composer textarea {
+  font: inherit;
+  letter-spacing: normal;
+}
+.giteam-composer ::placeholder {
+  font-weight: 400;
+  opacity: 1;
+}
+.giteam-composer button {
+  font: inherit;
+  font-weight: 500;
+}
+
+/* aria-rhea baked values for the local default-shadcn primitives.
+   Scoped to .giteam-composer (InputGroup subtree) and to menus opened
+   from it, so the rest of the app keeps its density. */
+.giteam-composer[data-slot="input-group"] {
+  border-radius: 1.25rem;
+  background: color-mix(in oklab, var(--input) 50%, transparent);
+  box-shadow: none;
+}
+/* 官方 InputGroup focus 是中性描边（foreground 弱化 + 微 ring），不是主题色：
+   蓝色 ring 是本项目 --ring=accent 泄漏，这里改用 foreground 中性色。 */
+.giteam-composer[data-slot="input-group"]:has([data-slot="input-group-control"]:focus-visible) {
+  border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.giteam-composer button[data-size="sm"] {
+  border-radius: 1.25rem;
+  gap: 0.25rem;
+  padding-inline: 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+}
+.giteam-composer [data-slot="input-group-addon"] {
+  padding-inline: 0.625rem;
+  padding-bottom: 0.5rem;
+}
+.giteam-composer textarea {
+  /* 官方 composer 正文是 16px 基底上的 14px（text-sm）；本应用 base.css 会把
+     textarea 全局降成 12px code 字号，这里必须显式钉回 14px，与消息正文同级。 */
+  font-size: 0.875rem;
+  line-height: 1.45rem;
+  min-height: 4rem;
+  max-height: 12rem;
+  field-sizing: content;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+.giteam-composer textarea::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Menus are portaled outside the composer; scope them via the class set
+   on menu content in the composer call sites. */
+.giteam-composer-menu [role="menuitem"] {
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  min-height: 1.75rem;
+  padding-block: 0.375rem;
+  padding-inline: 0.5rem;
+}

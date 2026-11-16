@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { FilePen } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, FlaskConicalIcon, LoaderCircleIcon, XCircleIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -7,7 +7,9 @@ import { Separator } from "../ui/separator";
 import { buildHunks, diffLines } from "../../lib/turnDiff";
 import { DiffLineRows, StatsBadgeText, collectTurnModifiedFiles, compressEdits, deriveTurnStats, type TurnManifestEntry, type TurnModifiedFile } from "./TurnDiffViewer";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import Lenis from "lenis";
 import {
+  buildAgentActivityRows,
   buildAgentAssistantRenderGroups,
   buildAgentReplyMarkdownFromParts,
   collapseDuplicatedAgentContent,
@@ -46,6 +48,23 @@ import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecuti
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
 import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
+import { MatrixLoader } from "../transitions/MatrixLoader";
+import { ShimmerText } from "../transitions/ShimmerText";
+import { Reasoning, ReasoningTrigger, useReasoning } from "../ai-elements/reasoning";
+import { MessageAction, MessageActions } from "../ai-elements/message";
+import { Bubble, BubbleContent } from "../ai-elements/bubble";
+import { buildFileTree, FileTree, FileTreeFile, FileTreeFolder } from "../ai-elements/file-tree";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from "../ui/trace";
+import { CodeBlock, CodeBlockContent } from "../ai-elements/code-block";
 
 function isTaskToolPart(part: AgentDetailedPart | undefined | null): boolean {
   return String((part as { type?: string } | null)?.type || "") === "toolCall"
@@ -192,7 +211,10 @@ function ActivityStatus({
           {label}
         </span>
       ))}
-      <span className={cn("col-start-1 row-start-1 whitespace-nowrap", active && "animate-pulse")}>
+      <span
+        className={cn("col-start-1 row-start-1 whitespace-nowrap", active && "t-shimmer")}
+        data-text={active ? activeLabel : undefined}
+      >
         {active ? activeLabel : doneLabel}
       </span>
     </span>
@@ -200,33 +222,6 @@ function ActivityStatus({
 }
 
 /** 时间线折叠标签共用外壳：固定行高 + 收起不挂载，保证「已探索 / 已回忆」行距一致。 */
-function TimelineFoldGroup({
-  open,
-  onOpenChange,
-  label,
-  children
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  label: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="min-w-0 max-w-full">
-      <button
-        type="button"
-        aria-expanded={open}
-        className="flex h-10 w-full min-w-0 appearance-none items-center overflow-hidden border-0 bg-transparent px-0 text-left hover:bg-transparent"
-        onClick={() => onOpenChange(!open)}
-      >
-        {label}
-      </button>
-      {open ? <div className="min-w-0">{children}</div> : null}
-    </div>
-  );
-}
-
-
 function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   // todowrite 只驱动右侧进度卡、不进主时间线；有进度时主区不应继续写「思考中」，
   // 否则用户会以为卡住，而右侧已在推进。
@@ -237,10 +232,11 @@ function ThinkingPlaceholder({ todoItems }: { todoItems?: AgentTodoItem[] }) {
   const hasTodos = (todoItems || []).length > 0;
   const label = hasTodos ? "执行中" : "思考中";
   const doneLabel = hasTodos ? "已执行" : "已思考";
-  // 高度对齐首组首帧（h-10 = TimelineFoldGroup 折叠头行高；流式正文块经
-  // min-h-10 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
+  // 高度对齐首组首帧（h-6 = Trace 折叠头行高；流式正文块经
+  // min-h-6 预留同高）——占位被首组同帧替换时高度不变，「思考中→内容」零跳动。
   return (
-    <div className="flex h-10 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
+    <div className="flex h-6 w-full min-w-0 items-center justify-start gap-2" aria-live="polite" aria-label={label}>
+      <MatrixLoader variant="twinkle" className="shrink-0" />
       <ActivityStatus active activeLabel={label} doneLabel={doneLabel} className="text-sm" />
       {activeTodo ? (
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
@@ -270,6 +266,42 @@ function mergeAdjacentContextGroups(groups: AgentAssistantRenderGroup[]): AgentA
     merged.push(group);
   });
   return merged;
+}
+
+/**
+ * pi 的正文按 message.index 分块（text:0/text:1/text:2…），正文轮间常插着不可见
+ * boundary（隐藏思考）。这些同回合同一正文的连续 text part 需要在进入时间线前
+ * 合成一个 part，否则活动段会被正文块切碎成「工作段 → 正文 → 工作段」多组并列卡。
+ */
+function dedupeAgentChunkedTextParts(
+  parts: AgentDetailedPart[]
+): AgentDetailedPart[] {
+  const out: AgentDetailedPart[] = [];
+  for (const part of parts) {
+    const type = String(part?.type || "");
+    const last = out[out.length - 1];
+    if (
+      type === "text"
+      && last
+      && String(last.type || "") === "text"
+    ) {
+      const lastText = String(last.text || "");
+      const nextText = String(part.text || "");
+      if (lastText && nextText && lastText.includes(nextText)) continue;
+      if (lastText && nextText && nextText.includes(lastText)) {
+        out[out.length - 1] = { ...part, id: String(last.id || part.id || "") };
+        continue;
+      }
+      out[out.length - 1] = {
+        ...part,
+        id: String(last.id || part.id || ""),
+        text: [lastText, nextText].filter(Boolean).join("\n\n")
+      };
+      continue;
+    }
+    out.push(part);
+  }
+  return out;
 }
 
 function buildDisplayTimelineGroups(
@@ -376,9 +408,19 @@ function getBatchKind(group: AgentAssistantRenderGroup): "shell" | "edit" | "web
 }
 
 function isEmptyAssistantPlaceholder(row: AgentMessageRenderRow): boolean {
+  if (!(row.isAssistant && !row.hasTimeline && !row.fallbackReply && !row.detailsError && !row.errorMessage)) {
+    return false;
+  }
+  // 只有思考（reasoning）流、暂无正文的行不算空占位：暂停后 isStreaming 翻 false，
+  // 若按空占位过滤会把用户已经看到的思考内容整段隐藏（2026-11-10 实证：
+  // 模型长思考期间点停止，已渲染的 reasoning 正文随占位一起消失）。
+  const hasReasoning = (row.renderParts || []).some((part) => {
+    if (String((part as { type?: string }).type || "") !== "reasoning") return false;
+    return Boolean(String((part as { text?: string }).text || "").trim());
+  });
   // 忽略 detailsLoading：新 assistant 一创建就会被拉详情，若把 loading 当成非空，
   // 会无法并入上一条，从而在时间线里插入多余的「思考中」占位。
-  return row.isAssistant && !row.hasTimeline && !row.fallbackReply && !row.detailsError && !row.errorMessage;
+  return !hasReasoning;
 }
 
 function runFailureText(message: AgentChatMessage): string {
@@ -443,6 +485,55 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentD
   return out;
 }
 
+/**
+ * 段内二次合并：活动段切分只认「可见正文」，但同一工作流里的多个同 kind 工作批
+ * （shell → 隐藏思考 → shell → shell）会在段内留成并列 Trace 卡（官方 Task 卡展开
+ * 后只有一层缩进步骤列表）。这里把相邻同 batchKind 的 tool-batch 合成一个 step，
+ * 对应官方「已运行 4 个步骤」一层折叠列表；kind 不同的批（探索→运行）保留为
+ * 相邻两步，通过 batchKind 语义区分工作类型。
+ */
+function mergeAdjacentWorkSteps(
+  steps: AgentDisplayTimelineGroup[]
+): AgentDisplayTimelineGroup[] {
+  const out: AgentDisplayTimelineGroup[] = [];
+  for (const step of steps) {
+    const last = out[out.length - 1];
+    // 相邻工作步骤一律并入同一个 tool-batch：段落内不允许并列多张段卡
+    // （旧实现只合并同 kind，会留出 探索→运行→运行→探索 的多张并列卡）。
+    const nextKind = step.kind === "tool-batch" ? step.batchKind : "";
+    const lastParts = last?.kind === "tool-batch" ? last.parts : [];
+    const incoming = step.kind === "tool-batch"
+      ? step.parts
+      : step.kind === "context"
+        ? step.parts
+        : step.kind === "part"
+          ? [step.part]
+          : [];
+    if (last?.kind === "tool-batch" && incoming.length > 0) {
+      out[out.length - 1] = {
+        kind: "tool-batch",
+        key: last.key,
+        batchKind: nextKind || last.batchKind,
+        parts: [...lastParts, ...incoming]
+      };
+      continue;
+    }
+    // 非批组步骤（reasoning 等）不丢弃：转成普通 tool-batch 行，保证全部
+    // 穿插操作都收进同一张段卡；后面遇到第一个工作步骤时继续并入。
+    if (incoming.length > 0) {
+      out.push({
+        kind: "tool-batch",
+        key: step.key,
+        batchKind: nextKind || "shell",
+        parts: incoming
+      });
+      continue;
+    }
+    out.push(step);
+  }
+  return out;
+}
+
 type AgentMessageStreamProps = {
   sessionLoading: boolean;
   messages: AgentChatMessage[];
@@ -479,7 +570,7 @@ type AgentMessageStreamProps = {
   onStartReached: () => void;
   onAtBottomChange: (atBottom: boolean) => void;
   scrollerRef: (node: HTMLElement | Window | null) => void;
-  virtuosoRef: RefObject<VirtuosoHandle>;
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
   onRangeChanged: () => void;
   /** 外部请求滚动定位到的消息 id（搜索命中时由 App 写入，定位完成后清空）。 */
   pendingScrollMessageId?: string;
@@ -496,11 +587,14 @@ type AgentMessageStreamProps = {
   navigatorSide?: "left" | "right";
   /** 概览标尺范围：all=全部消息（默认）；sent=仅「我发送」。 */
   navigatorScope?: "sent" | "all";
-  /** 外部强制恢复贴底跟随（发送时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
+  /** 外部强制恢复贴底跟随（发送/拉到最新时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
   stickResetSignal?: number;
 };
 
 type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
+
+/** Lenis 官方 lerp 模式（帧率无关 damp）：连续 wheel 连续追踪目标，避免固定时长动画重排/跳变。 */
+const SMOOTH_WHEEL_LENIS_LERP = 0.1;
 
 // Virtuoso List：必须把官方传入的 style（含 paddingTop/height）原样挂上；不要用 flex/gap，
 // 也不要用会覆盖 paddingTop 语义的布局类抢测高。行间距放在 Item 内 padding。
@@ -523,8 +617,26 @@ const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactN
 AgentMessageListContainer.displayName = "AgentMessageListContainer";
 
 function AgentMessageRowFrame({ children }: { children: ReactNode }) {
-  return <div className="pb-4">{children}</div>;
+  return <div className="pb-3">{children}</div>;
 }
+
+// Virtuoso 官方 Item 协议：外壳透传 style/data-*，仅追加横向裁剪。
+// 流式 text/表格瞬时超宽时默认 item 不裁剪，会把 scroller 顶出横向滚动条；
+// overflow-x:clip 不生成滚动容器、不改变测高，滚动条恢复纵向专用。
+// @see https://virtuoso.dev/virtuoso-item/
+const AgentMessageListItem = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
+  ({ children, style, ...rest }, ref) => (
+    <div
+      ref={ref}
+      style={style}
+      {...rest}
+      className="min-w-0 overflow-x-clip"
+    >
+      {children}
+    </div>
+  )
+);
+AgentMessageListItem.displayName = "AgentMessageListItem";
 
 /** 首条消息与顶部分隔线之间的呼吸留白（参考 ChatGPT 首条消息的顶部间距）。 */
 function AgentMessageListHeader() {
@@ -534,7 +646,10 @@ function AgentMessageListHeader() {
 function StreamLoadingState() {
   return (
     <div className="flex flex-col gap-2 px-1 py-2 text-sm text-muted-foreground">
-      <span>加载会话中…</span>
+      <span className="flex items-center gap-2">
+        <MatrixLoader variant="scan" rounded />
+        <ShimmerText text="加载会话中…" />
+      </span>
       <Skeleton className="h-3 w-2/3" />
       <Skeleton className="h-3 w-1/2" />
     </div>
@@ -583,242 +698,574 @@ function MessageShell({
           "relative min-w-0 max-w-full",
           isAssistant
             ? "w-full"
-            : userHasAttachments
-              ? "max-w-[min(74%,620px)]"
-              : "max-w-[min(74%,620px)] rounded-2xl bg-muted px-3.5 py-2 text-[15px] font-medium leading-6 text-foreground"
+            : "max-w-[min(74%,620px)]"
         )}
       >
-        {children}
+        {/* 用户文本消息用官方 Bubble(muted 气泡,rounded-3xl);带附件时保持
+            旧容器(宫格附件 + 气泡混排会双圆角)。 */}
+        {!isAssistant && !userHasAttachments ? (
+          <Bubble align="end" variant="muted" className="max-w-full">
+            <BubbleContent className="text-sm leading-6 text-foreground">
+              {children}
+            </BubbleContent>
+          </Bubble>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );
 }
 
-function ToolBatchGroup({
+const TEST_RUN_COMMAND_PATTERN = /(^|\s|;&|&&|\|\|)(npm|pnpm|yarn|bun|vitest|jest|cargo|pytest|go|node)(\s|\.\/)\S*(test|vitest|jest|pytest|spec)/i;
+
+/** 官方 Test Results 卡片的单个用例（解析 bash 输出 JSONL / 测试框架文本所得）。 */
+type AgentTestResult = {
+  name: string;
+  status: "passed" | "failed" | "skipped";
+  error?: string;
+};
+
+type AgentTestSuite = {
+  name: string;
+  tests: AgentTestResult[];
+};
+
+/**
+ * bash 输出 → 官方 Test Results 套件/用例结构：
+ * 1) JSONL 每行一条 {type:"test", name, status, suiteName?, error?}；
+ * 2) vitest/jest 文本（✓/✗ 用例行、PASS|FAIL 文件行）。
+ * 识别不到任何用例时返回 null（继续走原终端块渲染）。
+ */
+function parseAgentTestOutput(
+  command: string,
+  output: string
+): { suites: AgentTestSuite[]; failed: number; total: number; skipped: number } | null {
+  const text = String(output || "");
+  if (!text.trim() || !TEST_RUN_COMMAND_PATTERN.test(String(command || ""))) return null;
+  const suites = new Map<string, AgentTestSuite>();
+  const getSuite = (name: string): AgentTestSuite => {
+    const key = String(name || "").trim() || "tests";
+    let suite = suites.get(key);
+    if (!suite) {
+      suite = { name: key, tests: [] };
+      suites.set(key, suite);
+    }
+    return suite;
+  };
+  const asStatus = (value: unknown): AgentTestResult["status"] | undefined => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (raw === "passed" || raw === "pass" || raw === "ok" || raw === "success") return "passed";
+    if (raw === "failed" || raw === "fail" || raw === "error") return "failed";
+    if (raw === "skipped" || raw === "skip" || raw === "todo" || raw === "pending") return "skipped";
+    return undefined;
+  };
+  const isTestEvent = (row: Record<string, unknown>): boolean => {
+    const type = String(row.type || "").toLowerCase();
+    return type === "test" || type === "test_result" || type === "testresult"
+      || (type === "" && String(row.name || "").trim().length > 0 && Boolean(asStatus(row.status)));
+  };
+  const seen = new Set<string>();
+  const push = (suiteName: string, name: string, status: AgentTestResult["status"], error?: string) => {
+    const label = String(name || "").trim();
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    getSuite(suiteName).tests.push({ name: label, status, error: String(error || "").trim() || undefined });
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("{")) {
+      try {
+        const row = JSON.parse(trimmed) as Record<string, unknown>;
+        if (isTestEvent(row)) {
+          const status = asStatus(row.status) ?? asStatus(row.state);
+          if (status) {
+            push(
+              String(row.suiteName || row.suite || row.file || ""),
+              String(row.name || row.title || ""),
+              status,
+              String(row.error || row.message || "")
+            );
+            continue;
+          }
+        }
+      } catch {
+        // 非 JSONL 测试事件，继续文本解析
+      }
+    }
+    const iconMatch = trimmed.match(/^(?:✓|√|✗|×|✕)\s+(.+?)(?:\s+\(\d+(?:\.\d+)?\s*(?:ms|s)\))?$/);
+    if (iconMatch) {
+      const label = iconMatch[1].trim();
+      const failed = /^(✗|×|✕)/.test(trimmed);
+      push("", label, failed ? "failed" : "passed");
+      continue;
+    }
+    const suiteLine = trimmed.match(/^(?:PASS|FAIL)\s+(\S+)$/i);
+    if (suiteLine) {
+      getSuite(suiteLine[1]);
+    }
+  }
+  const list = Array.from(suites.values()).filter((suite) => suite.tests.length > 0);
+  if (list.length === 0) return null;
+  const tests = list.flatMap((suite) => suite.tests);
+  return {
+    suites: list,
+    total: tests.length,
+    failed: tests.filter((test) => test.status === "failed").length,
+    skipped: tests.filter((test) => test.status === "skipped").length
+  };
+}
+
+function formatTestCounts(counts: { total: number; failed: number; skipped: number }): string {
+  return [
+    `${counts.total} 个测试`,
+    counts.failed > 0 ? `${counts.failed} 个失败` : "",
+    counts.skipped > 0 ? `${counts.skipped} 个跳过` : ""
+  ].filter(Boolean).join("，");
+}
+
+/** 官方 TestResultsRow：失败默认展开、错误栈用官方 CodeBlock（sm 尺寸）。 */
+function AgentTestResultsRow({
   timelineKey,
-  group,
-  open,
-  onOpenChange,
-  forceInactive = false,
+  command,
+  result,
+  running,
+  failed
+}: {
+  timelineKey: string;
+  command: string;
+  result: { suites: AgentTestSuite[]; failed: number; total: number; skipped: number } | null;
+  running: boolean;
+  failed: boolean;
+}) {
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const open = userOpen ?? (failed || running);
+  if (!result) {
+    return (
+      <TraceLine status={running ? "running" : failed ? "error" : undefined}>
+        <TraceIcon>
+          {running ? <LoaderCircleIcon className="animate-spin" /> : <FlaskConicalIcon />}
+        </TraceIcon>
+        <TraceTitle className="text-sm">
+          {running ? `运行测试 ${command}` : failed ? `测试运行失败 ${command}` : command}
+        </TraceTitle>
+      </TraceLine>
+    );
+  }
+  return (
+    <TraceCollapsible open={open} onOpenChange={setUserOpen}>
+      <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+        <TraceLine status={failed ? "error" : undefined}>
+          <TraceIcon>
+            {running ? <LoaderCircleIcon className="animate-spin" /> : <FlaskConicalIcon />}
+          </TraceIcon>
+          <TraceTitle className="text-sm">
+            {running ? "运行测试中" : `已运行 ${formatTestCounts(result)}`}
+          </TraceTitle>
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="flex flex-col gap-0.5">
+        <Trace>
+          {result.suites.map((suite) => {
+            const suiteFailed = suite.tests.some((test) => test.status === "failed");
+            const suiteKey = `${timelineKey}:suite:${suite.name}`;
+            return (
+              <TraceCollapsible key={suiteKey} defaultOpen={suiteFailed}>
+                <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+                  <TraceLine status={suiteFailed ? "error" : undefined}>
+                    <TraceIcon>
+                      <FlaskConicalIcon />
+                    </TraceIcon>
+                    <TraceTitle className="max-w-[320px] truncate">{suite.name}</TraceTitle>
+                    <TraceDescription className="max-w-[160px] shrink truncate">
+                      {formatTestCounts({
+                        total: suite.tests.length,
+                        failed: suite.tests.filter((test) => test.status === "failed").length,
+                        skipped: suite.tests.filter((test) => test.status === "skipped").length
+                      })}
+                    </TraceDescription>
+                  </TraceLine>
+                </TraceCollapsibleTrigger>
+                <TraceCollapsibleContent className="flex flex-col gap-0.5">
+                  <Trace>
+                    {suite.tests.map((test, testIndex) => {
+                      const testKey = `${timelineKey}:test:${testIndex}:${test.name}`;
+                      if (test.status === "failed") {
+                        return (
+                          <TraceCollapsible key={testKey} defaultOpen>
+                            <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+                              <TraceLine status="error">
+                                <TraceIcon>
+                                  <XCircleIcon />
+                                </TraceIcon>
+                                <TraceTitle className="max-w-[360px] truncate">{test.name}</TraceTitle>
+                              </TraceLine>
+                            </TraceCollapsibleTrigger>
+                            <TraceCollapsibleContent>
+                              <CodeBlock
+                                language="json"
+                                code={test.error || "测试失败。"}
+                                className="max-h-64 [&_[data-slot=code-block-body]]:overflow-auto"
+                              >
+                                <CodeBlockContent code={test.error || "测试失败。"} language="json" />
+                              </CodeBlock>
+                            </TraceCollapsibleContent>
+                          </TraceCollapsible>
+                        );
+                      }
+                      return (
+                        <TraceLine key={testKey}>
+                          <TraceIcon>
+                            {test.status === "skipped" ? <CircleDashedIcon /> : <CircleCheckIcon />}
+                          </TraceIcon>
+                          <TraceTitle className="max-w-[360px] truncate">
+                            {test.status === "skipped" ? `跳过 ${test.name}` : test.name}
+                          </TraceTitle>
+                        </TraceLine>
+                      );
+                    })}
+                  </Trace>
+                </TraceCollapsibleContent>
+              </TraceCollapsible>
+            );
+          })}
+        </Trace>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  );
+}
+
+/**
+ * 活动段：一段连续的 agent 工作（思考/探索/命令/编辑…）收进一张官方 Task 形态的
+ * 折叠卡；可见正文之外的每两次正文之间至多一张卡（划分机制见 buildAgentActivityRows）。
+ * 运行中自动展开、完成后自动收起；用户点过则以用户选择为准（官方语义）。
+ */
+/** 活动段标题：按主导步骤类型取名，运行时进行时、完成过去时（官方 Task 语义）。 */
+const SEGMENT_TITLES: Record<string, { active: string; done: string }> = {
+  "思考": { active: "思考中", done: "已思考" },
+  "探索": { active: "探索中", done: "已探索" },
+  "运行": { active: "运行中", done: "已运行" },
+  "编辑": { active: "编辑中", done: "已编辑" },
+  "查询": { active: "查询中", done: "已查询" },
+  "浏览": { active: "浏览中", done: "已浏览" },
+  "执行子任务": { active: "子任务执行中", done: "已执行子任务" },
+  "记录": { active: "记录中", done: "已记录" },
+  "回忆": { active: "回忆中", done: "已回忆" },
+  "操作文件": { active: "操作文件中", done: "已操作文件" },
+  "执行": { active: "执行中", done: "已执行" }
+};
+
+function ActivitySegment({
+  timelineKey,
+  steps,
+  forceInactive,
+  timelineOpenState,
+  setTimelineOpenState,
   shellToolPartsExpanded,
   editToolPartsExpanded,
   onOpenTaskSession,
   onOpenToolFile,
-  onOpenBrowserUrl
+  onOpenBrowserUrl,
+  renderMarkdown
 }: {
   timelineKey: string;
-  group: Extract<AgentDisplayTimelineGroup, { kind: "tool-batch" }>;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  forceInactive?: boolean;
+  steps: AgentDisplayTimelineGroup[];
+  forceInactive: boolean;
+  timelineOpenState: Record<string, boolean>;
+  setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
   shellToolPartsExpanded: boolean;
   editToolPartsExpanded: boolean;
   onOpenTaskSession: (sessionId: string, titleHint?: string) => void;
   onOpenToolFile: (target: AgentToolFileTarget) => void;
   onOpenBrowserUrl?: (url: string) => void;
+  renderMarkdown: RenderMarkdown;
 }) {
-  const shell = group.batchKind === "shell";
-  const web = group.batchKind === "web";
-  const browser = group.batchKind === "browser";
-  const task = group.batchKind === "task";
-  const memory = group.batchKind === "memory";
-  // 记忆批组三分态：进行中（part phase=started）给瞬时反馈；有真实写入
-  // （实体/关系/意图）留卡；失败留卡可排查；完成的空抽取（寒暄轮等）整组不渲染。
-  const memoryPhaseOf = (part: (typeof group.parts)[number]) =>
-    String((part as { phase?: string }).phase || "").trim();
-  const memoryHasRunning = memory && group.parts.some((part) => memoryPhaseOf(part) === "started");
-  const memoryFailed = memory && group.parts.some((part) => memoryPhaseOf(part) === "failed");
-  const memoryWrote =
-    memory &&
-    group.parts.some(
-      (part) =>
-        (Number((part as { entityCount?: number }).entityCount) || 0) > 0 ||
-        (Number((part as { relationCount?: number }).relationCount) || 0) > 0 ||
-        Boolean(String((part as { intent?: string }).intent || "").trim())
-    );
-  // 末尾组（流式中）一律「运行中/编辑中」：不再随组内单个命令的 running↔done 抖动——
-  // 否则前一条 done、下一条未到的空窗帧会闪成「已运行」、下一条到达又变「运行中」。
-  // 例外：记忆抽取在 turn 结束后异步到达，forceInactive 已为 true，但 part 仍在
-  // started——此时组标签必须以 part 相位为准显示「记录中」，否则「已记录」抢先出现。
-  const running = !forceInactive || memoryHasRunning;
-  const recall = group.batchKind === "recall";
-  // office 批组：合并渲染为「正在操作文件」卡（类型化微缩视觉），不走通用折叠列表。
-  if (group.batchKind === "office") {
-    const officeRunning =
-      !forceInactive
-      && group.parts.some((part) => {
-        const status = String((part as { status?: string }).status || "").toLowerCase();
-        return status === "running" || status === "pending" || status === "deciding";
-      });
-    return (
-      <OfficeOperationCard
-        parts={group.parts}
-        running={officeRunning}
-        onOpenFile={(path) => onOpenToolFile({ filePath: path })}
-      />
-    );
-  }
-  // 对齐「探索中 / 已探索」：进行态与完成态用同一词根，避免「子任务中→已委派」语义断裂。
-  const activeLabel = memory
-    ? "记录中"
-    : recall
-      ? "回忆中"
-      : task
-        ? "执行中"
-        : shell
-          ? "运行中"
-          : web
-            ? "查询中"
-            : browser
-              ? "浏览中"
-              : "编辑中";
-  const doneLabel = memory
-    ? memoryFailed && !memoryWrote
-      ? "记忆写入失败"
-      : "已记录"
-    : recall
-      ? "已回忆"
-      : task
-        ? "已完成"
-        : shell
-          ? "已运行"
-          : web
-            ? "已查询"
-            : browser
-              ? "已浏览"
-              : "已编辑";
-  const noun = memory
-    ? "次写入"
-    : recall
-      ? "次"
-      : task
-        ? "个子任务"
-        : shell
-          ? "条命令"
-          : web
-            ? "次"
-            : browser
-              ? "次"
-              : "个文件";
-  const resolvedOpen = open;
+  const anyRunning = !forceInactive;
+  const hasTask = steps.some(
+    (step) =>
+      (step.kind === "part" && isTaskToolPart(step.part))
+      || (step.kind === "tool-batch" && step.batchKind === "task")
+  );
+  // 只有含「子任务」的段默认展开运行态；思考/探索/命令/编辑段保持收起的摘要行（默认值仅
+  // 在用户未点过时生效，timelineOpenState 优先）。
+  const autoOpenRunning = hasTask;
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
+  const setError = steps.some((step) =>
+    step.kind === "part"
+    && String((step.part as { error?: string }).error || "").trim()
+  );
+  const openKey = `${timelineKey}:segment`;
+  const isOpen = timelineOpenState[openKey] ?? resolvedOpen;
+  const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [openKey]: open }));
 
-  // 只显示真实子 agent 行，并去掉父壳/空壳造成的重复卡。
-  const visibleTaskParts = task
-    ? dedupeVisibleSubagentTaskParts(group.parts)
-    : group.parts;
-  if (task && visibleTaskParts.length === 0) return null;
-  // 空抽取（寒暄轮等）不出卡：没有写入也没有失败，这条事件对用户无信息量。
-  if (memory && !memoryHasRunning && !memoryWrote && !memoryFailed) return null;
-
-  // 与「已探索 2次搜索」同形：回忆/查询类数字与量词紧贴，避免「1 次」多出空格
-  const countCompact = recall || web || browser;
-  const countLabel = countCompact
-    ? `${visibleTaskParts.length}${noun}`
-    : `${visibleTaskParts.length} ${noun}`;
-
-  // 子任务组摘要：运行中显示当前活跃标题，完成态显示计数即可。
-  const taskDetail = (() => {
-    if (!task) return "";
-    const runningPart = visibleTaskParts.find((part) => {
-      const status = String((part as { status?: string }).status || "").toLowerCase();
-      const sub = String((part as { subagentStatus?: string }).subagentStatus || "").toLowerCase();
-      return status === "running" || status === "pending" || sub === "running" || sub === "pending";
-    });
-    if (!runningPart || !running) return "";
-    return resolveTaskCardTitle(runningPart, group.parts) || extractTaskDescription(runningPart);
-  })();
-
-  const memoryDetail = (() => {
-    if (!memory) return "";
-    const entities = visibleTaskParts.reduce(
-      (sum, part) => sum + (Number((part as { entityCount?: number }).entityCount) || 0),
-      0
-    );
-    const relations = visibleTaskParts.reduce(
-      (sum, part) => sum + (Number((part as { relationCount?: number }).relationCount) || 0),
-      0
-    );
-    if (entities > 0 || relations > 0) {
-      return `${entities} 个实体 · ${relations} 条关系`;
-    }
-    const intent = visibleTaskParts
-      .map((part) => String((part as { intent?: string }).intent || "").trim())
-      .find(Boolean);
-    return intent || "";
-  })();
-
-  const recallDetail = (() => {
-    if (!recall || !running) return "";
-    const runningPart = visibleTaskParts.find((part) => {
-      const status = String((part as { status?: string }).status || "").toLowerCase();
-      return status === "running" || status === "pending";
-    });
-    const part = runningPart || visibleTaskParts[visibleTaskParts.length - 1];
-    if (!part) return "";
-    const tool = String((part as { toolName?: string }).toolName || "");
-    const input = ((part as { input?: Record<string, unknown> }).input || {}) as Record<string, unknown>;
-    const taskText = String(input.task || input.query || input.error || "").trim();
-    const short = taskText.length > 48 ? `${taskText.slice(0, 48).trimEnd()}…` : taskText;
-    if (tool === "asset_context") return short ? `上下文 · ${short}` : "上下文";
-    if (tool === "asset_search") return short ? `检索 · ${short}` : "检索";
-    if (tool === "asset_precedents") return short ? `先例 · ${short}` : "先例";
-    return short;
-  })();
-
-  return (
-    <TimelineFoldGroup
-      open={resolvedOpen}
-      onOpenChange={onOpenChange}
-      label={
-        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-          <ActivityStatus active={running} activeLabel={activeLabel} doneLabel={doneLabel} className="text-sm" />
-          {!memory || memoryWrote ? (
-            <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">{countLabel}</span>
-          ) : null}
-          {taskDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {taskDetail}</span>
-          ) : null}
-          {!taskDetail && memoryDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {memoryDetail}</span>
-          ) : null}
-          {!taskDetail && !memoryDetail && recallDetail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {recallDetail}</span>
-          ) : null}
-        </span>
+  // 段头按「原子调用数最多的 kind」取名（合并后一个 shell 批可能含多次命令）：
+  // 对齐官方 Task 的"主导动作"语义——一段里运行了 5 条命令 + 顺手读了 2 个文件，
+  // 段名应叫「已运行」而不是末尾的「已探索/已读取」。
+  const segmentLabel = (() => {
+    const counts = new Map<string, number>();
+    const bump = (label: string, weight: number) =>
+      counts.set(label, (counts.get(label) || 0) + weight);
+    for (const step of steps) {
+      if (step.kind === "reasoning") bump("思考", 1);
+      else if (step.kind === "context") bump("探索", step.parts.length || 1);
+      else if (step.kind === "tool-batch") {
+        const batchLabels: Record<string, string> = {
+          shell: "运行",
+          edit: "编辑",
+          web: "查询",
+          browser: "浏览",
+          task: "执行子任务",
+          memory: "记录",
+          recall: "回忆",
+          office: "操作文件"
+        };
+        bump(batchLabels[step.batchKind] || "运行", step.parts.length || 1);
+      } else if (step.kind === "part") {
+        const type = String((step.part as { type?: string }).type || "");
+        if (type === "runtime.memory") bump("记录", 1);
+        else if (type === "text") continue;
+        else bump("运行", 1);
       }
-    >
-      {/* 子任务批组：外层不滚动，避免与 SubagentRunCard 内层叠出双滚动条 */}
-      <div className={cn("pb-1.5 pl-3", task ? "overflow-visible" : "max-h-56 overflow-y-auto overscroll-contain")}>
-        <div className="flex flex-col gap-0.5">
-          {visibleTaskParts.map((part, partIndex) => {
-            const timelineKeyItem = `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`;
-            if (memory || String((part as { type?: string }).type || "") === "runtime.memory") {
-              return <MemoryExtractionPart key={timelineKeyItem} part={part} listItem />;
-            }
-            return renderTimelineToolPart({
-              timelineKey: timelineKeyItem,
-              part,
-              listItem: true,
-              siblingParts: group.parts,
-              settled: forceInactive,
-              shellToolPartsExpanded,
-              editToolPartsExpanded,
-              onOpenTaskSession,
-              onOpenToolFile,
-              onOpenBrowserUrl
-            });
-          })}
-        </div>
-      </div>
-    </TimelineFoldGroup>
+    }
+    let best = "";
+    let bestCount = 0;
+    for (const [label, count] of counts) {
+      if (count > bestCount) {
+        best = label;
+        bestCount = count;
+      }
+    }
+    return best || "执行";
+  })();
+  const titles = SEGMENT_TITLES[segmentLabel] || SEGMENT_TITLES["执行"];
+  // 计数按合并前的原子调用数（含探索 part 数）：段头显示真实工作量，
+  // 而不是合并后的卡片数（合并后 steps.length=2 但原子调用可能是 6）。
+  const stepCount = steps.reduce((sum, step) => {
+    if (step.kind === "context" || step.kind === "tool-batch") return sum + (step.parts.length || 1);
+    return sum + 1;
+  }, 0);
+
+  // 官方 Test Results 识别：同一段里 bash 命令 + 输出可解析出套件/用例时，
+  // 用官方 test-results 卡替代该次命令的普通终端行；其余命令仍走原渲染。
+  const bashTestRows = steps.flatMap((step) => {
+    if (step.kind !== "tool-batch") return [] as {
+      key: string;
+      command: string;
+      part: AgentDetailedPart;
+      result: { suites: AgentTestSuite[]; failed: number; total: number; skipped: number };
+      failed: boolean;
+    }[];
+    const commands = step.parts.filter(
+      (part) => String((part as { toolName?: string }).toolName || "") === "bash"
+    );
+    if (commands.length !== 1) return [];
+    const part = commands[0];
+    const command = String((part as { input?: { command?: unknown } }).input?.command || "").trim();
+    const output = String((part as { output?: unknown }).output || "");
+    const result = parseAgentTestOutput(command, output);
+    return result ? [{
+      key: String((part as { id?: string }).id || `${timelineKey}:bash:${command}`),
+      command,
+      part,
+      result,
+      failed: result.failed > 0
+        || String((part as { status?: string }).status || "").toLowerCase() === "error"
+        || Boolean((part as { isError?: unknown }).isError)
+    }] : [];
+  });
+  const testRowByPartId = new Map<string, (typeof bashTestRows)[number]>();
+  for (const row of bashTestRows) {
+    for (const id of [row.key, String(row.part.id || "")]) {
+      if (id) testRowByPartId.set(id, row);
+    }
+  }
+  return (
+    <Trace>
+      <TraceCollapsible open={isOpen} onOpenChange={setOpen}>
+        <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+          <TraceLine status={setError ? "error" : anyRunning ? "running" : undefined}>
+            <TraceIcon>
+              {setError ? (
+                <CircleAlertIcon />
+              ) : anyRunning ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <CircleCheckIcon />
+              )}
+            </TraceIcon>
+            <TraceTitle className="text-sm">{anyRunning ? titles.active : titles.done}</TraceTitle>
+            <TraceDescription className="max-w-[240px] shrink truncate">
+              {`${stepCount} 个步骤`}
+            </TraceDescription>
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <div className="flex flex-col gap-0.5 pb-1.5">
+            {steps.map((step, stepIndex) => {
+              const stepKey = `${timelineKey}:step:${step.kind}:${String((step as { key?: string }).key || stepIndex)}`;
+              const testRow = step.kind === "tool-batch"
+                ? step.parts
+                    .map((part) => testRowByPartId.get(String((part as { id?: string }).id || "")))
+                    .find(Boolean)
+                : undefined;
+              if (step.kind === "tool-batch" && testRow) {
+                return (
+                  <AgentTestResultsRow
+                    key={`${stepKey}:test-results`}
+                    timelineKey={timelineKey}
+                    command={testRow.command}
+                    result={testRow.result}
+                    running={!forceInactive && !testRow.failed}
+                    failed={testRow.failed}
+                  />
+                );
+              }
+              if (step.kind === "context") {
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5">
+                    {step.parts.map((part, partIndex) =>
+                      renderTimelineToolPart({
+                        timelineKey: `${stepKey}:${String((part as { id?: string }).id || partIndex)}`,
+                        part,
+                        listItem: true,
+                        shellToolPartsExpanded,
+                        editToolPartsExpanded,
+                        onOpenTaskSession,
+                        onOpenToolFile
+                      })
+                    )}
+                  </div>
+                );
+              }
+              if (step.kind === "tool-batch") {
+                // 官方 Task 只有段头一层折叠：展开后必须是扁平缩进步骤行，
+                // 不再在段内渲染第二个可折叠层（旧 ToolBatchGroup 头）。
+                // office 操作卡与记忆卡本身不是折叠层，保留卡片形态。
+                const isOfficeBatch = step.batchKind === "office";
+                if (isOfficeBatch) {
+                  const officeRunning =
+                    !forceInactive
+                    && step.parts.some((part) => {
+                      const status = String((part as { status?: string }).status || "").toLowerCase();
+                      return status === "running" || status === "pending" || status === "deciding";
+                    });
+                  return (
+                    <OfficeOperationCard
+                      key={stepKey}
+                      parts={step.parts}
+                      running={officeRunning}
+                      onOpenFile={(path) => onOpenToolFile({ filePath: path })}
+                    />
+                  );
+                }
+                const visibleParts = step.batchKind === "task"
+                  ? dedupeVisibleSubagentTaskParts(step.parts)
+                  : step.parts;
+                if (visibleParts.length === 0) return null;
+                const isMemoryBatch = step.batchKind === "memory";
+                if (isMemoryBatch) {
+                  const memoryHasRunning = visibleParts.some(
+                    (part) => String((part as { phase?: string }).phase || "").trim() === "started"
+                  );
+                  const memoryHasFailed = visibleParts.some(
+                    (part) => String((part as { phase?: string }).phase || "").trim() === "failed"
+                  );
+                  const memoryWrote = visibleParts.some(
+                    (part) =>
+                      (Number((part as { entityCount?: number }).entityCount) || 0) > 0
+                      || (Number((part as { relationCount?: number }).relationCount) || 0) > 0
+                      || Boolean(String((part as { intent?: string }).intent || "").trim())
+                  );
+                  if (!memoryHasRunning && !memoryWrote && !memoryHasFailed) return null;
+                }
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5 overflow-visible">
+                    {visibleParts.map((part, partIndex) => {
+                      const partType = String((part as { type?: string }).type || "");
+                      const itemKey = `${stepKey}:${String((part as { id?: string }).id || partIndex)}`;
+                      if (isMemoryBatch || partType === "runtime.memory") {
+                        return <MemoryExtractionPart key={itemKey} part={part} listItem />;
+                      }
+                      return renderTimelineToolPart({
+                        timelineKey: itemKey,
+                        part,
+                        listItem: true,
+                        siblingParts: step.parts,
+                        settled: forceInactive,
+                        shellToolPartsExpanded,
+                        editToolPartsExpanded,
+                        onOpenTaskSession,
+                        onOpenToolFile,
+                        onOpenBrowserUrl
+                      });
+                    })}
+                  </div>
+                );
+              }
+              if (step.kind === "reasoning") {
+                // 思考在官方 Task 里是普通步骤行（不可再点开二级折叠），
+                // 展开段头后与命令/探索行平级，最多保留一句截断摘要。
+                const preview = step.parts
+                  .map((part) => String((part as { text?: string }).text || "").trim())
+                  .filter(Boolean)
+                  .slice(-1)[0]
+                  ?.split(/\r?\n+/)
+                  .map((line) => line.replace(/^[-*•\d.\s]+/, "").trim())
+                  .filter(Boolean)
+                  .slice(-1)[0] || "整理推理摘要";
+                return (
+                  <div key={stepKey} className="flex flex-col gap-0.5">
+                    <TraceLine>
+                      <TraceIcon>
+                        <CircleCheckIcon />
+                      </TraceIcon>
+                      <TraceTitle className="text-sm">已思考</TraceTitle>
+                      <TraceDescription className="max-w-[240px] shrink truncate">
+                        {preview}
+                      </TraceDescription>
+                    </TraceLine>
+                  </div>
+                );
+              }
+              if (step.kind === "part") {
+                const partType = String((step.part as { type?: string }).type || "");
+                // 工作类 part 已在 mergeAdjacentWorkSteps 并入同一个批组，这里只剩
+                // runtime 提示行与失败行这类真正需要独立展示的事件。
+                if (partType === "runtime.retry") {
+                  return <RuntimeRetryPart key={stepKey} part={step.part} />;
+                }
+                if (partType === "runtime.failure") {
+                  const message = String((step.part as { error?: string; text?: string }).error
+                    || (step.part as { error?: string; text?: string }).text
+                    || "任务未能完成。").trim();
+                  return <AgentErrorMessage key={stepKey} message={message} />;
+                }
+                return renderTimelineToolPart({
+                  timelineKey: stepKey,
+                  part: step.part,
+                  listItem: true,
+                  settled: forceInactive,
+                  shellToolPartsExpanded,
+                  editToolPartsExpanded,
+                  onOpenTaskSession,
+                  onOpenToolFile,
+                  onOpenBrowserUrl
+                });
+              }
+              return null;
+            })}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
 }
 
 function ContextGroup({
   timelineKey,
   group,
-  open,
-  onOpenChange,
   forceInactive = false,
   shellToolPartsExpanded,
   editToolPartsExpanded,
@@ -850,37 +1297,78 @@ function ContextGroup({
   if (progress.detail) lastDetailRef.current = progress.detail;
   const detail = active ? progress.detail || lastDetailRef.current : "";
 
+  // Chain of Thought 形状(同 ToolBatchGroup):探索中 spinner+shimmer,
+  // 已探索绿勾;detail 经 lastDetailRef 在工具切换空窗间保持连续。
+  // 官方 Task 语义(同 ToolBatchGroup):探索中自动展开,完成后收起。
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const resolvedOpen = userOpen ?? active;
   return (
-    <TimelineFoldGroup
-      open={open}
-      onOpenChange={onOpenChange}
-      label={
-        <span className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
-          <ActivityStatus active={active} activeLabel="探索中" doneLabel="已探索" className="text-sm" />
-          <span className="min-w-0 truncate text-xs text-muted-foreground tabular-nums">
-            {summary || "已收集上下文"}
-          </span>
-          {detail ? (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {detail}</span>
-          ) : null}
-        </span>
-      }
-    >
-      <div className="flex flex-col gap-0.5 pb-1.5 pl-3">
-        {group.parts.map((part, partIndex) => (
-          renderTimelineToolPart({
-            timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
-            part,
-            listItem: true,
-            shellToolPartsExpanded,
-            editToolPartsExpanded,
-            onOpenTaskSession,
-            onOpenToolFile
-          })
-        ))}
-      </div>
-    </TimelineFoldGroup>
+    <Trace>
+      <TraceCollapsible open={resolvedOpen} onOpenChange={setUserOpen}>
+        <TraceCollapsibleTrigger className="min-w-0 max-w-full">
+          <TraceLine status={active ? "running" : undefined}>
+            <TraceIcon>
+              {active ? (
+                <LoaderCircleIcon className="animate-spin" />
+              ) : (
+                <CircleCheckIcon />
+              )}
+            </TraceIcon>
+            <TraceTitle className="text-sm">
+              {active ? "探索中" : "已探索"} {summary || "已收集上下文"}
+            </TraceTitle>
+            {detail ? (
+              <TraceDescription className="max-w-[240px] shrink truncate">
+                {detail}
+              </TraceDescription>
+            ) : null}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <TraceCollapsibleContent>
+          <div className="flex flex-col gap-0.5 pb-1.5">
+            {group.parts.map((part, partIndex) => (
+              renderTimelineToolPart({
+                timelineKey: `${timelineKey}:${String((part as { id?: string }).id || partIndex)}`,
+                part,
+                listItem: true,
+                shellToolPartsExpanded,
+                editToolPartsExpanded,
+                onOpenTaskSession,
+                onOpenToolFile
+              })
+            ))}
+          </div>
+        </TraceCollapsibleContent>
+      </TraceCollapsible>
+    </Trace>
   );
+}
+
+/** 复制整条助手回复(MessageAction 封装:1.5s 勾选反馈)。 */
+function CopyReplyAction({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <MessageAction
+      aria-label="复制回复"
+      label="复制回复"
+      tooltip="复制回复"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? <CheckIconLucide className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+    </MessageAction>
+  );
+}
+
+/** 思考耗时（vendored Reasoning 根组件在流式结束后计算秒数）。 */
+function ReasoningDuration() {
+  const { isStreaming, duration } = useReasoning();
+  if (isStreaming || !duration) return null;
+  return <span className="shrink-0 text-xs tabular-nums text-muted-foreground/70">· {duration}s</span>;
 }
 
 function ReasoningGroup({
@@ -908,43 +1396,43 @@ function ReasoningGroup({
     .filter(Boolean)
     .slice(-1)[0] || "整理推理摘要";
 
-  // 默认始终收起：过程中与结束后都不自动展开，避免高度变化抖动；仅手动点击展开
+  // 默认始终收起：过程中与结束后都不自动展开，避免高度变化抖动；仅手动点击展开。
+  // defaultOpen={false} 同时关掉 vendored Reasoning 的流式自动展开/自动收起
+  // (见 ai-elements/reasoning.tsx 的 giteam patch)。
   return (
-    <TimelineFoldGroup
+    <Reasoning
+      isStreaming={active}
       open={open}
       onOpenChange={onOpenChange}
-      label={
-        <>
-          <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="mr-2 text-sm" />
-          {open ? null : (
-            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
-          )}
-        </>
-      }
+      defaultOpen={false}
+      className="mb-0"
     >
-      <div className="min-w-0 max-w-full overflow-hidden pb-2 pl-3 text-sm text-muted-foreground">
+      <ReasoningTrigger className="h-6 appearance-none justify-start gap-2 border-0 bg-transparent px-0 text-left hover:bg-transparent">
+        <BrainIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ActivityStatus active={active} activeLabel="思考中" doneLabel="已思考" className="text-sm" />
+        <ReasoningDuration />
+        {open ? null : (
+          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{preview}</span>
+        )}
+      </ReasoningTrigger>
+      <CollapsibleContent className="min-w-0 max-w-full pb-2 pl-3 text-sm text-muted-foreground">
         <StreamingMarkdownBlock
           text={text}
           streaming={active}
           renderMarkdown={renderMarkdown}
           className="min-w-0 max-w-full select-text break-words [overflow-wrap:anywhere]"
         />
-      </div>
-    </TimelineFoldGroup>
+      </CollapsibleContent>
+    </Reasoning>
   );
 }
 
 /**
- * 流式 markdown 块 + 自绘光标。
+ * 流式 markdown 块。
  *
- * 为什么不用 Streamdown 自带 caret：它把光标渲染成最后一个 markdown 块之后的
- * 独立块级元素——光标永远落在「文本末尾的下一行」，独占一行；工具卡到达使
- * streaming 翻 false 时光标消失、那一行塌掉，下方内容整体上移（用户看到的
- * 「光标消失→列表变短→上下反复」抖动即来源于此）。
- *
- * 本组件的光标是 absolute 定位的叠层：测量最后一个文本节点**最后一个字符**
- * 的渲染矩形，把光标叠在它的右侧。它不参与文档流，出现/消失对布局的影响
- * 恒为零——无论后面来的是工具卡还是新文本，列表高度都不会动。
+ * 对齐官方 Chat demo：助手回复就是 <Markdown>{text}</Markdown>，不加任何
+ * 自定义尾部光标。Streamdown 的词级淡入动画（animated prop）已提供流式
+ * 视觉反馈，无需额外符号。
  */
 function StreamingMarkdownBlock({
   text,
@@ -957,74 +1445,9 @@ function StreamingMarkdownBlock({
   renderMarkdown: RenderMarkdown;
   className?: string;
 }) {
-  // 流式期间裁掉尾部空白：空尾段落会让"最后一个文本节点"落在空行上。
-  const trimmed = streaming ? text.replace(/\s+$/, "") : text;
-  // 刚创建的空 part 裁剪后为空：补一个空格保住首个文本节点（首帧上方无内容，无跳动）。
-  const displayText = streaming && !trimmed ? " " : trimmed;
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [caretRect, setCaretRect] = useState<{ left: number; top: number; height: number } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!streaming) {
-      setCaretRect(null);
-      return;
-    }
-    const container = containerRef.current;
-    if (!container) return;
-
-    const measure = () => {
-      // 最后一个非空白文本节点。
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      let last: Text | null = null;
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if ((node as Text).data.replace(/\s+/g, "").length > 0) last = node as Text;
-      }
-      if (!last || last.data.length === 0) {
-        setCaretRect({ left: 0, top: 0, height: 20 });
-        return;
-      }
-      // 测最后一个字符的矩形：右缘即光标落点，高度随行框。
-      const range = document.createRange();
-      range.setStart(last, Math.max(0, last.data.length - 1));
-      range.setEnd(last, last.data.length);
-      const rect = range.getBoundingClientRect();
-      const host = container.getBoundingClientRect();
-      if (rect.height > 0) {
-        setCaretRect({ left: rect.right - host.left, top: rect.top - host.top, height: rect.height });
-      } else {
-        setCaretRect({ left: 0, top: 0, height: 20 });
-      }
-    };
-
-    // Streamdown 用 startTransition 延迟提交块：effect 时点的 DOM 还是上一帧，
-    // 只测一次会让光标滞留在旧文本中间（表现为"文字里莫名多个符号"）。
-    // 改为观察 DOM 实际变化后重测——光标永远贴住真实文本尾。
-    measure();
-    let raf = 0;
-    const rafMeasure = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(measure);
-    };
-    const observer = new MutationObserver(rafMeasure);
-    observer.observe(container, { childList: true, characterData: true, subtree: true });
-    window.addEventListener("resize", rafMeasure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", rafMeasure);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [displayText, streaming]);
-
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
-      {renderMarkdown(displayText, streaming)}
-      {streaming && caretRect ? (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inline-block w-[3px] animate-pulse rounded-[1px] bg-foreground/75"
-          style={{ left: caretRect.left, top: caretRect.top, height: caretRect.height }}
-        />
-      ) : null}
+    <div className={className}>
+      {renderMarkdown(text, streaming)}
     </div>
   );
 }
@@ -1032,10 +1455,13 @@ function StreamingMarkdownBlock({
 function AssistantTextBlock({
   text,
   streaming,
+  trailing,
   renderMarkdown
 }: {
   text: string;
   streaming: boolean;
+  /** 回复的最后一个可见块：下方紧贴操作行（复制按钮），需剥掉 markdown 尾部空段 margin。 */
+  trailing?: boolean;
   renderMarkdown: RenderMarkdown;
 }) {
   return (
@@ -1044,11 +1470,14 @@ function AssistantTextBlock({
       streaming={streaming}
       renderMarkdown={renderMarkdown}
       className={cn(
-        "min-w-0 max-w-full select-text overflow-hidden break-words text-[15px] leading-7 text-foreground [overflow-wrap:anywhere]",
-        // 流式期间预留 h-10：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
-        // 不会出现「标签消失 → 列表上移 8px」。结束后释放（仅单行回复收 12px，一次性）。
-        streaming && "min-h-10",
-        streaming && "agent-stream-fade"
+        "min-w-0 max-w-full select-text overflow-hidden break-words text-sm leading-7 text-foreground [overflow-wrap:anywhere]",
+        // Streamdown 根节点自带 space-y-4；正文上方是活动段卡（Trace 行高 ≈24px），
+        // 若不剥掉首段 mt-4，第一段正文会比 Trace 间多出 16px 空隙。
+        !streaming && "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        trailing && !streaming && "pb-1",
+        // 流式期间预留 h-6：与「思考中」占位行同高——首帧正文从占位接手时行高不变，
+        // 不会出现「标签消失 → 列表上移」。结束后释放（仅单行回复收一次）。
+        streaming && "min-h-6"
       )}
     />
   );
@@ -1081,174 +1510,89 @@ function AssistantTimeline({
   onOpenBrowserUrl?: (url: string) => void;
   renderMarkdown: RenderMarkdown;
 }) {
-  const displayTimelineGroups = buildBatchedTimelineGroups(timelineGroups);
-  const lastGroupIndex = displayTimelineGroups.length - 1;
-  // 稳定组 key：把每个组的 React key 与「会漂移的 batch[0]」彻底解耦，让标签绝对稳定。
-  // 流式中工具的 toolName 延迟填充（toolCall.started 常先于 tool.started、初始为空）：一组
-  // context 工具里最早到达的那条其 toolName 补齐时，会从不渲染（被 isAgentRenderablePart 过滤）
-  // 变成渲染、且成为 batch[0]，于是 context:firstId / part:pid 这类基于 batch[0] 的 key 逐帧
-  // 漂移 → React 卸载旧组挂载新组 → 标签显隐（多次工具调用反复触发，用户原话「会突然隐藏再显示
-  // 再隐藏」「分组标签显隐」）。用 ref 锁定每个组「首次出现时的锚点 part」：组内任一 part 已带
-  // 锚点则沿用、否则以当前首个 part 为锚点，并把锚点回写到组内所有 part。这样无论 batch[0] 怎么
-  // 补齐/合并/重排，组 key 永不变化，React 始终复用同一实例——标签从挂载起就不再卸载。
-  // Map 只增不减、幂等（strict mode 双渲染无害），组件重挂载时随 ref 重置、按当前结构重判。
-  const partAnchorRef = useRef(new Map<string, string>()).current;
-  const getGroupParts = (group: AgentDisplayTimelineGroup): AgentDetailedPart[] => {
-    switch (group.kind) {
-      case "part":
-        return [group.part];
-      case "tool-batch":
-      case "context":
-      case "reasoning":
-        return group.parts;
-      case "boundary":
-        return [];
+  const displayTimelineGroups = buildBatchedTimelineGroups(
+    // 隐藏思考生成的 boundary 只用于语义占位；段合并统一在批组后处理，这里先剥掉，
+    // 否则 buildBatchedTimelineGroups 会按 boundary flush，把同一工作流的多次 shell 拆成多张卡
+    // （截图里「已运行 2个步骤 → 已运行 1个步骤 ×3」连环卡片的直接来源）。
+    timelineGroups.filter((group) => group.kind !== "boundary")
+  );
+  const activityRows = buildAgentActivityRows(displayTimelineGroups, {
+    // 流式与完成态同一套划分：正文即段落锚，过程中段卡就在真实时序位置，结束不重排。
+    keyOf: (group) => `${stableKey}:${group.key}`,
+    textOf: (group) => {
+      // 正文 = text 类型的 part 组：两次正文之间的连续工作切为一个段；
+      // 其余组（context/reasoning/tool-batch/part）都归入当前段。
+      if (group.kind !== "part") return "";
+      const type = String((group.part as { type?: string }).type || "");
+      if (type !== "text") return "";
+      const raw = collapseDuplicatedAgentContent(
+        String((group.part as { text?: string }).text || "")
+      );
+      // 模型在工具间隙常输出「…/...」占位叙述：无信息量，不当正文、不切段。
+      if (!raw || /^[.…·\s]+$/.test(raw)) return "";
+      return raw;
     }
-  };
-  const stableGroupKeys = displayTimelineGroups.map((group) => {
-    const parts = getGroupParts(group);
-    let anchor = "";
-    for (const part of parts) {
-      const pid = String((part as { id?: string })?.id || "");
-      if (!pid) continue;
-      const existing = partAnchorRef.get(pid);
-      if (existing) { anchor = existing; break; }
-    }
-    if (!anchor) anchor = String((parts[0] as { id?: string })?.id || group.key);
-    for (const part of parts) {
-      const pid = String((part as { id?: string })?.id || "");
-      if (pid && !partAnchorRef.has(pid)) partAnchorRef.set(pid, anchor);
-    }
-    return `${stableKey}:anchor:${anchor}`;
   });
-  // 防回退：任一时间线组（reasoning/context/tool-batch/part）一旦后方出现过更新的组
-  // （index < lastGroupIndex）就永久「已完成态」。流式中末尾组可能因帧抖动/重挂载而瞬时消失，
-  // 令 index===lastGroupIndex 临时成立、forceInactive 回退、已完成的标签瞬时闪回「进行中」，
-  // 组恢复后又变回「已X」——即「已X→进行中→已X」的闪动（已思考/已探索/已运行均会触发）。用
-  // ref 记录所有已下台的组 key（只增不减、幂等，strict mode 双渲染无害；组件重挂载时随 ref
-  // 重置、按当前结构重新判定），forceInactive 与 reasoning active 都读它，从根上消除回退闪动。
-  const demotedGroupKeys = useRef(new Set<string>()).current;
-  for (let i = 0; i < lastGroupIndex; i += 1) {
-    demotedGroupKeys.add(stableGroupKeys[i]);
-  }
-  // 末尾组 active 直接派生自 isStreaming（末尾组恒满足 index===lastGroupIndex，故 lastGroupIndex
-  // 抖动不影响它）。注意：此处不对 isStreaming 做 UI 防抖（曾加的 streamingActive 已移除）——标签
-  // 闪动的真正根因在数据层：upsertAgentLivePart 合并时空 toolName 会覆盖已补全的工具名（"ls"/"read"
-  // →""），致 context 组工具数 3→2→3、整组短暂消失。已在 App.tsx 该函数内根治（空 toolName 不覆盖
-  // 已有非空值）。active 直接用 isStreaming 即稳，无需再叠防抖层。
-  // 「思考中」按「最后一个时间线组」判定：流式中且该推理组正是最后一个组时为思考态，
-  // 其后一旦追加任何工具/正文/新推理组，立即且永久固定为「已思考」。
-  // 不再用 reasoningActive（!renderParts.some(text|toolCall)）：多轮「思考↔探索」交替时，
-  // 工具 part 在 liveParts/renderParts 里的可见性会随帧变化（isAgentRenderablePart 对空
-  // reasoning 过滤、工具逐个下发），some() 随之抖动，导致末尾推理组在「思考中↔已思考」间
-  // 反复频闪；且首个工具出现后它永久 false，会让「探索后再思考」误显「已思考」。改看
-  // 「谁是最后一个组」（coalesce 后组结构 append-only、index 稳定），每个推理组的 active
-  // 都单调 true→false，从根上消除频闪。
-
+  // 段 key 首锚：段随流式逐帧追加步骤，key 取首步骤 id 保证段实例稳定复用
+  // （末尾段 active 随 isStreaming 推导，追加步骤不重挂载、不闪烁）。
+  // 运行态只属于「流式中最后一个 row」：历史段在流式中也保持完成态，不整体闪「运行中」。
+  // 段内所有穿插操作（探索/命令/编辑/思考…）在此合成一个 tool-batch step，
+  // 段内列表保持一个「已运行 N 个步骤」层级；最后一个可见 row 才是「运行中」。
+  const timelineRows = activityRows.map((row) =>
+    row.kind === "segment"
+      ? { ...row, steps: mergeAdjacentWorkSteps(row.steps) }
+      : row
+  );
+  const lastRowIndex = timelineRows.length - 1;
+  // 官方 Chain of Thought：回合里穿插了活动段时，整回合收进一条摘要行（默认展开），
+  // 展开区内按正文时序铺开各段卡；流式中的段卡仍在真实时序位置，结束后不重排。
+  // 与 ToolBatchGroup 的空抽取判定一致：只有空记忆批组的段整段不可见（寒暄轮不出卡）。
+  const isSegmentRenderable = (steps: AgentDisplayTimelineGroup[]) =>
+    steps.some((step) => {
+      if (step.kind !== "tool-batch" || step.batchKind !== "memory") return true;
+      const phaseOf = (part: AgentDetailedPart) => String((part as { phase?: string }).phase || "").trim();
+      return step.parts.some((part) =>
+        phaseOf(part) === "started"
+        || phaseOf(part) === "failed"
+        || (Number((part as { entityCount?: number }).entityCount) || 0) > 0
+        || (Number((part as { relationCount?: number }).relationCount) || 0) > 0
+        || Boolean(String((part as { intent?: string }).intent || "").trim())
+      );
+    });
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1.5 overflow-hidden">
-      {displayTimelineGroups.map((group, index) => {
-        const timelineKey = stableGroupKeys[index];
-        // 非流式、或后方已有更新组（含「曾出现过」的防回退判定）→ 强制已完成态
-        const forceInactive = !isStreaming || index !== lastGroupIndex || demotedGroupKeys.has(timelineKey);
-        // 子任务批组运行中默认展开（对齐 Explored 下列表可见）；结束后仍可折叠
-        const isOpen = timelineOpenState[timelineKey]
-          ?? (group.kind === "tool-batch" && group.batchKind === "task" && !forceInactive);
-        const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [timelineKey]: open }));
-
-        if (group.kind === "tool-batch") {
+    <div className="flex min-w-0 max-w-full flex-col gap-2 overflow-hidden">
+      {timelineRows.map((row, rowIndex) => {
+        if (row.kind === "segment") {
+          if (!isSegmentRenderable(row.steps)) return null;
+          const segmentKey = `${stableKey}:segment:${row.key}`;
           return (
-            <ToolBatchGroup
-              key={timelineKey}
-              timelineKey={timelineKey}
-              group={group}
-              open={isOpen}
-              onOpenChange={setOpen}
-              forceInactive={forceInactive}
+            <ActivitySegment
+              key={segmentKey}
+              timelineKey={segmentKey}
+              steps={row.steps}
+              forceInactive={!isStreaming || rowIndex !== lastRowIndex}
+              timelineOpenState={timelineOpenState}
+              setTimelineOpenState={setTimelineOpenState}
               shellToolPartsExpanded={shellToolPartsExpanded}
               editToolPartsExpanded={editToolPartsExpanded}
               onOpenTaskSession={onOpenTaskSession}
               onOpenToolFile={onOpenToolFile}
               onOpenBrowserUrl={onOpenBrowserUrl}
-            />
-          );
-        }
-
-        if (group.kind === "context") {
-          return (
-            <ContextGroup
-              key={timelineKey}
-              timelineKey={timelineKey}
-              group={group}
-              open={isOpen}
-              onOpenChange={setOpen}
-              forceInactive={forceInactive}
-              shellToolPartsExpanded={shellToolPartsExpanded}
-              editToolPartsExpanded={editToolPartsExpanded}
-              onOpenTaskSession={onOpenTaskSession}
-              onOpenToolFile={onOpenToolFile}
-            />
-          );
-        }
-
-        if (group.kind === "reasoning") {
-          if (!showReasoningSummaries) return null;
-          const active =
-            isStreaming && index === lastGroupIndex && !demotedGroupKeys.has(timelineKey);
-          return (
-            <ReasoningGroup
-              key={timelineKey}
-              group={group}
-              active={active}
-              open={isOpen}
-              onOpenChange={setOpen}
               renderMarkdown={renderMarkdown}
             />
           );
         }
-
-        if (group.kind === "boundary") return null;
-
-        if (group.kind !== "part") return null;
-        const type = String((group.part as { type?: string }).type || "");
-        if (type === "runtime.retry") {
-          return <RuntimeRetryPart key={timelineKey} part={group.part} />;
-        }
-        if (type === "runtime.memory") {
-          return <MemoryExtractionPart key={timelineKey} part={group.part} />;
-        }
-        if (type === "runtime.failure") {
-          const message = String((group.part as { error?: string; text?: string }).error
-            || (group.part as { error?: string; text?: string }).text
-            || "任务未能完成。").trim();
-          return <AgentErrorMessage key={timelineKey} message={message} />;
-        }
-        if (type === "text") {
-          const text = collapseDuplicatedAgentContent(
-            String((group.part as { text?: string }).text || "")
-          );
-          if (!text) return null;
-          // 模型在工具间隙常输出「…/...」占位叙述：无信息量，不渲染成整行。
-          if (/^[.…·\s]+$/.test(text)) return null;
-          const last = index === displayTimelineGroups.length - 1;
-          return (
-            <AssistantTextBlock
-              key={timelineKey}
-              text={text}
-              streaming={isStreaming && last}
-              renderMarkdown={renderMarkdown}
-            />
-          );
-        }
-
-        return renderTimelineToolPart({
-          timelineKey,
-          part: group.part,
-          shellToolPartsExpanded,
-          editToolPartsExpanded,
-          onOpenTaskSession,
-          onOpenToolFile
-        });
+        const text = row.text;
+        const last = rowIndex === lastRowIndex;
+        return (
+          <AssistantTextBlock
+            key={`${stableKey}:text:${row.key}`}
+            text={text}
+            streaming={isStreaming && last}
+            trailing={last}
+            renderMarkdown={renderMarkdown}
+          />
+        );
       })}
     </div>
   );
@@ -1456,6 +1800,21 @@ function TurnModifiedFilesRow({
         ) : null}
       </button>
       <Separator />
+      {/* 官方 File Tree 形态:文件多时按文件夹折叠导航(语义"files the agent
+          changed, as a folder tree");少量文件保留悬停预览的平铺行。 */}
+      {files.length > 4 ? (
+        <FileTree
+          className="p-1.5"
+          onSelect={(path) => {
+            const file = files.find((item) => item.path === path);
+            if (!file) return;
+            if (file.edits?.length) onOpenTurnDiff?.(files, turnIndex, file.path);
+            else onOpenToolFile({ filePath: file.path });
+          }}
+        >
+          {renderFileTreeNodes(buildFileTree(files.map((file) => file.path)), files)}
+        </FileTree>
+      ) : (
       <div>
         {files.map((file) => (
           <HoverCard key={file.path} openDelay={250} closeDelay={180}>
@@ -1484,12 +1843,44 @@ function TurnModifiedFilesRow({
           </HoverCard>
         ))}
       </div>
+      )}
     </div>
   );
 }
 
+/** 递归渲染官方 File Tree 节点;文件行带 +/- 统计(FileTreeActions 在按钮外侧)。 */
+function renderFileTreeNodes(
+  nodes: ReturnType<typeof buildFileTree>,
+  files: TurnModifiedFile[]
+): ReactNode {
+  return nodes.map((node) => {
+    if (node.type === "folder") {
+      return (
+        <FileTreeFolder key={node.path} path={node.path} name={node.name}>
+          {renderFileTreeNodes(node.children, files)}
+        </FileTreeFolder>
+      );
+    }
+    const file = files.find((item) => item.path === node.path);
+    return (
+      <FileTreeFile
+        key={node.path}
+        path={node.path}
+        actions={
+          file?.added != null ? (
+            <span className="font-mono text-[11px] tabular-nums">
+              <StatsBadgeText added={file.added} removed={file.removed} />
+            </span>
+          ) : null
+        }
+      />
+    );
+  });
+}
+
 function AssistantMessage({
   row,
+  isTurnLastRow,
   timelineOpenState,
   setTimelineOpenState,
   showReasoningSummaries,
@@ -1502,6 +1893,8 @@ function AssistantMessage({
   onOpenTurnDiff
 }: {
   row: AgentMessageRenderRow;
+  /** 本回合最后一个 assistant 行才显示回复级操作行（复制按钮），中间过程行不出现。 */
+  isTurnLastRow: boolean;
   onOpenTurnDiff?: (files: TurnModifiedFile[], turnIndex?: number, initialPath?: string) => void;
   timelineOpenState: Record<string, boolean>;
   setTimelineOpenState: (value: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
@@ -1538,7 +1931,7 @@ function AssistantMessage({
   const turnSummary = row.turnSummary;
 
   return (
-    <div className="grid min-w-0 gap-2">
+    <div className="group/row grid min-w-0 gap-2">
       {hasTimeline ? (
         <AssistantTimeline
           stableKey={stableKey}
@@ -1571,6 +1964,7 @@ function AssistantMessage({
         <AssistantTextBlock
           text={fallbackReply}
           streaming={Boolean(isStreaming && !timelineHasTextPart)}
+          trailing={isTurnLastRow}
           renderMarkdown={renderMarkdown}
         />
       ) : !hasTimeline && isStreaming && !errorMessage ? (
@@ -1591,6 +1985,20 @@ function AssistantMessage({
       ) : null}
       {/* 时间线内已有 runtime.failure 时不再重复底部横幅 */}
       {errorMessage && !renderPartsHasFailure(row.renderParts) ? <AgentErrorMessage message={errorMessage} /> : null}
+      {/* 回复结束后的操作行(ai-elements MessageActions,官方 chat 交互:
+          hover 该条消息才浮现,左对齐跟随内容;仅当确有正文可复制时渲染;
+          仅挂在回合最后一个 assistant 行——中间过程行(纯工具轮)不出复制按钮)。 */}
+      {!isStreaming && isTurnLastRow && !errorMessage && (timelineHasTextPart || Boolean(fallbackReply?.trim())) ? (
+        <MessageActions className="justify-start opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 focus-within:opacity-100">
+          <CopyReplyAction
+            text={
+              timelineHasTextPart
+                ? buildAgentReplyMarkdownFromParts(renderParts)
+                : (fallbackReply || "").trim() || buildAgentReplyMarkdownFromParts(renderParts)
+            }
+          />
+        </MessageActions>
+      ) : null}
     </div>
   );
 }
@@ -1628,7 +2036,9 @@ function collapseDuplicateFailureRows(
 
     const rebuild = (target: AgentMessageRenderRow) => {
       target.timelineGroups = buildDisplayTimelineGroups(
-        buildAgentAssistantRenderGroups(target.renderParts),
+        buildAgentAssistantRenderGroups(dedupeAgentChunkedTextParts(target.renderParts), {
+          liftProcessParts: target.isStreaming
+        }),
         showReasoningSummaries
       );
       target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
@@ -2133,8 +2543,19 @@ export function AgentMessageStream({
   /** 用户正在拖原生滚动条（pointer 落在 gutter/轨道上）；仅此时才允许因 scrollTop 下降取消 stick。 */
   const scrollbarDraggingRef = useRef(false);
   const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
+  /** Virtuoso 官方 prepend 协议状态：基准索引 + 上一帧头部 keys。 */
+  const firstItemIndexSessionRef = useRef("");
+  const firstItemIndexRef = useRef(1_000_000);
+  const firstItemIndexRowsRef = useRef<{ prefixLength: number; keys: string[] }>({ prefixLength: 0, keys: [] });
+  /**
+   * 成熟平滑方案 Lenis：库内 wheel 劫持 + 帧率无关 damp 动画 + 滚动条同步回写。
+   * 只负责滚轮平滑与官方 scrollTo；touch/滚动条/键盘保持原生节奏。
+   */
+  const smoothWheelLenisRef = useRef<Lenis | null>(null);
   // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
   const pendingLocateIdRef = useRef("");
+  /** Lenis 正在接管 wheel 动画：官方动画期间不得用其他滚动源争写 scrollTop。 */
+  const isSmoothWheelAnimating = () => smoothWheelLenisRef.current?.isScrolling === "smooth";
   /** 是否允许钉底（与 rAF / followOutput / totalListHeightChanged 共用）。 */
   const canStickPin = () =>
     stickToBottomRef.current
@@ -2148,6 +2569,7 @@ export function AgentMessageStream({
    *   - center：消息中线对齐视口中线（真居中，标尺跳转用）
    *   - end：消息底部对齐视口底部（真贴底，切会话唤醒 / 流式钉底用）
    * 返回校正函数；调用方在多个 setTimeout/raf 上重试，覆盖 Virtuoso 异步渲染与测量收敛。
+   * 所有写入都经由 Lenis 官方 scrollTo(immediate)，保证 wheel 坐标系不被绕过。
    */
   const adjustToMessage = useCallback((stableKey: string, align: "start" | "center" | "end") => {
     const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
@@ -2163,8 +2585,22 @@ export function AgentMessageStream({
           : align === "end"
             ? e.bottom - s.bottom
             : e.top + e.height / 2 - (s.top + s.height / 2);
-      if (Math.abs(delta) >= 8) sc.scrollBy({ top: delta, behavior: "auto" });
+      if (Math.abs(delta) >= 8) {
+        // 官方 Lenis 提供的 API：程序化滚动绕过实例后，必须经由 scrollTo 重新进入它的坐标系；
+        // 这也天然处理了 Virtuoso 异步测量后的后续校正，不会把实例留在旧坐标系里。
+        smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, { immediate: true });
+      }
     };
+  }, []);
+  /**
+   * Lenis 坐标系重置：stop() 内部 reset() 会终止在途动画并把 animatedScroll/targetScroll
+   * 对齐实际 scrollTop，随后 start() 恢复官方 wheel 响应。这是 Lenis 对「程序化滚动绕过
+   * 实例」的规范处理：标尺跳转/搜索定位走 Virtuoso scrollToIndex，收尾必须同步一次，
+   * 否则滚轮目标滞留旧坐标系会被旧 limit 钳住。
+   */
+  const syncSmoothWheelToNative = useCallback(() => {
+    smoothWheelLenisRef.current?.stop();
+    smoothWheelLenisRef.current?.start();
   }, []);
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
   const openLocalFile = (absolutePath: string) => {
@@ -2221,7 +2657,7 @@ export function AgentMessageStream({
     const errorMessage = isAssistant ? runFailureText(msg) : "";
     const todoItems = [...detailParts].reverse().map(readAgentTodosFromPart).find((todos) => todos.length > 0) || [];
     const timelineGroups = buildDisplayTimelineGroups(
-      buildAgentAssistantRenderGroups(renderParts),
+      buildAgentAssistantRenderGroups(renderParts, { liftProcessParts: isStreaming }),
       showReasoningSummaries
     );
     // 时间线已有 text part 时 fallbackReply 直接为空：msg.content 与 text part 是同一内容的
@@ -2266,10 +2702,14 @@ export function AgentMessageStream({
     if (row.isAssistant && last?.isAssistant && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
       const rebuildTimeline = (target: AgentMessageRenderRow) => {
         target.renderParts = dedupeAgentDuplicateTextParts(
-          coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts))
+          dedupeAgentChunkedTextParts(
+            coalesceRuntimeParts(dedupeAgentToolParts(target.renderParts))
+          )
         );
         target.timelineGroups = buildDisplayTimelineGroups(
-          buildAgentAssistantRenderGroups(target.renderParts),
+          buildAgentAssistantRenderGroups(target.renderParts, {
+            liftProcessParts: target.isStreaming
+          }),
           showReasoningSummaries
         );
         target.hasTimeline = hasVisibleTimelineGroups(target.timelineGroups);
@@ -2322,63 +2762,57 @@ export function AgentMessageStream({
         rebuildTimeline(last);
         return out;
       }
-      // 相邻「仅工具时间线」assistant 合并成同一单元格，避免已探索/已回忆被消息 pb-4 拆开行距。
-      // 「工具轮 ↔ 正文轮」仍保持独立（任一侧含 text/fallback 则不合并）。
-      const lastTimelineOnly =
-        last.hasTimeline
-        && !last.fallbackReply.trim()
+      // 同一回合内（相邻 assistant 块）全部并入同一单元格：pi 把每轮工作/正文拆成
+      // 多条 assistant，若「工具轮 ↔ 正文轮」不合并，段卡会被中间 assistant 拆成
+      // 「已运行 → 正文 → 已运行 → 正文 → 已运行」的多组并列卡；活动段划分本身
+      // 已能按正文切段，这里只需保证这些段挂在同一个渲染单元里。
+      // 跨回合由 user 行天然隔开，不会误并入下一轮。
+      const lastText = (last.fallbackReply || last.msg.content || "").trim();
+      const rowText = (row.fallbackReply || row.msg.content || "").trim();
+      // 占位叙述（…/.../·）不是真实正文：不同消息恰好都只输出了同一个占位符时，
+      // 不能按「同一段正文重复」走替换式去重，否则替换行会丢掉此前累计的工具事件
+      // （表现为某次回复只剩后几轮工具）。只允许真实正文相同才进入该分支，
+      // 且替换行必须并集继承已有事件，保证去重只增不减。
+      if (
+        lastText
+        && rowText
+        && lastText === rowText
+        && !isBareEllipsisText(lastText)
+        && !last.isStreaming
+        && !row.isStreaming
         && !last.errorMessage
-        && !last.renderParts.some((part) => {
-          const type = String((part as { type?: string }).type || "");
-          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-        });
-      const rowTimelineOnly =
-        row.hasTimeline
-        && !row.fallbackReply.trim()
         && !row.errorMessage
-        && !row.renderParts.some((part) => {
-          const type = String((part as { type?: string }).type || "");
-          return type === "text" && Boolean(String((part as { text?: string }).text || "").trim());
-        });
-      if (lastTimelineOnly && rowTimelineOnly) {
+      ) {
+        const preferRow =
+          row.renderParts.length > last.renderParts.length
+          || (row.hasTimeline && !last.hasTimeline)
+          || row.msg.content.length >= last.msg.content.length;
+        if (preferRow) {
+          row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
+          row.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
+          row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
+          row.isStreaming = last.isStreaming || row.isStreaming;
+          row.stableKey = last.stableKey;
+          rebuildTimeline(row);
+          out[out.length - 1] = row;
+        }
+        return out;
+      }
+      if (!row.errorMessage || !last.errorMessage) {
         last.isStreaming = last.isStreaming || row.isStreaming;
         last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
         last.renderParts = dedupeAgentToolParts([...last.renderParts, ...row.renderParts]);
         last.detailsLoading = last.detailsLoading || row.detailsLoading;
         if (row.todoItems.length > 0) last.todoItems = row.todoItems;
+        last.errorMessage = last.errorMessage || row.errorMessage;
+        last.detailsError = last.detailsError || row.detailsError;
         last.msg = {
           ...last.msg,
           id: `${last.msg.id}:${row.msg.id}`,
+          content: rowText || lastText,
           error: last.msg.error || row.msg.error
         };
         rebuildTimeline(last);
-        return out;
-      }
-      // 工具轮与正文轮保持独立单元格（Codex exec cell → agent cell）。
-      if (last.hasTimeline || row.hasTimeline || last.fallbackReply || row.fallbackReply) {
-        // 插话收尾常见：状态层残留两条同文 assistant（磁盘仅一条）。展示层折叠，保留较完整的一条。
-        const lastText = (last.fallbackReply || last.msg.content || "").trim();
-        const rowText = (row.fallbackReply || row.msg.content || "").trim();
-        if (
-          lastText
-          && rowText
-          && lastText === rowText
-          && !last.isStreaming
-          && !row.isStreaming
-          && !last.errorMessage
-          && !row.errorMessage
-        ) {
-          const preferRow =
-            row.renderParts.length > last.renderParts.length
-            || (row.hasTimeline && !last.hasTimeline)
-            || row.msg.content.length >= last.msg.content.length;
-          if (preferRow) {
-            row.stableKey = last.stableKey;
-            out[out.length - 1] = row;
-          }
-          return out;
-        }
-        out.push(row);
         return out;
       }
       last.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
@@ -2517,6 +2951,50 @@ export function AgentMessageStream({
     }
     return result;
   }, [visibleRenderRows, turnManifest]);
+
+  /**
+   * Virtuoso 官方 inverse-scrolling 协议：`firstItemIndex` 只承载「头部新增 N 条」的信号。
+   * 协议要点：
+   * 1. 非头部新增（流式追加、末行变高、重测）绝不改变该值；
+   * 2. 头部新增 N 条时值必须精确减 N，Virtuoso 会据此在内部平移已量测尺寸表并保持视觉锚点；
+   * 3. 会话切换时重置基准，两个会话互不继承索引。
+   * 这样历史加载不再依赖 Virtuoso 的兜底锚定，也不会在加载后改写 scrollTop。
+   * @see https://virtuoso.dev/prepend-items/
+   */
+  {
+    const mountKey = locateStickyMountKeyRef.current || activeSessionId || "agent-thread";
+    if (firstItemIndexSessionRef.current !== mountKey) {
+      firstItemIndexSessionRef.current = mountKey;
+      firstItemIndexRef.current = 1_000_000;
+    }
+    const previous = firstItemIndexRowsRef.current;
+    const count = rowsWithTurnSummary.length;
+    const prepended = previous.prefixLength > 0
+      && count > previous.prefixLength
+      && rowsWithTurnSummary
+        .slice(0, count - previous.prefixLength)
+        .every((row, index) => row.stableKey === previous.keys[index]);
+    if (prepended) {
+      firstItemIndexRef.current -= count - previous.prefixLength;
+    }
+    firstItemIndexRowsRef.current = {
+      prefixLength: count,
+      keys: rowsWithTurnSummary.map((row) => row.stableKey)
+    };
+  }
+  const firstItemIndex = firstItemIndexRef.current;
+  // 每段「连续 assistant 块」的末行（下一行是 user/列表尾）：只有这一行挂回复级操作行
+  // （复制按钮）。中间过程行（工具轮拆出的 assistant）hover 不再浮出按钮；
+  // system 行不打断回合判定。
+  const turnLastAssistantKeys = new Set<string>();
+  for (let index = 0; index < visibleRenderRows.length; index += 1) {
+    const row = visibleRenderRows[index];
+    if (!row.isAssistant) continue;
+    let probe = index + 1;
+    while (probe < visibleRenderRows.length && visibleRenderRows[probe].isSystem) probe += 1;
+    const next = visibleRenderRows[probe];
+    if (!next || !next.isAssistant) turnLastAssistantKeys.add(row.stableKey);
+  }
   // scope=sent 只保留「我发送」的 user 消息；originalIndex 仍指向 visibleRenderRows 真实下标，跳转/active 匹配正确。
   const navigatorMarkers: NavigatorMarker[] =
     navigatorScope === "sent" ? allNavigatorMarkers.filter((m) => m.role === "user") : allNavigatorMarkers;
@@ -2536,8 +3014,8 @@ export function AgentMessageStream({
       const el = document.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(stableKey)}"]`
       );
-      // 已在渲染范围内：直接 DOM 实测 scrollBy 一步到位——绕过 Virtuoso defaultItemHeight 估算，
-      // 既准又无「smooth 动画被校正打断」的二次上下偏移。behavior 透传（点击 smooth / 拖动 auto）。
+      // 已在渲染范围内：用 DOM 实测位置构造官方 scrollTo 目标——绕过 Virtuoso defaultItemHeight
+      // 估算；behavior 透传（点击 smooth / 拖动 auto）。
       if (el && sc) {
         const e = el.getBoundingClientRect();
         const s = sc.getBoundingClientRect();
@@ -2547,12 +3025,18 @@ export function AgentMessageStream({
             : target === "end"
               ? e.bottom - s.bottom
               : e.top + e.height / 2 - (s.top + s.height / 2);
-        sc.scrollBy({ top: delta, behavior });
+        if (Math.abs(delta) >= 8) {
+          // 已渲染目标走官方 Lenis scrollTo；smooth 交给它的 damp 动画，auto 立即落位。
+          smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, {
+            immediate: behavior === "auto"
+          });
+        }
+        syncSmoothWheelToNative();
         return;
       }
       // 不在渲染范围（远处跳转）：scrollToIndex 先把目标拉进视口，立即 + rAF 连续校正到目标对齐。
       // scrollToIndex(auto) 与首帧校正同步执行、浏览器合并渲染 → 用户只见一次到位；后续 rAF
-      // 兜底 Virtuoso 异步测量收敛，到位后 adjustToMessage 内 |delta|<8 不再 scrollBy，不反复偏移。
+      // 经官方 Lenis scrollTo 收敛，到位后 |delta|<8 不再写入，不反复偏移。
       virtuosoRef.current?.scrollToIndex({ index, align: target, behavior: "auto" });
       const adjust = adjustToMessage(stableKey, target);
       const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
@@ -2562,29 +3046,65 @@ export function AgentMessageStream({
         adjust();
         if (++frames < 6) {
           requestAnimationFrame(step);
-        } else if (target === "start") {
-          // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
-          // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
-          const sc = scrollerElRef.current;
-          if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
-            sc.scrollTo({ top: 0, behavior: "auto" });
+        } else {
+          if (target === "start") {
+            // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
+            // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
+            if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
+              smoothWheelLenisRef.current?.scrollTo(0, { immediate: true });
+            }
           }
+          syncSmoothWheelToNative();
         }
       };
       requestAnimationFrame(step);
     },
-    [visibleRenderRows, adjustToMessage]
+    [visibleRenderRows, adjustToMessage, syncSmoothWheelToNative]
   );
   // 取消 stick 只认用户手势；Virtuoso 重测/锚点补偿造成的 scrollTop 变化一律忽略。
   // @see https://github.com/petyosi/react-virtuoso/issues/195
-  const attachScrollerListeners = useCallback((el: HTMLElement) => {
+  const attachScrollerListeners = useCallback(
+    (el: HTMLElement) => {
     if (scrollerListenersRef.current?.el === el) return; // Virtuoso 可能多次回传同一 el
     scrollerListenersRef.current?.clean();
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) stickToBottomRef.current = false;
+    const content = el.firstElementChild instanceof HTMLElement ? el.firstElementChild : el;
+    smoothWheelLenisRef.current?.destroy();
+    // Lenis 官方姿势：只接管滚轮（smoothWheel）；touch/滚动条/键盘保持原生节奏。
+    // duration 与 lerp 官方互斥，这里用 lerp damp 模式，连续 wheel 是“改目标”而非“重启动画”。
+    // allowNestedScroll 是官方嵌套滚动方案，展开卡片/代码块等内层可滚动区优先消费 wheel。
+    const lenis = new Lenis({
+      wrapper: el,
+      content,
+      eventsTarget: el,
+      lerp: SMOOTH_WHEEL_LENIS_LERP,
+      smoothWheel: true,
+      syncTouch: false,
+      wheelMultiplier: 1,
+      allowNestedScroll: true,
+      autoRaf: true,
+      // Virtuoso 渲染窗口是连续位移（可视窗口外高度持续增减），不是静态文档。
+      // 官方缓存的 scrollHeight 会滞后于真实容器；开启官方提供的实时尺寸读取，
+      // 每次 wheel 计算目标都用当前 limit，避免上滑到顶后目标被旧 limit 钳住。
+      naiveDimensions: true
+    });
+    smoothWheelLenisRef.current = lenis;
+    // 用户滚轮向上离开底部时立即取消贴底意图；否则持续 rAF 钉底会和 Lenis 平滑动画互相写 scrollTop。
+    // 该回调也可能由原生 scroll 联动触发，必须只认官方 smooth wheel 动画里的 direction=-1。
+    const onLenisScroll = (instance: Lenis) => {
+      if (instance.isScrolling === "smooth" && instance.direction === -1) {
+        stickToBottomRef.current = false;
+      }
+    };
+    lenis.on("scroll", onLenisScroll);
+    const endSmoothWheel = () => {
+      const lenis = smoothWheelLenisRef.current;
+      if (!lenis) return;
+      lenis.stop();
+      lenis.start();
     };
     let lastTouchY: number | null = null;
     const onTouchStart = (e: TouchEvent) => {
+      endSmoothWheel();
       lastTouchY = e.touches[0]?.clientY ?? null;
     };
     const onTouchMove = (e: TouchEvent) => {
@@ -2595,6 +3115,7 @@ export function AgentMessageStream({
     // 原生滚动条拖拽：落点在 clientWidth 右侧 gutter（scrollbar-gutter:stable）才算。
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      endSmoothWheel();
       if (e.offsetX >= el.clientWidth - 1) {
         scrollbarDraggingRef.current = true;
       }
@@ -2604,10 +3125,12 @@ export function AgentMessageStream({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
+        endSmoothWheel();
         stickToBottomRef.current = false;
+      } else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End") {
+        endSmoothWheel();
       }
     };
-    el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("pointerdown", onPointerDown, { passive: true });
@@ -2618,7 +3141,10 @@ export function AgentMessageStream({
     scrollerListenersRef.current = {
       el,
       clean: () => {
-        el.removeEventListener("wheel", onWheel);
+        endSmoothWheel();
+        lenis.off("scroll", onLenisScroll);
+        smoothWheelLenisRef.current?.destroy();
+        smoothWheelLenisRef.current = null;
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("pointerdown", onPointerDown);
@@ -2628,8 +3154,9 @@ export function AgentMessageStream({
         el.removeEventListener("keydown", onKeyDown);
       }
     };
-  }, []);
-
+    },
+    []
+  );
   // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂手势。
   const handleScrollerRef = useCallback(
     (node: HTMLElement | Window | null) => {
@@ -2642,7 +3169,7 @@ export function AgentMessageStream({
   );
 
   // 持续 rAF 钉底：同 row 变高（工具事件）时 followOutput 无效（官方 issue #195），
-  // 必须靠物理钉 scrollTop；取消 stick 只在「正在拖滚动条且离开底部」时发生。
+  // 由这里补一次官方 scrollTo(immediate)；smooth wheel 上滚时整段让路，不与官方动画争写。
   useEffect(() => {
     let raf = 0;
     let lastTop = -1;
@@ -2651,6 +3178,13 @@ export function AgentMessageStream({
       if (sc) {
         const max = sc.scrollHeight - sc.clientHeight;
         const top = sc.scrollTop;
+        // Lenis 正在做平滑 wheel 动画时必须让路：官方动画已经负责写 scrollTop，
+        // 此处再物理钉底会形成快滚抖动；上滚时 onLenisScroll 已取消贴底意图。
+        if (isSmoothWheelAnimating()) {
+          lastTop = sc.scrollTop;
+          raf = requestAnimationFrame(tick);
+          return;
+        }
         if (canStickPin() && max >= 0) {
           // 仅当用户正在拖滚动条、且明确离开底部时取消——Virtuoso 重测造成的 top 下降不取消。
           if (
@@ -2661,7 +3195,8 @@ export function AgentMessageStream({
           ) {
             stickToBottomRef.current = false;
           } else if (top < max) {
-            sc.scrollTop = max;
+            // 程序化贴底必须走官方 Lenis API：直接写 scrollTop 会让 wheel 实例与容器分叉。
+            smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
           }
         }
         lastTop = sc.scrollTop;
@@ -2672,12 +3207,16 @@ export function AgentMessageStream({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // 外部（发送）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
+  // 外部（发送/拉到最新）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
+  // “拉到最新”是明确的 live-edge 指令：即使本会话曾搜索定位过，也要释放定位保护，
+  // 否则 canStickPin 仍为 false，按钮看起来只是把视口往上送一段而到不了最新。
   const prevStickResetRef = useRef(stickResetSignal);
   useEffect(() => {
     if (stickResetSignal === prevStickResetRef.current) return;
     prevStickResetRef.current = stickResetSignal;
     stickToBottomRef.current = true;
+    locatedThisSessionRef.current = false;
+    locateStickyMountKeyRef.current = null;
   }, [stickResetSignal]);
 
   /** 列表总高度变化（含同 row 工具卡变高）：官方建议配合 followOutput 调 autoscrollToBottom。 */
@@ -2687,7 +3226,7 @@ export function AgentMessageStream({
     const sc = scrollerElRef.current;
     if (sc) {
       const max = sc.scrollHeight - sc.clientHeight;
-      if (max >= 0 && sc.scrollTop < max) sc.scrollTop = max;
+      if (max >= 0 && sc.scrollTop < max) smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
     }
   }, [virtuosoRef]);
 
@@ -2758,7 +3297,7 @@ export function AgentMessageStream({
   }, [pendingLocateId, pendingLocateIndex, sessionLoading, visibleRenderRows.length, activeSessionId, locateNonce]);
 
   // remount 后校正定位：与标尺跳转同一套路——Virtuoso initialTopMostItemIndex / scrollToIndex
-  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧 scrollBy 收敛。
+  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧校正收敛。
   // 流程：① 把命中消息拉进视口并对齐 start ② 等关键词 <mark> 出现后居中（对齐 highlight 重试节奏）。
   useEffect(() => {
     if (!pendingLocateId || sessionLoading) return;
@@ -2777,6 +3316,7 @@ export function AgentMessageStream({
     const finish = () => {
       if (cancelled || finished) return;
       finished = true;
+      syncSmoothWheelToNative();
       onPendingScrollDone?.();
     };
 
@@ -2902,6 +3442,8 @@ export function AgentMessageStream({
         align: "end",
         behavior: "auto"
       });
+      const lenis = smoothWheelLenisRef.current;
+      if (lenis && lenis.targetScroll > lenis.actualScroll) lenis.scrollTo(lenis.actualScroll, { immediate: true });
     };
     wake();
     const stickTimers: number[] = [];
@@ -2943,6 +3485,7 @@ export function AgentMessageStream({
         key={virtuosoMountKey}
         ref={virtuosoRef}
         data={rowsWithTurnSummary}
+        firstItemIndex={firstItemIndex}
         computeItemKey={(_index, row) => row.stableKey}
         scrollerRef={handleScrollerRef}
         className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
@@ -2968,7 +3511,7 @@ export function AgentMessageStream({
         }}
         increaseViewportBy={{ top: 600, bottom: 600 }}
         defaultItemHeight={160}
-        components={{ List: AgentMessageListContainer, Header: AgentMessageListHeader }}
+        components={{ List: AgentMessageListContainer, Item: AgentMessageListItem, Header: AgentMessageListHeader }}
         itemContent={(_index, row) =>
           row.isSystem ? (
             <AgentMessageRowFrame>
@@ -2987,7 +3530,7 @@ export function AgentMessageStream({
                 {row.isAssistant ? (
                   <AssistantMessage
                     row={row}
-
+                    isTurnLastRow={turnLastAssistantKeys.has(row.stableKey)}
                     timelineOpenState={timelineOpenState}
                     setTimelineOpenState={setTimelineOpenState}
                     showReasoningSummaries={showReasoningSummaries}

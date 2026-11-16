@@ -211,9 +211,8 @@ async fn supervisor_loop(pending: Arc<StdMutex<TunnelConfig>>, rescan: Arc<Notif
 
     loop {
         let cfg = { pending.lock().unwrap().clone() };
-        let want_up = cfg.enabled
-            && !cfg.cloud_base_url.trim().is_empty()
-            && !cfg.device_token.is_empty();
+        let want_up =
+            cfg.enabled && !cfg.cloud_base_url.trim().is_empty() && !cfg.device_token.is_empty();
 
         if !want_up {
             set_tunnel_connected(false);
@@ -538,8 +537,9 @@ async fn handle_http_request(
             match base64::engine::general_purpose::STANDARD.decode(b.as_bytes()) {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = send_error(&out_tx, Some(stream_id.clone()), "bad_body", &e.to_string())
-                        .await;
+                    let _ =
+                        send_error(&out_tx, Some(stream_id.clone()), "bad_body", &e.to_string())
+                            .await;
                     return;
                 }
             }
@@ -549,7 +549,10 @@ async fn handle_http_request(
 
     // 注册取消标志；结束/出错/取消任一路径都 remove，避免泄漏。
     let flag = Arc::new(AtomicBool::new(false));
-    cancels.lock().unwrap().insert(stream_id.clone(), Arc::clone(&flag));
+    cancels
+        .lock()
+        .unwrap()
+        .insert(stream_id.clone(), Arc::clone(&flag));
 
     let (evt_tx, mut evt_rx) = mpsc::channel::<Result<ProxyEvent, String>>(32);
     let method_blk = method;
@@ -686,15 +689,13 @@ fn local_proxy_streaming(
     cancel: Arc<AtomicBool>,
     mut on_event: impl FnMut(ProxyEvent) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut stream =
-        TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("connect local control: {e}"))?;
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .map_err(|e| format!("connect local control: {e}"))?;
     // 短 read 超时 + 循环，保证 cancel 在 ~1s 内生效（SSE 心跳 20s 也不会被误判超时）。
     stream
         .set_read_timeout(Some(Duration::from_millis(1000)))
         .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
     write_local_request(&mut stream, port, method, path, headers, body)?;
 
     let mut buf = Vec::new();
@@ -706,8 +707,9 @@ fn local_proxy_streaming(
         match stream.read(&mut tmp) {
             Ok(0) => return Err("proxy closed before headers".into()),
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -756,8 +758,9 @@ fn local_proxy_streaming(
         match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => on_event(ProxyEvent::Body(tmp[..n].to_vec()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -876,7 +879,10 @@ mod tests {
         let s = sample_settings();
         let a = config_from_settings(&s, 4100);
         let b = config_from_settings(&s, 4100);
-        assert_eq!(a, b, "identical settings must yield equal configs (tunnel would otherwise thrash)");
+        assert_eq!(
+            a, b,
+            "identical settings must yield equal configs (tunnel would otherwise thrash)"
+        );
     }
 
     #[test]

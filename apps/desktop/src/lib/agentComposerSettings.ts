@@ -1,6 +1,5 @@
 /** UI / 存储用档位；发给 Pi 时经 `toPiThinkingLevel` 映射。 */
 export type AgentThinkingLevel =
-  | "auto"
   | "off"
   | "none"
   | "minimal"
@@ -43,7 +42,6 @@ export const AGENT_THINKING_LEVELS: Array<{
   shortLabel: string;
   description: string;
 }> = [
-  { value: "auto", label: "自动", shortLabel: "自动", description: "默认" },
   { value: "off", label: "关闭", shortLabel: "关", description: "不推理" },
   { value: "minimal", label: "极低", shortLabel: "极低", description: "最快" },
   { value: "low", label: "低", shortLabel: "低", description: "轻量" },
@@ -80,7 +78,8 @@ export function normalizeThinkingLevel(value: unknown): AgentThinkingLevel {
   if (AGENT_THINKING_LEVELS.some((item) => item.value === normalized)) {
     return normalized as AgentThinkingLevel;
   }
-  return "auto";
+  // 旧存储里的 auto/空值统一降级为显式「关闭」。
+  return "off";
 }
 
 export function thinkingLevelMeta(level: AgentThinkingLevel) {
@@ -91,12 +90,12 @@ export function thinkingLevelMeta(level: AgentThinkingLevel) {
   );
 }
 
-/** 当前模型可选的推理档位（含 auto）。非推理模型仅 auto/off。 */
+/** 当前模型可选的推理档位。非推理模型仅「关闭」。 */
 export function thinkingLevelsForModel(
   model?: AgentModelThinkingCapability | null
 ): AgentThinkingLevel[] {
-  if (!model?.reasoning) return ["auto", "off"];
-  const levels: AgentThinkingLevel[] = ["auto", "off", "minimal", "low", "medium", "high"];
+  if (!model?.reasoning) return ["off"];
+  const levels: AgentThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
   if (model.supportsXhigh) levels.push("xhigh");
   return levels;
 }
@@ -108,19 +107,18 @@ export function clampThinkingLevelToModel(
   const normalized = normalizeThinkingLevel(level);
   const allowed = thinkingLevelsForModel(model);
   if (allowed.includes(normalized)) return normalized;
-  return allowed.includes("auto") ? "auto" : allowed[0] || "off";
+  return allowed[0] || "off";
 }
 
-/** 映射为 Pi `ThinkingLevel` 字符串；auto 返回 undefined（不传/不改）。 */
+/** 映射为 Pi `ThinkingLevel` 字符串；始终显式传档位。 */
 export function toPiThinkingLevel(
   level: AgentThinkingLevel,
   model?: AgentModelThinkingCapability | null
 ): string | undefined {
   const clamped = clampThinkingLevelToModel(level, model);
-  if (clamped === "auto") return undefined;
   if (clamped === "none" || clamped === "off") return "off";
   if (clamped === "max") {
-    const allowed = thinkingLevelsForModel(model).filter((item) => item !== "auto");
+    const allowed = thinkingLevelsForModel(model);
     return allowed[allowed.length - 1] || "off";
   }
   return clamped;

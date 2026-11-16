@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Giteam Overlay</title>
+    <style>
+      /* agent 覆盖层宿主页：透明底、无滚动；渲染样式由 OsOverlayApp 注入。
+         独立于主应用（vite 多页构建），不加载主 bundle / 启动屏。 */
+      html, body { background: transparent; overflow: hidden; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/os/overlay-main.tsx"></script>
+  </body>
+</html>

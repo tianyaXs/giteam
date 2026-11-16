@@ -220,7 +220,10 @@ fn push_alias_if_new(out: &mut Vec<String>, raw: &str, label: &str, existing: &[
     if raw.is_empty() || raw == label {
         return;
     }
-    if existing.iter().any(|a| a == raw || normalize_name(a) == normalize_name(raw)) {
+    if existing
+        .iter()
+        .any(|a| a == raw || normalize_name(a) == normalize_name(raw))
+    {
         return;
     }
     out.push(raw.to_string());
@@ -248,7 +251,18 @@ fn trim_edge_noise(s: &str) -> &str {
         c.is_ascii_punctuation()
             || matches!(
                 c,
-                '「' | '」' | '『' | '』' | '《' | '》' | '（' | '）' | '【' | '】' | '…' | '—' | '·'
+                '「' | '」'
+                    | '『'
+                    | '』'
+                    | '《'
+                    | '》'
+                    | '（'
+                    | '）'
+                    | '【'
+                    | '】'
+                    | '…'
+                    | '—'
+                    | '·'
             )
     })
 }
@@ -387,9 +401,7 @@ fn levenshtein_distance(a: &[char], b: &[char]) -> usize {
         curr[0] = i;
         for j in 1..=m {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
