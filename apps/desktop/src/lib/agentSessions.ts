@@ -1,3 +1,87 @@
+import type { ContextBreakdown } from "./agent/client";
+
+export type { ContextBreakdown, ContextCategoryId, ContextCategoryUsage } from "./agent/client";
+
+export type AgentChatUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+export function agentCacheHitRate(usage?: AgentChatUsage | null): number | null {
+  if (!usage) return null;
+  // input/cacheWrite 都是未命中部分；cacheRead 是命中部分。
+  const totalInput = agentPromptTokens(usage);
+  return totalInput > 0 ? Math.round((usage.cacheRead / totalInput) * 100) : null;
+}
+
+/** 单次请求的 billed prompt tokens（三类互不重叠）。 */
+export function agentPromptTokens(usage?: AgentChatUsage | null): number {
+  if (!usage) return 0;
+  return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
+/**
+ * 上下文窗口占用：只计 prompt（input + cacheRead + cacheWrite）。
+ * 不含 output——补全 token 不是「当前已装进窗口」的正确口径；
+ * 否则会出现 Input 61k / Output 98 这种账单对比被误读成占用明细。
+ */
+export function agentContextUsedTokens(usage?: AgentChatUsage | null): number {
+  return agentPromptTokens(usage);
+}
+
+export type AgentContextOccupancy = {
+  percent: number;
+  usedTokens: number;
+  contextWindow: number;
+};
+
+/**
+ * 上下文占用：used / 模型窗口。
+ * 对齐官方 ContextDemo 的整数四舍五入与上限 100。
+ */
+export function agentContextOccupancy(
+  usedTokens: number | null | undefined,
+  contextWindow: number | null | undefined
+): AgentContextOccupancy | null {
+  if (
+    usedTokens == null
+    || contextWindow == null
+    || !Number.isFinite(usedTokens)
+    || !Number.isFinite(contextWindow)
+    || contextWindow <= 0
+  ) {
+    return null;
+  }
+  const used = Math.max(0, Math.floor(usedTokens));
+  return {
+    percent: Math.min(100, Math.round((used / contextWindow) * 100)),
+    usedTokens: used,
+    contextWindow: Math.floor(contextWindow)
+  };
+}
+
+/** 官方 ContextDemo.formatTokens：8420 → 8.4k。 */
+export function formatAgentTokens(n: number): string {
+  if (n < 1_000) return String(n);
+  return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+}
+
+export function agentChatUsageEquals(
+  a?: AgentChatUsage,
+  b?: AgentChatUsage
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.input === b.input
+    && a.output === b.output
+    && a.cacheRead === b.cacheRead
+    && a.cacheWrite === b.cacheWrite
+  );
+}
+
 export type AgentChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -7,8 +91,12 @@ export type AgentChatMessage = {
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
   /** 用户从资产图谱引用的节点（仅展示；模型上下文在发送时已注入）。 */
   graphRefs?: import("./graphContextRefs").GraphContextRef[];
-  /** token 用量（仅 assistant 消息有值；用于缓存命中率展示）。 */
-  usage?: { cacheRead: number; input: number };
+  /** token 用量（仅 assistant 消息有值）。 */
+  usage?: AgentChatUsage;
+  /** 截至此消息的完整会话累计用量；缓存圆环只读此字段。 */
+  sessionUsage?: AgentChatUsage;
+  /** 上下文分类占用（chars÷4 估计）。 */
+  contextBreakdown?: ContextBreakdown;
 };
 
 export type AgentChatSession = {
@@ -504,8 +592,16 @@ export function reconcilePromptTailFromHistory(
     const existing = currentById.get(historyRow.id);
     if (existing) {
       const content = pickContent(historyRow.content || "", existing.content || "");
-      if (content !== existing.content) {
-        mergedTail.push({ ...existing, content });
+      const usage = historyRow.usage ?? existing.usage;
+      const sessionUsage = historyRow.sessionUsage ?? existing.sessionUsage;
+      const contextBreakdown = historyRow.contextBreakdown ?? existing.contextBreakdown;
+      if (
+        content !== existing.content
+        || !agentChatUsageEquals(usage, existing.usage)
+        || !agentChatUsageEquals(sessionUsage, existing.sessionUsage)
+        || contextBreakdown !== existing.contextBreakdown
+      ) {
+        mergedTail.push({ ...existing, content, usage, sessionUsage, contextBreakdown });
         touchedAssistantIds.push(historyRow.id);
       } else {
         mergedTail.push(existing);
@@ -529,7 +625,12 @@ export function reconcilePromptTailFromHistory(
   const next = [...prefix, ...mergedTail, ...suffix];
   const changed =
     next.length !== current.length
-    || next.some((row, index) => row.id !== current[index]?.id || row.content !== current[index]?.content);
+    || next.some((row, index) =>
+      row.id !== current[index]?.id
+      || row.content !== current[index]?.content
+      || !agentChatUsageEquals(row.usage, current[index]?.usage)
+      || !agentChatUsageEquals(row.sessionUsage, current[index]?.sessionUsage)
+    );
   if (!changed) {
     return { messages: current, changed: false, touchedAssistantIds: [] };
   }

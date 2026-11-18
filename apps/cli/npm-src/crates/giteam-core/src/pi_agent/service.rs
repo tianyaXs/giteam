@@ -121,14 +121,10 @@ impl PiSessionConfig {
             Some(discipline) => base_prompt.map(|base| format!("{base}\n\n{discipline}")),
             None => base_prompt,
         };
-        // append 段按「稳定 → 易变」排序：项目记忆（GITEAM.md）→ 工作区快照
-        // （git/平台/验证命令）→ skills 清单 → 调用方显式追加段。
-        // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集
-        // （含祖先目录），此处再注入会导致双重注入。
-        // 子 agent（Hermes skip_context_files）：保留记忆与工作区快照，不注入
-        // 全局 skills 目录，避免 ephemeral 任务提示被 skill 清单淹没、拖慢首轮。
-        // 快照的执行类信息（放行清单）只注入有 bash/edit/write 能力的会话：
-        // 只读子代理收到 `Pre-approved: bash:...` 只是指向不存在工具的诱导。
+        // system append 只保留稳定段：项目记忆 → 工作区快照 → skills。
+        // digest / append_system_prompt 动态段由 crates 主路径以 runtime Custom
+        // 注入；本 npm-src 副本保持稳定前缀，避免动态段污染缓存。
+        // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集。
         let can_execute = match self.enabled_tools.as_deref() {
             // None = 全量工具（含 bash/edit/write）。
             None => true,
@@ -140,13 +136,6 @@ impl PiSessionConfig {
         if let Some(memory) = wrap_project_memory(&self.repo_path) {
             append_parts.push(memory);
         }
-        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
-        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
-        if self.session_kind != "subagent" {
-            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
-                append_parts.push(digest);
-            }
-        }
         append_parts.push(super::environment::build_workspace_context(
             &self.repo_path,
             can_execute,
@@ -155,9 +144,6 @@ impl PiSessionConfig {
             if let Some(skills) = super::skills::build_skills_prompt(&self.repo_path) {
                 append_parts.push(skills);
             }
-        }
-        if let Some(extra) = self.append_system_prompt.as_deref() {
-            append_parts.push(extra.to_string());
         }
         let append_system_prompt = (!append_parts.is_empty())
             .then(|| append_parts.join("\n\n"));

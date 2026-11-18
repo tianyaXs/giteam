@@ -46,7 +46,7 @@ impl Tool for TaskTool {
         // 只写机制（模式/字段/隔离语义）；何时委派与 USE FOR / DO NOT USE
         // 取舍在 prompt.rs 工具清单——本描述随 schema 每轮发给模型，
         // 与清单条目是同一受众，重复必分叉。
-        "Spawn one or more specialized subagents (subagent_type=plan) in isolated sessions and wait \
+        "Spawn one or more specialized subagents (subagent_type=plan|explore) in isolated sessions and wait \
          for them to finish. Each child gets a focused system prompt (goal + context) and returns \
          only a summary — intermediate tool calls stay out of your context.\n\n\
          TWO MODES (one of single-task fields or 'tasks' is required):\n\
@@ -236,7 +236,7 @@ fn parse_one_task(
         .unwrap_or("")
         .to_string();
     if subagent_type.is_empty() {
-        return Err("task requires subagent_type (supported: plan)".to_string());
+        return Err("task requires subagent_type (supported: plan, explore)".to_string());
     }
     let prompt = input
         .get("prompt")

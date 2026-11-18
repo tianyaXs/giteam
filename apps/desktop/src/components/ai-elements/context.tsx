@@ -35,6 +35,11 @@ const useContextValue = () => {
   return context;
 };
 
+const ICON_RADIUS = 10;
+const ICON_VIEWBOX = 24;
+const ICON_CENTER = 12;
+const ICON_STROKE_WIDTH = 2;
+
 export type ContextProps = ComponentProps<typeof HoverCard> & ContextSchema;
 
 export const Context = ({
@@ -56,21 +61,73 @@ export const Context = ({
   );
 };
 
+/** AI Elements 圆形进度环：半径 10 / viewBox 24。 */
+const ContextIcon = () => {
+  const { usedTokens, maxTokens } = useContextValue();
+  const circumference = 2 * Math.PI * ICON_RADIUS;
+  const usedPercent = maxTokens > 0 ? usedTokens / maxTokens : 0;
+  const dashOffset = circumference * (1 - Math.min(1, Math.max(0, usedPercent)));
+
+  return (
+    <svg
+      aria-label="Model context usage"
+      height="20"
+      role="img"
+      viewBox={`0 0 ${ICON_VIEWBOX} ${ICON_VIEWBOX}`}
+      width="20"
+    >
+      <circle
+        cx={ICON_CENTER}
+        cy={ICON_CENTER}
+        fill="none"
+        opacity="0.25"
+        r={ICON_RADIUS}
+        stroke="currentColor"
+        strokeWidth={ICON_STROKE_WIDTH}
+      />
+      <circle
+        cx={ICON_CENTER}
+        cy={ICON_CENTER}
+        fill="none"
+        opacity="0.7"
+        r={ICON_RADIUS}
+        stroke="currentColor"
+        strokeDasharray={`${circumference} ${circumference}`}
+        strokeDashoffset={dashOffset}
+        strokeLinecap="round"
+        strokeWidth={ICON_STROKE_WIDTH}
+        style={{
+          transform: "rotate(-90deg)",
+          transformOrigin: "center",
+          transition: "stroke-dashoffset 0.3s ease",
+        }}
+      />
+    </svg>
+  );
+};
+
 export type ContextTriggerProps = ComponentProps<typeof Button>;
 
 export const ContextTrigger = ({ children, ...props }: ContextTriggerProps) => {
   const { usedTokens, maxTokens } = useContextValue();
-  const usedPercent = usedTokens / maxTokens;
+  const usedPercent = maxTokens > 0 ? usedTokens / maxTokens : 0;
   const renderedPercent = new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 1,
     style: "percent",
-  }).format(usedPercent);
+  }).format(Math.min(1, Math.max(0, usedPercent)));
 
   return (
     <HoverCardTrigger asChild>
       {children ?? (
-        <Button type="button" variant="outline" size="sm" {...props}>
-          {renderedPercent} context
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Context used ${renderedPercent}`}
+          title={`Context ${renderedPercent}`}
+          {...props}
+        >
+          <ContextIcon />
         </Button>
       )}
     </HoverCardTrigger>
@@ -199,6 +256,15 @@ const TokensWithCost = ({
   </span>
 );
 
+/** 无 modelId / tokenlens 未命中时不要展示 $0.00。 */
+function formatUsageCost(costUSD: number | undefined): string | undefined {
+  if (costUSD == null || !Number.isFinite(costUSD)) return undefined;
+  return new Intl.NumberFormat("en-US", {
+    currency: "USD",
+    style: "currency",
+  }).format(costUSD);
+}
+
 export type ContextInputUsageProps = ComponentProps<"div">;
 
 export const ContextInputUsage = ({
@@ -223,10 +289,6 @@ export const ContextInputUsage = ({
         usage: { input: inputTokens, output: 0 },
       }).costUSD?.totalUSD
     : undefined;
-  const inputCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(inputCost ?? 0);
 
   return (
     <div
@@ -234,7 +296,7 @@ export const ContextInputUsage = ({
       {...props}
     >
       <span className="text-muted-foreground">Input</span>
-      <TokensWithCost costText={inputCostText} tokens={inputTokens} />
+      <TokensWithCost costText={formatUsageCost(inputCost)} tokens={inputTokens} />
     </div>
   );
 };
@@ -263,10 +325,6 @@ export const ContextOutputUsage = ({
         usage: { input: 0, output: outputTokens },
       }).costUSD?.totalUSD
     : undefined;
-  const outputCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(outputCost ?? 0);
 
   return (
     <div
@@ -274,7 +332,7 @@ export const ContextOutputUsage = ({
       {...props}
     >
       <span className="text-muted-foreground">Output</span>
-      <TokensWithCost costText={outputCostText} tokens={outputTokens} />
+      <TokensWithCost costText={formatUsageCost(outputCost)} tokens={outputTokens} />
     </div>
   );
 };
@@ -304,10 +362,6 @@ export const ContextReasoningUsage = ({
         usage: { reasoningTokens },
       }).costUSD?.totalUSD
     : undefined;
-  const reasoningCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(reasoningCost ?? 0);
 
   return (
     <div
@@ -315,7 +369,10 @@ export const ContextReasoningUsage = ({
       {...props}
     >
       <span className="text-muted-foreground">Reasoning</span>
-      <TokensWithCost costText={reasoningCostText} tokens={reasoningTokens} />
+      <TokensWithCost
+        costText={formatUsageCost(reasoningCost)}
+        tokens={reasoningTokens}
+      />
     </div>
   );
 };
@@ -345,10 +402,6 @@ export const ContextCacheUsage = ({
         usage: { cacheReads: cacheTokens, input: 0, output: 0 },
       }).costUSD?.totalUSD
     : undefined;
-  const cacheCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(cacheCost ?? 0);
 
   return (
     <div
@@ -356,7 +409,7 @@ export const ContextCacheUsage = ({
       {...props}
     >
       <span className="text-muted-foreground">Cache</span>
-      <TokensWithCost costText={cacheCostText} tokens={cacheTokens} />
+      <TokensWithCost costText={formatUsageCost(cacheCost)} tokens={cacheTokens} />
     </div>
   );
 };

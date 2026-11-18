@@ -2,12 +2,14 @@
 //!
 //! 规则文件：`{repo}/.giteam/permissions.json`，格式：
 //! ```json
-//! { "allow": ["bash:npm run build", "edit:src/main.rs", "read", ...] }
+//! {
+//!   "allow": ["bash:npm run build", "edit:src/main.rs", "read", ...],
+//!   "deny": ["bash:rm -rf /", "edit:.env"]
+//! }
 //! ```
 //! 键格式与 [`super::interactions::always_rule_key`] 一致：bash→`bash:{command}`，
 //! 写类工具→`{tool}:{path}`，其余→`{tool}`。
-//! 加载时机：session 创建/恢复（hub 绑定 repo）；
-//! 写入时机：用户「总是允许」(Always reply)，键带细粒度目标，跨会话/重启再生效。
+//! deny 优先于 allow；损坏 JSON **fail-closed**（两边皆空，强制交互审批）。
 
 use std::path::{Path, PathBuf};
 
@@ -19,20 +21,48 @@ const PERMISSIONS_FILE: &str = "permissions.json";
 struct PermissionsFile {
     #[serde(default)]
     allow: Vec<String>,
+    #[serde(default)]
+    deny: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PermissionRules {
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
 }
 
 fn permissions_path(repo_path: &Path) -> PathBuf {
     repo_path.join(".giteam").join(PERMISSIONS_FILE)
 }
 
-/// 读取项目级 allow 规则；文件缺失/损坏返回空（fail-open，回退交互审批）。
-pub fn load_allow_rules(repo_path: &Path) -> Vec<String> {
+/// 读取项目级规则；文件缺失 → 空规则；损坏 → fail-closed 空规则（需人工审批）。
+pub fn load_permission_rules(repo_path: &Path) -> PermissionRules {
     let Ok(text) = std::fs::read_to_string(permissions_path(repo_path)) else {
-        return Vec::new();
+        return PermissionRules::default();
     };
-    serde_json::from_str::<PermissionsFile>(&text)
-        .map(|file| file.allow)
-        .unwrap_or_default()
+    match serde_json::from_str::<PermissionsFile>(&text) {
+        Ok(file) => PermissionRules {
+            allow: file.allow,
+            deny: file.deny,
+        },
+        Err(_) => PermissionRules::default(),
+    }
+}
+
+/// 兼容旧调用：仅返回 allow 列表。
+pub fn load_allow_rules(repo_path: &Path) -> Vec<String> {
+    load_permission_rules(repo_path).allow
+}
+
+/// 读取 deny 列表。
+pub fn load_deny_rules(repo_path: &Path) -> Vec<String> {
+    load_permission_rules(repo_path).deny
+}
+
+/// `key` 是否被 deny（精确匹配或前缀 `tool:` 通配由调用方构造）。
+#[must_use]
+pub fn is_denied(rules: &PermissionRules, key: &str) -> bool {
+    rules.deny.iter().any(|rule| rule == key)
 }
 
 /// 追加一条 allow 规则并持久化；已存在则去重。目录/文件缺失自动创建，原子写避免并发损坏。
@@ -49,9 +79,23 @@ pub fn append_allow_rule(repo_path: &Path, key: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 追加一条 deny 规则并持久化。
+pub fn append_deny_rule(repo_path: &Path, key: &str) -> std::io::Result<()> {
+    let path = permissions_path(repo_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = load_file(&path)?;
+    if !file.deny.iter().any(|rule| rule == key) {
+        file.deny.push(key.to_string());
+        write_file(&path, &file)?;
+    }
+    Ok(())
+}
+
 fn load_file(path: &Path) -> std::io::Result<PermissionsFile> {
     match std::fs::read_to_string(path) {
-        // 损坏回退空，避免阻塞审批（fail-open）。
+        // 损坏回退空（fail-closed：无自动放行）。
         Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PermissionsFile::default()),
         Err(err) => Err(err),
@@ -70,14 +114,11 @@ fn write_file(path: &Path, file: &PermissionsFile) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn rule_list(file: &PermissionsFile) -> &[String] {
-        &file.allow
-    }
-
     #[test]
     fn missing_file_yields_empty_rules() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_allow_rules(dir.path()).is_empty());
+        assert!(load_deny_rules(dir.path()).is_empty());
     }
 
     #[test]
@@ -85,14 +126,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         append_allow_rule(dir.path(), "bash:npm run build").unwrap();
         append_allow_rule(dir.path(), "read").unwrap();
-        // 去重：重复追加不新增。
+        append_deny_rule(dir.path(), "bash:rm -rf /").unwrap();
         append_allow_rule(dir.path(), "bash:npm run build").unwrap();
-        let rules = load_allow_rules(dir.path());
+        let rules = load_permission_rules(dir.path());
         assert_eq!(
-            rules,
+            rules.allow,
             vec!["bash:npm run build".to_string(), "read".to_string()]
         );
-        let _ = rule_list(&PermissionsFile::default());
+        assert_eq!(rules.deny, vec!["bash:rm -rf /".to_string()]);
+        assert!(is_denied(&rules, "bash:rm -rf /"));
     }
 
     #[test]
@@ -102,5 +144,6 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json").unwrap();
         assert!(load_allow_rules(dir.path()).is_empty());
+        assert!(load_deny_rules(dir.path()).is_empty());
     }
 }

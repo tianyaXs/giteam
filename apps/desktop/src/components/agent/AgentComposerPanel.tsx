@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  Fragment,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -15,57 +14,46 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import appIconMarkUrl from "../../assets/app-icon-mark.png";
 import {
-  shortModelLabel,
-  thinkingLevelMeta,
   type AgentThinkingLevel,
   type ComposerAgentName
 } from "../../lib/agentComposerSettings";
 import { getAttachmentBadgeLabel, isImageAttachment, type AgentAttachment } from "../../lib/imageAttachments";
 import type { GraphContextRef } from "../../lib/graphContextRefs";
+import {
+  agentPromptTokens,
+  type AgentChatUsage,
+  type ContextBreakdown
+} from "../../lib/agentSessions";
 import { describePermissionInteraction, type AgentPermissionReply, type PermissionInteraction } from "../../lib/agentPermissions";
 import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
+import { DeepAgentComposer } from "../deep-agent-composer/DeepAgentComposer";
+import {
+  deepAgentAttachmentsToGiteam,
+  fromDeepAgentPermission,
+  fromDeepAgentPermissionPreset,
+  fromDeepAgentThinking,
+  readHostThemeTokens,
+  toDeepAgentContextUsage,
+  toDeepAgentPermission,
+  toDeepAgentThinking
+} from "../deep-agent-composer/bridge";
+import {
+  autoAcceptFromPermissionPreset,
+  permissionPresetFromAutoAccept,
+  type AgentPermissionPreset
+} from "../../lib/agentPermissionPresets";
+import type { DeepAgentComposerOptions } from "../deep-agent-composer/DeepAgentComposerEngine";
+import { FullAccessRiskDialog } from "./FullAccessRiskDialog";
 import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { QueueItem, QueueItemContent } from "../ai-elements/queue";
-import {
-  ModelSelectorGroup,
-  ModelSelectorItem,
-  ModelSelectorList,
-  ModelSelectorSeparator
-} from "../ai-elements/model-selector";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
-import { PromptInputSubmit, PromptInputTextarea } from "../ai-elements/prompt-input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger
-} from "../ui/dropdown-menu";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { CloseIcon } from "../icons";
 import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-} from "../ui/input-group";
-import { Switch } from "../ui/switch";
-import { cn } from "../../lib/utils";
-import { CheckIcon, CloseIcon } from "../icons";
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  ImagePlus,
-  PlusIcon,
-  Sparkles,
-  Terminal,
   FilePen,
   FileCode,
+  Terminal,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -133,6 +121,9 @@ type AgentComposerPanelProps = {
   onApplyThinkingLevel: (level: AgentThinkingLevel) => void;
   autoAcceptPermissions: boolean;
   onToggleAutoAcceptPermissions: () => void;
+  /** 对齐 dsh 的三档权限预设；优先于布尔 autoAccept。 */
+  permissionPreset?: import("../../lib/agentPermissionPresets").AgentPermissionPreset;
+  onApplyPermissionPreset?: (preset: import("../../lib/agentPermissionPresets").AgentPermissionPreset) => void;
   configuredModelCandidates: string[];
   activeModel: string;
   getModelDisplay: (modelRef: string) => AgentModelDisplay;
@@ -147,12 +138,21 @@ type AgentComposerPanelProps = {
   activeSessionBusy: boolean;
   canSubmit: boolean;
   onPrimaryAction: () => void;
+  /** Deep Agent Composer 提交（文本 + 附件）。 */
+  onComposerSubmit: (payload: {
+    text: string;
+    attachments: AgentAttachment[];
+  }) => void;
   queuedFollowUps?: Array<{ id: string; content: string }>;
   onRemoveQueuedFollowUp?: (id: string) => void;
   /** 空态建议 chips 点击回填(并聚焦输入框)。 */
   onFillPrompt?: (text: string) => void;
-  /** 最近一次 assistant 回复的 prompt 缓存用量（命中率展示）。 */
-  cacheUsage?: { cacheRead: number; input: number } | null;
+  /** 最近一次 assistant 单次 usage（官方 Context 组件）。 */
+  contextUsage?: AgentChatUsage | null;
+  /** 上下文分类占用（chars÷4 估计）。 */
+  contextBreakdown?: ContextBreakdown | null;
+  /** 当前模型上下文窗口。 */
+  contextWindow?: number | null;
 };
 
 /** 空态建议(ai-elements Suggestions 风格,ChatGPT 式起手 chips)。 */
@@ -169,14 +169,6 @@ function permissionToolIcon(tool: string): LucideIcon {
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return FileCode;
   return Wrench;
 }
-
-/** models.dev 有 logo 的提供商白名单;之外的提供商用兜底图标。 */
-const LOGO_PROVIDERS = new Set([
-  "openai", "anthropic", "deepseek", "openrouter", "google", "xai", "groq",
-  "mistral", "azure", "amazon-bedrock", "togetherai", "fireworks-ai",
-  "perplexity", "zai", "zhipuai", "alibaba", "moonshotai", "lmstudio",
-  "huggingface", "cerebras", "google-vertex", "ollama"
-]);
 
 export function AgentComposerPanel(props: AgentComposerPanelProps) {
   const {
@@ -196,70 +188,55 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     onRemoveAttachment,
     graphRefs = [],
     onRemoveGraphRef,
-    slashOpen,
-    slashSuggestions,
-    slashActiveIndex,
-    onHoverSlashSuggestion,
-    onActivateSlashCommand,
-    promptInputRef,
-    promptInput,
-    onPromptCompositionStart,
-    onPromptCompositionEnd,
-    onPromptChange,
-    onPromptKeyDown,
-    onPromptPaste,
-    onPromptContextMenu,
-    onPromptDragOver,
-    onPromptDrop,
-    attachmentMenuOpen,
-    onToggleAttachmentMenu,
-    attachmentInputRef,
-    attachmentInputAccept,
-    onOpenAttachmentPicker,
-    onAttachmentInputChange,
-    activeAgent: _activeAgent,
-    onApplyAgent: _onApplyAgent,
     activeThinkingLevel,
     thinkingLevelOptions,
     onApplyThinkingLevel,
     autoAcceptPermissions,
     onToggleAutoAcceptPermissions,
+    permissionPreset,
+    onApplyPermissionPreset,
     configuredModelCandidates,
     activeModel,
-    getModelDisplay,
     onApplyModel,
     onOpenModelSettings,
     labels,
     activeSessionBusy,
-    canSubmit,
     onPrimaryAction,
+    onComposerSubmit,
     queuedFollowUps = [],
     onRemoveQueuedFollowUp,
     onFillPrompt,
-    cacheUsage
+    contextUsage,
+    contextBreakdown,
+    contextWindow
   } = props;
 
-  const activeModelDisplay = getModelDisplay(activeModel || "");
-  const hasConfiguredModel = configuredModelCandidates.length > 0;
-  const modelValueLabel = (activeModel || "").trim()
-    ? shortModelLabel(activeModelDisplay.label || "", activeModel || "")
-    : hasConfiguredModel
-      ? "选择模型"
-      : "未配置";
-  const thinkingValueLabel = thinkingLevelMeta(activeThinkingLevel).shortLabel;
   const hasComposerPreviews = attachments.length > 0 || graphRefs.length > 0;
-  // 旧会话空输入始终「继续跟进」；贴图不应改成「要做什么？」。
-  const composerPlaceholder = showEmptyState ? "要做什么？" : "继续跟进";
+  const composerPlaceholder = showEmptyState ? "尽管问..." : "继续跟进";
   const visiblePermissions = permissions.slice(0, 2);
   const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
-  // prompt 缓存命中率：cacheRead / (cacheRead + input)，仅在有数据时展示。
-  const cacheHitRate = cacheUsage && (cacheUsage.cacheRead + cacheUsage.input) > 0
-    ? Math.round((cacheUsage.cacheRead / (cacheUsage.cacheRead + cacheUsage.input)) * 100)
-    : null;
   const previewStripRef = useRef<HTMLDivElement | null>(null);
-  const [emptyGrowUpOffset, setEmptyGrowUpOffset] = useState(0);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [fullAccessConfirmOpen, setFullAccessConfirmOpen] = useState(false);
+  const fullAccessResolverRef = useRef<((ok: boolean) => void) | null>(null);
 
-  // 空状态垂直居中：贴图增高后用负 margin 抵消布局占位，底边与提示文字位置不变，只向上延伸。
+  const settleFullAccessConfirm = (ok: boolean) => {
+    setFullAccessConfirmOpen(false);
+    const resolve = fullAccessResolverRef.current;
+    fullAccessResolverRef.current = null;
+    resolve?.(ok);
+  };
+
+  const requestFullAccessConfirm = () =>
+    new Promise<boolean>((resolve) => {
+      fullAccessResolverRef.current?.(false);
+      fullAccessResolverRef.current = resolve;
+      setFullAccessConfirmOpen(true);
+    });
+  const [emptyGrowUpOffset, setEmptyGrowUpOffset] = useState(0);
+  const [draftSeed, setDraftSeed] = useState<{ text: string; key: number } | null>(null);
+  const [themeTokens, setThemeTokens] = useState<Record<string, string>>(() => readHostThemeTokens());
+
   useLayoutEffect(() => {
     if (!showEmptyState || !hasComposerPreviews) {
       setEmptyGrowUpOffset(0);
@@ -270,7 +247,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       setEmptyGrowUpOffset(0);
       return;
     }
-    const gapPx = 12; // 与卡片内 gap-3 一致
+    const gapPx = 12;
     const sync = () => setEmptyGrowUpOffset(node.offsetHeight + gapPx);
     sync();
     if (typeof ResizeObserver === "undefined") return;
@@ -279,60 +256,110 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     return () => observer.disconnect();
   }, [showEmptyState, hasComposerPreviews, attachments.length, graphRefs.length]);
 
+  useLayoutEffect(() => {
+    const syncTheme = () => setThemeTokens(readHostThemeTokens(hostRef.current));
+    syncTheme();
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme", "style"]
+    });
+    return () => observer.disconnect();
+  }, []);
+
   const reduceMotion = useReducedMotion();
   const previewExpandTransition = reduceMotion
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const };
 
-  const showStop = activeSessionBusy && !canSubmit;
-  const submitDisabled = !activeSessionBusy && !canSubmit;
-  const primaryTitle = showStop
-    ? "停止生成"
-    : activeSessionBusy && canSubmit
-      ? "发送补充指令（当前任务进行中插话）"
-      : (activeModel || "").trim()
-        ? canSubmit
-          ? "发送"
-          : "输入内容后发送"
-        : "请先配置并选择模型";
+  const models = configuredModelCandidates.length > 0
+    ? configuredModelCandidates
+    : activeModel
+      ? [activeModel]
+      : [];
 
-  const groups = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const modelRef of configuredModelCandidates) {
-      const display = getModelDisplay(modelRef);
-      // openai-compatible.* 等内部 id 由 catalog 解析成用户填写的供应商名，避免分组标题带前缀。
-      const provider = display.providerLabel || display.provider || "其他";
-      if (!map.has(provider)) map.set(provider, []);
-      map.get(provider)!.push(modelRef);
+  const composerOptions = useMemo<DeepAgentComposerOptions>(() => ({
+    models,
+    selectedModel: activeModel || models[0],
+    value: toDeepAgentThinking(activeThinkingLevel),
+    busy: activeSessionBusy,
+    stopping: false,
+    disabled: !activeModel && models.length === 0,
+    placeholder: composerPlaceholder,
+    draftText: draftSeed?.text,
+    draftTextKey: draftSeed?.key,
+    themeTokens,
+    reducedMotion: Boolean(reduceMotion),
+    permission: toDeepAgentPermission(
+      permissionPreset ?? permissionPresetFromAutoAccept(autoAcceptPermissions)
+    ),
+    contextUsage: toDeepAgentContextUsage(contextUsage, contextBreakdown, contextWindow),
+    contextUsageFallbackTokens: agentPromptTokens(contextUsage),
+    onModelChange: (model) => {
+      if (!model) {
+        onOpenModelSettings();
+        return;
+      }
+      onApplyModel(model);
+    },
+    onValueChange: (value) => {
+      onApplyThinkingLevel(fromDeepAgentThinking(value, thinkingLevelOptions));
+    },
+    onPermissionChange: (permission) => {
+      const nextPreset = fromDeepAgentPermissionPreset(permission);
+      const current = permissionPreset ?? permissionPresetFromAutoAccept(autoAcceptPermissions);
+      if (nextPreset === current) return;
+      if (onApplyPermissionPreset) {
+        onApplyPermissionPreset(nextPreset);
+        return;
+      }
+      const nextAuto = autoAcceptFromPermissionPreset(nextPreset);
+      if (nextAuto !== autoAcceptPermissions) onToggleAutoAcceptPermissions();
+    },
+    requestFullAccessConfirm,
+    onStop: () => onPrimaryAction(),
+    onSubmit: (message) => {
+      const text = String(message.text || "").trim();
+      const mapped = deepAgentAttachmentsToGiteam(message.attachments || []);
+      if (message.model && message.model !== activeModel) onApplyModel(message.model);
+      if (message.thinking) {
+        onApplyThinkingLevel(fromDeepAgentThinking(message.thinking, thinkingLevelOptions));
+      }
+      const nextPreset = fromDeepAgentPermissionPreset(message.permission);
+      const current = permissionPreset ?? permissionPresetFromAutoAccept(autoAcceptPermissions);
+      if (nextPreset !== current) {
+        if (onApplyPermissionPreset) onApplyPermissionPreset(nextPreset);
+        else if (fromDeepAgentPermission(message.permission) !== autoAcceptPermissions) {
+          onToggleAutoAcceptPermissions();
+        }
+      }
+      if (!text && mapped.length === 0 && graphRefs.length === 0) return;
+      onComposerSubmit({ text, attachments: mapped });
     }
-    return [...map.entries()];
-  }, [configuredModelCandidates, getModelDisplay]);
-
-  const slashOverlay = slashOpen && slashSuggestions.length > 0 ? (
-    <div className="absolute bottom-full left-0 z-[2600] mb-2 grid max-h-72 w-[min(520px,calc(100vw-48px))] gap-1 overflow-auto rounded-xl border border-border/70 bg-background p-1 shadow-xl">
-      {slashSuggestions.map((command, index) => (
-        <Button
-          key={command.id}
-          className={cn(
-            "grid h-auto w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-3 py-2 text-left",
-            index === slashActiveIndex && "bg-accent text-accent-foreground"
-          )}
-          onMouseEnter={() => onHoverSlashSuggestion(index)}
-          onClick={() => onActivateSlashCommand(command)}
-          variant="ghost"
-        >
-          <span className="font-mono text-xs font-semibold text-muted-foreground">/{command.trigger}</span>
-          <span className="min-w-0 truncate text-sm font-medium">{command.title}</span>
-          <Badge variant="secondary" className="shrink-0 normal-case tracking-normal">
-            {command.source}
-          </Badge>
-          {command.description ? (
-            <span className="col-start-2 min-w-0 truncate text-xs text-muted-foreground">{command.description}</span>
-          ) : null}
-        </Button>
-      ))}
-    </div>
-  ) : null;
+  }), [
+    activeModel,
+    activeSessionBusy,
+    activeThinkingLevel,
+    autoAcceptPermissions,
+    onApplyPermissionPreset,
+    permissionPreset,
+    composerPlaceholder,
+    contextBreakdown,
+    contextUsage,
+    contextWindow,
+    draftSeed,
+    graphRefs.length,
+    models,
+    onApplyModel,
+    onApplyThinkingLevel,
+    onComposerSubmit,
+    onOpenModelSettings,
+    onPrimaryAction,
+    onToggleAutoAcceptPermissions,
+    reduceMotion,
+    themeTokens,
+    thinkingLevelOptions
+  ]);
 
   const previewStrip = (
     <AnimatePresence initial={false}>
@@ -346,7 +373,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           transition={previewExpandTransition}
           className="w-full min-w-0 overflow-hidden"
         >
-          <div className="flex w-full min-w-0 flex-wrap items-start justify-start gap-1.5">
+          <div className="flex w-full min-w-0 flex-wrap items-start justify-start gap-1.5 pb-2">
             {graphRefs.length > 0 ? (
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 {graphRefs.map((ref) => (
@@ -411,174 +438,23 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     </AnimatePresence>
   );
 
-  // ── Composer config trigger（DSH 风格）
-  //    InputGroup + InputGroupTextarea(p-3) + block-end addon:
-  //    [⊕ outline rounded-full] … ml-auto [模型 推理等级 ▾(ghost)] … [↑ contrast rounded-full].
-  //    摘要按钮展开「模型 › / 推理等级 ›」两行子菜单；子菜单复用官方
-  //    DropdownMenuSub 与 ModelSelector 列表基线，不引入自定义样式。
   const composerCard = (
-    <InputGroup className="giteam-composer rounded-2xl border-transparent bg-input/50">
+    <div ref={hostRef} className="relative z-40 w-full min-w-0 overflow-visible">
       {previewStrip}
-      <div className="relative w-full min-w-0">
-        {slashOverlay}
-        <PromptInputTextarea
-          ref={promptInputRef as RefObject<HTMLTextAreaElement>}
-          className="p-3"
-          placeholder={composerPlaceholder}
-          value={promptInput}
-          onCompositionStart={onPromptCompositionStart}
-          onCompositionEnd={onPromptCompositionEnd}
-          onChange={onPromptChange}
-          onKeyDown={onPromptKeyDown}
-          onPaste={onPromptPaste}
-          onContextMenu={onPromptContextMenu}
-          onDragOver={onPromptDragOver}
-          onDrop={onPromptDrop}
-          rows={1}
-        />
-      </div>
-      <InputGroupAddon align="block-end">
-        <InputGroupButton
-          size="icon-sm"
-          variant="outline"
-          className="rounded-full"
-          aria-label="添加附件"
-          title="添加附件"
-          onClick={onOpenAttachmentPicker}
-        >
-          <PlusIcon />
-        </InputGroupButton>
-        <input
-          ref={attachmentInputRef as RefObject<HTMLInputElement>}
-          type="file"
-          accept={attachmentInputAccept}
-          multiple
-          className="hidden"
-          onChange={onAttachmentInputChange}
-        />
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger asChild>
-            <InputGroupButton
-              size="sm"
-              variant="ghost"
-              className="ml-auto min-w-0 border-0 bg-transparent px-2 shadow-none hover:bg-transparent data-[state=open]:bg-transparent"
-              aria-label="模型与推理强度"
-              title="模型与推理强度"
-            >
-              <span className="min-w-0 truncate font-medium">{modelValueLabel}</span>
-              <span className="min-w-0 truncate text-muted-foreground">{thinkingValueLabel}</span>
-              <ChevronDownIcon />
-            </InputGroupButton>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            side="top"
-            className="giteam-composer-menu w-52"
-            sideOffset={6}
-          >
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger className="gap-2">
-                  <span>模型</span>
-                  <span className="min-w-0 flex-1 truncate text-right text-muted-foreground">{modelValueLabel}</span>
-                  <ChevronRightIcon />
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="giteam-composer-menu w-56" sideOffset={6}>
-                  <ModelSelectorList className="max-h-64">
-                    {hasConfiguredModel ? groups.map(([provider, refs], groupIndex) => (
-                      <Fragment key={provider}>
-                        {groupIndex > 0 ? <ModelSelectorSeparator /> : null}
-                        <ModelSelectorGroup heading={provider}>
-                          {refs.map((modelRef) => {
-                            const display = getModelDisplay(modelRef);
-                            const selected = modelRef === activeModel;
-                            return (
-                              <ModelSelectorItem
-                                key={modelRef}
-                                onSelect={() => onApplyModel(modelRef)}
-                                title={modelRef}
-                              >
-                                <span className="min-w-0 flex-1 truncate">{display.label || modelRef}</span>
-                                {selected ? <CheckIcon width={14} height={14} className="shrink-0" /> : null}
-                              </ModelSelectorItem>
-                            );
-                          })}
-                        </ModelSelectorGroup>
-                      </Fragment>
-                    )) : (
-                      <ModelSelectorGroup heading="未配置模型">
-                        <ModelSelectorItem onSelect={() => onOpenModelSettings()}>
-                          <span className="min-w-0 flex-1">打开设置配置模型…</span>
-                        </ModelSelectorItem>
-                      </ModelSelectorGroup>
-                    )}
-                  </ModelSelectorList>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger className="gap-2">
-                  <span>推理等级</span>
-                  <span className="min-w-0 flex-1 truncate text-right text-muted-foreground">
-                    {thinkingLevelMeta(activeThinkingLevel).label}
-                  </span>
-                  <ChevronRightIcon />
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="giteam-composer-menu w-40" sideOffset={6}>
-                  <DropdownMenuGroup>
-                    {thinkingLevelOptions.map((level) => {
-                      const meta = thinkingLevelMeta(level);
-                      const active = activeThinkingLevel === level;
-                      return (
-                        <DropdownMenuItem
-                          key={level}
-                          onSelect={() => onApplyThinkingLevel(level)}
-                          className="justify-between gap-2"
-                        >
-                          <span>{meta.label}</span>
-                          {active ? <CheckIcon width={14} height={14} /> : null}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={(event) => {
-              event.preventDefault();
-              onToggleAutoAcceptPermissions();
-            }}
-            className="justify-between gap-2"
-          >
-            <span>自动接受权限</span>
-            <Switch
-              size="sm"
-              checked={autoAcceptPermissions}
-              aria-label="自动接受权限"
-              tabIndex={-1}
-              className="pointer-events-none"
-            />
-          </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* 官方 demo 发送键是深色圆（aria-rhea primary ≈ near-black）；本项目 --primary
-            是蓝色主题色，直接用 default 会泄漏蓝色。contrast = bg-foreground 深色圆，
-            与官方按钮视觉一致（见 2026-10-30 会话 e055edb）。 */}
-        <PromptInputSubmit
-          size="icon-sm"
-          variant="contrast"
-          className="rounded-full"
-          disabled={submitDisabled}
-          onClick={onPrimaryAction}
-          onStop={onPrimaryAction}
-          status={showStop ? "streaming" : undefined}
-          aria-label={showStop ? "停止生成" : "发送"}
-          title={primaryTitle}
-        />
-      </InputGroupAddon>
-    </InputGroup>
+      <DeepAgentComposer options={composerOptions} className="relative z-40 w-full min-w-0 overflow-visible" />
+    </div>
   );
+
   return (
     <div className={showEmptyState ? "mx-auto flex w-full max-w-[620px] flex-col items-stretch justify-center px-2" : "w-full"}>
+      <FullAccessRiskDialog
+        open={fullAccessConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) settleFullAccessConfirm(false);
+          else setFullAccessConfirmOpen(true);
+        }}
+        onConfirm={() => settleFullAccessConfirm(true)}
+      />
       <div className="flex w-full flex-col gap-3">
         {activeSessionStale ? (
           <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
@@ -704,7 +580,10 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                   <Suggestion
                     key={suggestion}
                     suggestion={suggestion}
-                    onClick={onFillPrompt}
+                    onClick={(text) => {
+                      setDraftSeed({ text, key: Date.now() });
+                      onFillPrompt(text);
+                    }}
                     variant="outline"
                     className="border-border/70 bg-background/70 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   >
@@ -714,18 +593,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
               </Suggestions>
             ) : null}
           </div>
-        ) : (
-          <>
-            {composerCard}
-            {cacheHitRate !== null ? (
-              <div className="flex items-center justify-end gap-1 px-2 text-[10px] text-muted-foreground/60">
-                <span>缓存命中 {cacheHitRate}%</span>
-              </div>
-            ) : null}
-          </>
-        )}
+        ) : composerCard}
       </div>
     </div>
   );
-
 }

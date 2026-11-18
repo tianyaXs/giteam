@@ -2,7 +2,10 @@
    The composer subtree is pinned to the official shadcn/ai-elements
    baseline (16px inherited, normal weight) so app-wide density rules
    (body 13px, custom button/textarea recipes) cannot leak in.
-   Scope: .giteam-composer on the InputGroup root. */
+   Scope: .giteam-composer on the InputGroup root.
+
+   重要：只改带 data-size 的 InputGroupButton（附件/模型/发送）。
+   官方 ContextTrigger 是普通 Button，没有 data-size，不能被这些规则碰到。 */
 .giteam-composer {
   font-size: 16px;
   line-height: 1.5;
@@ -16,7 +19,7 @@
   font-weight: 400;
   opacity: 1;
 }
-.giteam-composer button {
+.giteam-composer button[data-size] {
   font: inherit;
   font-weight: 500;
 }

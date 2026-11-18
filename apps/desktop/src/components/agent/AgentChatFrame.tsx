@@ -155,8 +155,8 @@ export function AgentChatFrame({
 
   if (empty) {
     return (
-      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-hidden border-0 bg-transparent px-4 pb-[14vh] pt-6 shadow-none">
-        <CardContent className="mx-auto w-full max-w-[620px] p-0">
+      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-visible border-0 bg-transparent px-4 pb-[14vh] pt-6 shadow-none">
+        <CardContent className="relative z-40 mx-auto w-full max-w-[620px] overflow-visible p-0">
           {composer}
         </CardContent>
       </Card>
@@ -166,8 +166,9 @@ export function AgentChatFrame({
   return (
     // CSS 变量挂在根 Card：CardContent（消息流）与 CardFooter（输入框）是兄弟节点，
     // 变量必须覆盖两者，输入框才会跟着内容区一起滑动。
+    // overflow 只裁消息流；footer 必须 visible，否则 Deep Agent 模型/推理菜单会被裁切。
     <Card
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden border-0 bg-transparent shadow-none"
+      className="flex h-full min-h-0 w-full flex-col overflow-visible border-0 bg-transparent shadow-none"
       style={contentStyle}
     >
       <CardContent
@@ -197,7 +198,7 @@ export function AgentChatFrame({
           </>
         ) : null}
       </CardContent>
-      <div className="relative w-full shrink-0">
+      <div className="relative z-40 flex w-full shrink-0 overflow-visible">
         {jumpLatest ? (
           // 按钮水平定位与输入框 composer 同源（left=--chat-content-left + max-w-860 + px-8），
           // 侧栏收放 contentLeft 变化时同帧对齐，不再钉在全宽中心而偏离输入框。
@@ -206,17 +207,18 @@ export function AgentChatFrame({
           </div>
         ) : null}
         {/*
-          与消息流 Virtuoso 的 scrollbar-gutter:stable 对齐：footer 同样预留滚动条槽位，
-          使输入框内容区与消息流左右边界对齐——消息流 Virtuoso 因 stable 预留了右侧滚动条槽，
-          内容整体偏左、左侧压输入框左边线。footer 用 overflow-y-auto + stable：内容不溢出时
-          不显示滚动条，但仍预留 stable 槽位（若再用 scrollbar-width:none / ::-webkit-scrollbar
-          隐藏滚动条，WebKit 下 stable 会失效而不预留，导致再次错位）。
+          与消息流 Virtuoso 的 scrollbar-gutter:stable 对齐：右侧用零宽滚动槽预留 gutter，
+          footer 本身保持 overflow:visible，避免裁切 Deep Agent 向上展开的模型/推理菜单。
         */}
-        <CardFooter className="gt-subtle-scrollbar w-full shrink-0 overflow-y-auto p-0 [scrollbar-gutter:stable]">
+        <CardFooter className="min-w-0 flex-1 overflow-visible p-0">
           <div className="ml-[var(--chat-content-left,auto)] mr-auto w-full max-w-[860px] px-8 pb-4 pt-3">
             {composer}
           </div>
         </CardFooter>
+        <div
+          aria-hidden="true"
+          className="pointer-events-none w-0 shrink-0 overflow-y-scroll [scrollbar-gutter:stable]"
+        />
       </div>
     </Card>
   );

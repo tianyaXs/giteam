@@ -9,17 +9,25 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::lock::Mutex as AsyncMutex;
-use pi::sdk::{create_agent_session, AbortHandle, AgentSessionHandle, SessionOptions};
+use pi::sdk::{
+    create_agent_session, AbortHandle, AgentSessionHandle, SessionOptions, ToolFactory,
+};
 use thiserror::Error;
 
+use super::context_breakdown::{
+    billed_prompt_tokens, build_context_breakdown, estimate_tool_schema_tokens,
+    ContextBreakdownInput,
+};
 use super::https_egress::{ensure_https_egress_shim_with_paths, HttpsEgressShimState};
 use super::interactions::{InteractionHub, InteractionRunContext, InteractionStore};
-use super::messages::assign_stable_message_ids;
+use super::messages::{
+    assign_stable_message_ids, attach_session_usage, project_session_usage, AgentUsageProjection,
+};
 use super::provider_sanitizer::{
     ensure_tool_call_id_sanitizer, shorten_tool_call_id, OPENAI_TOOL_CALL_ID_MAX_LEN,
 };
 use super::subagents::{SubagentHost, SubagentSpawnRequest, SubagentSpawnResult};
-use super::tools::GiteamToolFactory;
+use super::tools::{collect_tool_schema_blobs, GiteamToolFactory};
 use super::{
     ensure_pi_agent_dir_env, AgentEvent, AgentEventEnvelope, AgentInteraction,
     AgentInteractionReply, AgentMessage, AgentModelInfo, AgentPart, AgentProviderInfo, AgentRole,
@@ -123,11 +131,9 @@ impl PiSessionConfig {
             Some(discipline) => base_prompt.map(|base| format!("{base}\n\n{discipline}")),
             None => base_prompt,
         };
-        // append 段按「稳定 → 易变」排序（对齐 dsh 的 policy-last 设计：
-        // 越靠后的段越容易变，前段命中缓存的概率越高）。
-        // 1) 项目记忆（GITEAM.md，会话级稳定）→ 2) 工作区快照（git/平台/
-        // 验证命令，按天粒度）→ 3) skills 清单（仓库级稳定）→ 4) 跨会话
-        // digest（每次会话/turn 都可能变化，放最后）→ 5) 调用方显式追加段。
+        // system append 只保留稳定段：项目记忆 → 工作区快照 → skills 清单。
+        // digest 与调用方 extra 在 prompt 发送时组成 runtime user snapshot，
+        // 避免 pi 后续追加 Project Context/date/cwd 把动态段重新挤到中间。
         // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集
         // （含祖先目录），此处再注入会导致双重注入。
         // 子 agent（Hermes skip_context_files）：保留记忆与工作区快照，不注入
@@ -154,16 +160,6 @@ impl PiSessionConfig {
                 append_parts.push(skills);
             }
         }
-        // 跨会话感知（被动层）：近期其他会话的意图/改动/未闭环错误摘要。
-        // 子 agent 不注入——上下文由父会话传递，保持 ephemeral 提示精简。
-        if self.session_kind != "subagent" {
-            if let Some(digest) = wrap_asset_graph_digest(&self.repo_path) {
-                append_parts.push(digest);
-            }
-        }
-        if let Some(extra) = self.append_system_prompt.as_deref() {
-            append_parts.push(extra.to_string());
-        }
         let append_system_prompt = (!append_parts.is_empty()).then(|| append_parts.join("\n\n"));
         SessionOptions {
             provider: self.provider,
@@ -181,10 +177,8 @@ impl PiSessionConfig {
             session_path: self.session_path,
             session_dir: Some(self.session_dir),
             extension_paths: self.extension_paths,
-            // None（不限制）映射为 usize::MAX：pi 官方支持的 never-warn 用法
-            //（pi agent.rs `should_warn_at_iteration_threshold` 文档注释），
-            // 警告与 100% 硬停双双不触发；Some(n) 原样透传。
-            max_tool_iterations: self.max_tool_iterations.unwrap_or(usize::MAX),
+            // 默认 200 硬顶，防止失控循环；调用方可显式传入更大值。
+            max_tool_iterations: self.max_tool_iterations.unwrap_or(200),
             ..SessionOptions::default()
         }
     }
@@ -192,11 +186,82 @@ impl PiSessionConfig {
 
 /// 资产图谱近期变更摘要（跨会话感知的被动注入层）。
 /// 图谱未挂载或图为空时返回 None（零成本跳过）。
-fn wrap_asset_graph_digest(repo_path: &std::path::Path) -> Option<String> {
+fn wrap_asset_graph_digest(
+    repo_path: &std::path::Path,
+    exclude_session_id: Option<&str>,
+    relevance_query: Option<&str>,
+) -> Option<String> {
     let graph = crate::asset_graph::attached(repo_path)?;
     let graph = graph.lock().ok()?;
-    let digest = graph.query().recent_changes_digest(8);
+    let digest = graph.query().recent_changes_digest_filtered(
+        8,
+        exclude_session_id,
+        relevance_query,
+    );
     (!digest.is_empty()).then_some(digest)
+}
+
+/// 将可 supersede 的 runtime Custom 写入会话：旧快照 display=false，仅最新进入模型。
+async fn write_runtime_context_snapshot(
+    handle: &AgentSessionHandle,
+    content: String,
+) -> Result<(), String> {
+    let cx = pi::agent_cx::AgentCx::for_request();
+    let mut session = handle
+        .session()
+        .session
+        .lock(cx.cx())
+        .await
+        .map_err(|error| error.to_string())?;
+    let runtime_ids: Vec<String> = session
+        .entries_for_current_path()
+        .into_iter()
+        .filter_map(|entry| {
+            let pi::session::SessionEntry::Message(message_entry) = entry else {
+                return None;
+            };
+            let pi::session::SessionMessage::Custom { custom_type, .. } =
+                &message_entry.message
+            else {
+                return None;
+            };
+            if custom_type == super::runtime_context::RUNTIME_CONTEXT_CUSTOM_TYPE {
+                entry.base().id.clone()
+            } else {
+                None
+            }
+        })
+        .collect();
+    for id in runtime_ids {
+        let Some(entry) = session.get_entry_mut(&id) else {
+            continue;
+        };
+        if let pi::session::SessionEntry::Message(message_entry) = entry {
+            if let pi::session::SessionMessage::Custom { display, .. } =
+                &mut message_entry.message
+            {
+                *display = false;
+            }
+        }
+    }
+    let timestamp = i64::try_from(now_ms()).unwrap_or(0);
+    session.append_model_message(super::runtime_context::runtime_context_message(
+        content, timestamp,
+    ));
+    Ok(())
+}
+
+async fn load_session_usage_projection(
+    handle: &AgentSessionHandle,
+) -> Result<AgentUsageProjection, String> {
+    let cx = pi::agent_cx::AgentCx::for_request();
+    let session = handle
+        .session()
+        .session
+        .lock(cx.cx())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(project_session_usage(&session.entries_for_current_path()))
 }
 
 /// 读取项目记忆（仅 GITEAM.md）并用「项目记忆」小节包裹，供 append 段拼接。
@@ -264,6 +329,9 @@ struct PersistedSessionRecord {
     /// 单次 prompt 工具调用上限；持久化以便恢复时回填，旧 catalog 靠 default 兼容。
     #[serde(default)]
     max_tool_iterations: Option<usize>,
+    /// 权限预设（default / auto_review / full_access）；旧 catalog 缺省按 default。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permission_preset: Option<String>,
     /// `"primary"` | `"subagent"`；旧 catalog 缺省按 primary。
     #[serde(default = "default_session_kind")]
     session_kind: String,
@@ -309,6 +377,12 @@ struct ManagedSession {
     sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
     /// prompt 会长时间占用 `handle` 锁；桌面/手机并发 `messages()` 时用此快照避免转圈卡住。
     message_snapshot: Arc<Mutex<Vec<AgentMessage>>>,
+    /// 完整当前分支的 usage；实时完成事件按消息 id 替换，历史从原始 entries 重建。
+    usage_projection: Arc<Mutex<AgentUsageProjection>>,
+    /// 原 append_system_prompt 的调用方扩展；现改为每次 prompt 的 runtime snapshot。
+    runtime_prompt: Option<String>,
+    /// 动态 runtime Custom 的 supersede 投影（仅内容变化时写入）。
+    runtime_context: Mutex<super::runtime_context::RuntimeContextProjection>,
     /// steer 排队（run 进行中的用户补充指令）。注册为 pi 的 steering
     /// fetcher 后由 agent loop 在工具批/回合边界自动 drain——同一次 run
     /// 内中轮注入（收到即跳过剩余工具批，等价 Codex 插话）；run 结束后
@@ -319,6 +393,25 @@ struct ManagedSession {
     session_kind: String,
     parent_session_id: Option<String>,
     parent_tool_call_id: Option<String>,
+    /// 工具白名单（与 catalog 同步），供上下文分类占用估计。
+    enabled_tools: Mutex<Option<Vec<String>>>,
+    /// 工具 schema 估计缓存（enabled_tools 变化时清空）。
+    tool_schema_tokens: Mutex<Option<(u64, u64)>>,
+    /// 本轮 prompt 固定桶采样；assistant 完成 / 事件路径写入 contextBreakdown。
+    pending_context_breakdown: Arc<Mutex<Option<PendingContextBreakdown>>>,
+}
+
+/// 本轮 prompt 采样上下文分类占用所需的慢变输入（完成时再拼 billed 残差）。
+#[derive(Debug, Clone)]
+struct PendingContextBreakdown {
+    enabled_tools: Option<Vec<String>>,
+    provider: Option<String>,
+    model: Option<String>,
+    sandbox_text: Option<String>,
+    digest: Option<String>,
+    runtime_extra: Option<String>,
+    summary: Option<String>,
+    tool_schema_tokens: (u64, u64),
 }
 
 struct ActiveRun {
@@ -754,10 +847,16 @@ impl PiAgentService {
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
+            usage_projection: Arc::new(Mutex::new(AgentUsageProjection::default())),
+            runtime_prompt: append_system_prompt.clone(),
+            runtime_context: Mutex::new(super::runtime_context::RuntimeContextProjection::default()),
             pending_steers,
             session_kind: session_kind.clone(),
             parent_session_id: parent_session_id.clone(),
             parent_tool_call_id: parent_tool_call_id.clone(),
+            enabled_tools: Mutex::new(enabled_tools.clone()),
+            tool_schema_tokens: Mutex::new(None),
+            pending_context_breakdown: Arc::new(Mutex::new(None)),
         });
         // 先写 catalog，再进 sessions map：list_sessions 轮询若夹在中间，
         // 会因无 record 默认 primary，把刚创建的子会话短暂漏进侧栏。
@@ -777,6 +876,11 @@ impl PiAgentService {
                 append_system_prompt,
                 thinking,
                 max_tool_iterations,
+                permission_preset: Some(
+                    super::permission_presets::PermissionPreset::Default
+                        .as_str()
+                        .to_string(),
+                ),
                 session_kind,
                 parent_session_id,
                 parent_tool_call_id,
@@ -1119,18 +1223,26 @@ impl PiAgentService {
         // pi 读历史在专用 runtime 执行（见 pi_runtime 模块文档）；busy（try_lock
         // 失败）返回 None 走快照兜底，读取失败则照原语义报错。
         let session_for_read = Arc::clone(&session);
-        let locked: Option<Vec<AgentMessage>> = super::pi_runtime::run(async move {
-            let Some(handle) = session_for_read.handle.try_lock() else {
-                return Ok(None);
-            };
-            let messages = handle.messages().await.map_err(|error| error.to_string())?;
-            Ok(Some(assign_stable_message_ids(
-                messages.into_iter().map(AgentMessage::from_pi).collect(),
-            )))
-        })
-        .await
-        .map_err(PiAgentError::Sdk)?;
-        if let Some(messages) = locked {
+        let locked: Option<(Vec<AgentMessage>, AgentUsageProjection)> =
+            super::pi_runtime::run(async move {
+                let Some(handle) = session_for_read.handle.try_lock() else {
+                    return Ok(None);
+                };
+                // 先读原始 entries：model messages 会被 compaction 裁剪，不能用于总量。
+                let projection = load_session_usage_projection(&handle).await?;
+                let messages = handle.messages().await.map_err(|error| error.to_string())?;
+                let mut messages = assign_stable_message_ids(
+                    messages.into_iter().map(AgentMessage::from_pi).collect(),
+                );
+                attach_session_usage(&mut messages, projection.total());
+                Ok(Some((messages, projection)))
+            })
+            .await
+            .map_err(PiAgentError::Sdk)?;
+        if let Some((messages, projection)) = locked {
+            if let Ok(mut current) = session.usage_projection.lock() {
+                *current = projection;
+            }
             if let Ok(mut snap) = session.message_snapshot.lock() {
                 *snap = messages.clone();
             }
@@ -1212,6 +1324,57 @@ impl PiAgentService {
         self.register_run(run_id, session_id, abort_handle)?;
         let abort_signal_for_prompt = abort_signal.clone();
         let prompt = prompt.into();
+        // 动态段不再拼进用户正文：以可 supersede 的 Custom 注入，保护前缀缓存与历史。
+        // 被动 digest **不**按本轮 prompt 做相关性裁剪——相关性每轮都变会改写
+        // 靠前的 runtime Custom，打爆 kimi/Anthropic 前缀缓存（cache_read 全程为 0）。
+        // 按需检索仍走 asset_context 工具。
+        let digest = (session.session_kind != "subagent")
+            .then(|| {
+                wrap_asset_graph_digest(&session.repo_path, Some(session_id), None)
+            })
+            .flatten();
+        // sandbox 策略文案随 permission preset 热切换：放 runtime 最前，跨轮 project 跳过重复写入。
+        let sandbox_text = Some(
+            super::sandbox_policy::resolve_with_mode(
+                &session.repo_path,
+                session.hub.sandbox_mode(),
+            )
+            .model_facing_text(),
+        );
+        let runtime_snapshot = super::runtime_context::build_runtime_snapshot(
+            sandbox_text.clone(),
+            digest.clone(),
+            session.runtime_prompt.as_deref(),
+        );
+        // 采样本轮固定桶（工具 schema + 装配段），完成时再用 billed prompt 残差合成分类。
+        let tool_schema_tokens = self.tool_schema_tokens_for(&session).await;
+        let (provider, model) = self
+            .records
+            .lock()
+            .ok()
+            .and_then(|records| {
+                records.get(session_id).map(|record| {
+                    (Some(record.provider.clone()), Some(record.model.clone()))
+                })
+            })
+            .unwrap_or((None, None));
+        let enabled_tools = session
+            .enabled_tools
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Ok(mut pending) = session.pending_context_breakdown.lock() {
+            *pending = Some(PendingContextBreakdown {
+                enabled_tools,
+                provider,
+                model,
+                sandbox_text,
+                digest,
+                runtime_extra: session.runtime_prompt.clone(),
+                summary: None,
+                tool_schema_tokens,
+            });
+        }
 
         let translator = Arc::new(PiEventTranslator::new(
             session.repo_path.to_string_lossy(),
@@ -1232,6 +1395,10 @@ impl PiAgentService {
         let subscribers = Arc::clone(&self.subscribers);
         let event_buffers = Arc::clone(&self.event_buffers);
         let message_snapshot = Arc::clone(&session.message_snapshot);
+        let usage_projection = Arc::clone(&session.usage_projection);
+        let pending_context_breakdown = Arc::clone(&session.pending_context_breakdown);
+        let breakdown_repo_path = session.repo_path.clone();
+        let breakdown_session_kind = session.session_kind.clone();
         // 穿插正文上浮窗/光标药丸：assistant 的 text 块完成即推 OsController::notify，
         // 与动作前的进展句共用同一通道（浮窗与光标 label 同步跟进会话正文）。
         let os_controller_for_events = self.current_os_controller();
@@ -1240,7 +1407,7 @@ impl PiAgentService {
         let accept_terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let accept_terminal_for_events = Arc::clone(&accept_terminal);
         let on_event = Arc::new(move |event: pi::sdk::AgentEvent| {
-            if let Some(event) = event_translator.translate(event) {
+            if let Some(mut event) = event_translator.translate(event) {
                 if !accept_terminal_for_events.load(Ordering::Relaxed) {
                     match &event.event {
                         AgentEvent::RunCompleted | AgentEvent::RunFailed { .. } => return,
@@ -1255,7 +1422,36 @@ impl PiAgentService {
                     }
                 }
                 // 同步快照：并发 messages() 在 handle 被占用时可读到用户消息与进行中的 assistant。
-                if let AgentEvent::MessageCompleted { message } = &event.event {
+                if let AgentEvent::MessageCompleted { message } = &mut event.event {
+                    if message.role == AgentRole::Assistant {
+                        if let Some(usage) = message.usage.clone() {
+                            if let Ok(mut projection) = usage_projection.lock() {
+                                // 与历史 assign_stable_message_ids 一样按 base id 去重分配，
+                                // 避免同毫秒多步互相替换导致会话累计偏低。
+                                projection.insert_new(message.id.clone(), usage.clone());
+                                message.session_usage = Some(projection.total());
+                            }
+                            if let Ok(pending_guard) = pending_context_breakdown.lock() {
+                                if let Some(pending) = pending_guard.as_ref() {
+                                    message.context_breakdown = Some(build_context_breakdown(
+                                        ContextBreakdownInput {
+                                            repo_path: &breakdown_repo_path,
+                                            enabled_tools: pending.enabled_tools.as_deref(),
+                                            provider: pending.provider.as_deref(),
+                                            model: pending.model.as_deref(),
+                                            session_kind: breakdown_session_kind.as_str(),
+                                            runtime_extra: pending.runtime_extra.as_deref(),
+                                            sandbox_text: pending.sandbox_text.as_deref(),
+                                            digest: pending.digest.as_deref(),
+                                            summary: pending.summary.as_deref(),
+                                            tool_schema_tokens: pending.tool_schema_tokens,
+                                            billed_prompt: billed_prompt_tokens(&usage),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     if let Ok(mut snap) = message_snapshot.lock() {
                         if let Some(pos) = snap.iter().position(|item| item.id == message.id) {
                             snap[pos] = message.clone();
@@ -1375,17 +1571,50 @@ impl PiAgentService {
         let session_for_run = Arc::clone(&session);
         let on_event_for_run = Arc::clone(&on_event);
         let abort_signal_in_run = abort_signal.clone();
+        let runtime_snapshot_for_run = runtime_snapshot;
         let (result, retry_count, final_error) = super::pi_runtime::run(async move {
             let mut retry_count: u32 = 0;
             // 图片降级重试标记：provider 拒收图片时去图重试一次，不报错中断（配套"默认允许图片"）。
             let mut image_degraded_retry = false;
             let mut handle = session_for_run.handle.lock().await;
+            // 动态 runtime：仅内容变化时写入 Custom，旧快照 display=false（不进模型）。
+            // 先在锁外算出是否需要写入，避免 std::MutexGuard 跨 await。
+            let runtime_to_write = session_for_run
+                .runtime_context
+                .lock()
+                .ok()
+                .and_then(|mut projection| projection.project(&runtime_snapshot_for_run));
+            if let Some(content) = runtime_to_write {
+                if let Err(error) =
+                    write_runtime_context_snapshot(&handle, content).await
+                {
+                    eprintln!("[pi-agent] sync runtime context failed: {error}");
+                }
+            }
+            // 冷恢复/热切后先从原始日志重建，再接受本 run 的实时替换样本。
+            let restored_total = match load_session_usage_projection(&handle).await {
+                Ok(projection) => {
+                    let total = projection.total();
+                    if let Ok(mut current) = session_for_run.usage_projection.lock() {
+                        *current = projection;
+                    }
+                    Some(total)
+                }
+                Err(error) => {
+                    eprintln!("[pi-agent] restore session usage failed: {error}");
+                    None
+                }
+            };
             // 持锁前先把当前历史写入快照，避免并发 messages() 读到空列表。
             if let Ok(current) = handle.messages().await {
+                let mut current = assign_stable_message_ids(
+                    current.into_iter().map(AgentMessage::from_pi).collect(),
+                );
+                if let Some(total) = restored_total {
+                    attach_session_usage(&mut current, total);
+                }
                 if let Ok(mut snap) = session_for_run.message_snapshot.lock() {
-                    *snap = assign_stable_message_ids(
-                        current.into_iter().map(AgentMessage::from_pi).collect(),
-                    );
+                    *snap = current;
                 }
             }
             // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），
@@ -1668,6 +1897,12 @@ impl PiAgentService {
             // 此处不再手动 drain。
             // run 主体结束：停掉周期 flush（此后 pi 统一落盘，双方不竞争）。
             flush_task.abort();
+            // abort/retry 可能回滚 incomplete assistant；以最终原始分支校正总量。
+            if let Ok(projection) = load_session_usage_projection(&handle).await {
+                if let Ok(mut current) = session_for_run.usage_projection.lock() {
+                    *current = projection;
+                }
+            }
             (attempt_outcome, retry_count, final_error)
         })
         .await;
@@ -1753,7 +1988,24 @@ impl PiAgentService {
         }
 
         result
-            .map(|message| AgentMessage::from_pi_assistant(message, Some(run_id.to_string())))
+            .map(|message| {
+                let mut message =
+                    AgentMessage::from_pi_assistant(message, Some(run_id.to_string()));
+                message.session_usage = session
+                    .usage_projection
+                    .lock()
+                    .ok()
+                    .map(|projection| projection.total());
+                self.finalize_context_breakdown(&session, &mut message);
+                if let Ok(mut snap) = session.message_snapshot.lock() {
+                    if let Some(pos) = snap.iter().position(|item| item.id == message.id) {
+                        snap[pos].context_breakdown = message.context_breakdown.clone();
+                    } else if message.context_breakdown.is_some() {
+                        snap.push(message.clone());
+                    }
+                }
+                message
+            })
             .map_err(|error| PiAgentError::Sdk(error.to_string()))
     }
 
@@ -1875,6 +2127,7 @@ impl PiAgentService {
     }
 
     /// 显式开启/关闭 session 级自动接受（默认关；审计事件照常发布）。
+    /// 仅在 Default↔AutoReview 间切换，不会升到 FullAccess。
     pub async fn set_auto_approve(
         &self,
         session_id: &str,
@@ -1882,6 +2135,40 @@ impl PiAgentService {
     ) -> Result<(), PiAgentError> {
         let session = self.get_session(session_id).await?;
         session.hub.set_auto_approve(enabled);
+        self.persist_session_permission_preset(session_id, session.hub.permission_preset())?;
+        Ok(())
+    }
+
+    /// 对齐 dsh：一次设置 sandbox + auto_approve。
+    pub async fn set_permission_preset(
+        &self,
+        session_id: &str,
+        preset: &str,
+    ) -> Result<String, PiAgentError> {
+        let parsed = super::permission_presets::PermissionPreset::parse(preset).ok_or_else(|| {
+            PiAgentError::Interaction(format!("unknown permission preset: {preset}"))
+        })?;
+        let session = self.get_session(session_id).await?;
+        session.hub.set_permission_preset(parsed);
+        self.persist_session_permission_preset(session_id, parsed)?;
+        Ok(parsed.as_str().to_string())
+    }
+
+    fn persist_session_permission_preset(
+        &self,
+        session_id: &str,
+        preset: super::permission_presets::PermissionPreset,
+    ) -> Result<(), PiAgentError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|error| PiAgentError::State(error.to_string()))?;
+        if let Some(record) = records.get_mut(session_id) {
+            record.permission_preset = Some(preset.as_str().to_string());
+            record.updated_at_ms = now_ms();
+        }
+        drop(records);
+        self.persist_catalog()?;
         Ok(())
     }
 
@@ -2157,6 +2444,7 @@ impl PiAgentService {
             if let Some(record) = records.get_mut(session_id) {
                 record.enabled_tools = enabled_tools.clone();
                 record.append_system_prompt = append_system_prompt.clone();
+                // 同步内存会话侧缓存键（工具 schema 估计）——下面重建 handle 后仍需。
                 record.updated_at_ms = now_ms();
             }
         }
@@ -2795,6 +3083,13 @@ impl PiAgentService {
         let hub = Arc::new(InteractionHub::new(Arc::clone(&self.interactions)));
         // 绑定仓库并加载项目级权限规则（.giteam/permissions.json），使持久化规则随会话生效。
         hub.set_repo_path(record.repo_path.clone());
+        if let Some(preset) = record
+            .permission_preset
+            .as_deref()
+            .and_then(super::permission_presets::PermissionPreset::parse)
+        {
+            hub.set_permission_preset(preset);
+        }
         // 冷启动恢复同样在异步边界重建 MCP 运行时（只读快照，无副作用）。
         let mcp_runtime = match super::mcp::load_for_repo(&record.repo_path).await {
             Ok(runtime) => Some(runtime),
@@ -2839,10 +3134,16 @@ impl PiAgentService {
             https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
+            usage_projection: Arc::new(Mutex::new(AgentUsageProjection::default())),
+            runtime_prompt: record.append_system_prompt.clone(),
+            runtime_context: Mutex::new(super::runtime_context::RuntimeContextProjection::default()),
             pending_steers,
             session_kind: record.session_kind.clone(),
             parent_session_id: record.parent_session_id.clone(),
             parent_tool_call_id: record.parent_tool_call_id.clone(),
+            enabled_tools: Mutex::new(record.enabled_tools.clone()),
+            tool_schema_tokens: Mutex::new(None),
+            pending_context_breakdown: Arc::new(Mutex::new(None)),
         });
         let mut sessions = self
             .sessions
@@ -3159,6 +3460,88 @@ fn mime_from_image_path(path: &str) -> String {
         _ => "image/png",
     }
     .to_string()
+}
+
+impl PiAgentService {
+    /// 估计当前会话工具 schema 占用（内置 vs MCP），结果缓存在 ManagedSession。
+    async fn tool_schema_tokens_for(
+        &self,
+        session: &ManagedSession,
+    ) -> (u64, u64) {
+        if let Ok(guard) = session.tool_schema_tokens.lock() {
+            if let Some(cached) = *guard {
+                return cached;
+            }
+        }
+        let enabled = session
+            .enabled_tools
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        let mcp_runtime = match super::mcp::load_for_repo(&session.repo_path).await {
+            Ok(runtime) => Some(runtime),
+            Err(_) => None,
+        };
+        let factory = GiteamToolFactory::new(
+            Arc::clone(&session.hub),
+            enabled.as_deref(),
+            None,
+            None,
+            None,
+            None,
+            super::tools::ToolBudgetConfig::for_primary(None),
+            mcp_runtime,
+        );
+        let default_tools: Vec<&str> = super::prompt::ALL_BUILTIN_TOOLS.to_vec();
+        let enabled_owned: Option<Vec<&str>> = enabled
+            .as_ref()
+            .map(|tools| tools.iter().map(String::as_str).collect());
+        let enabled_slice: &[&str] = enabled_owned.as_deref().unwrap_or(&default_tools);
+        let registry = factory.create_tool_registry(
+            enabled_slice,
+            &session.repo_path,
+            &pi::sdk::Config::default(),
+        );
+        let blobs = collect_tool_schema_blobs(&registry);
+        let tokens = estimate_tool_schema_tokens(&blobs);
+        if let Ok(mut guard) = session.tool_schema_tokens.lock() {
+            *guard = Some(tokens);
+        }
+        tokens
+    }
+
+    fn finalize_context_breakdown(
+        &self,
+        session: &ManagedSession,
+        message: &mut AgentMessage,
+    ) {
+        let Some(usage) = message.usage.clone() else {
+            return;
+        };
+        let billed = billed_prompt_tokens(&usage);
+        let pending = session
+            .pending_context_breakdown
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let Some(pending) = pending else {
+            return;
+        };
+        let breakdown = build_context_breakdown(ContextBreakdownInput {
+            repo_path: &session.repo_path,
+            enabled_tools: pending.enabled_tools.as_deref(),
+            provider: pending.provider.as_deref(),
+            model: pending.model.as_deref(),
+            session_kind: session.session_kind.as_str(),
+            runtime_extra: pending.runtime_extra.as_deref(),
+            sandbox_text: pending.sandbox_text.as_deref(),
+            digest: pending.digest.as_deref(),
+            summary: pending.summary.as_deref(),
+            tool_schema_tokens: pending.tool_schema_tokens,
+            billed_prompt: billed,
+        });
+        message.context_breakdown = Some(breakdown);
+    }
 }
 
 /// 装配带审批门禁的 SessionOptions：GiteamToolFactory 包装写/执行类工具，
@@ -3623,7 +4006,8 @@ fn derive_session_title(messages: &[pi::sdk::Message]) -> Option<String> {
                 })
                 .unwrap_or_default(),
         };
-        let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let cleaned = super::runtime_context::strip_runtime_context(&text);
+        let collapsed: String = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
             continue;
         }
@@ -3652,7 +4036,8 @@ fn derive_agent_session_title(messages: &[AgentMessage]) -> Option<String> {
                 _ => None,
             })
             .unwrap_or("");
-        let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let cleaned = super::runtime_context::strip_runtime_context(text);
+        let collapsed: String = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
             continue;
         }
@@ -3664,6 +4049,46 @@ fn derive_agent_session_title(messages: &[AgentMessage]) -> Option<String> {
         });
     }
     None
+}
+
+#[cfg(test)]
+mod runtime_prompt_tests {
+    use super::PiSessionConfig;
+    use crate::pi_agent::runtime_context::{build_runtime_snapshot, strip_runtime_context};
+
+    #[test]
+    fn dynamic_sections_are_runtime_snapshot_not_user_prompt() {
+        let snapshot = build_runtime_snapshot(
+            Some("SANDBOX".to_string()),
+            Some("ASSET_DIGEST".to_string()),
+            Some("MODE_POLICY"),
+        );
+        let sandbox = snapshot.find("SANDBOX").expect("sandbox");
+        let digest = snapshot.find("ASSET_DIGEST").expect("asset digest");
+        let policy = snapshot.find("MODE_POLICY").expect("mode policy");
+        assert!(sandbox < digest);
+        assert!(digest < policy);
+        assert!(snapshot.ends_with("MODE_POLICY"));
+        assert_eq!(strip_runtime_context(&format!("USER\n\n{snapshot}")), "USER");
+    }
+
+    #[test]
+    fn runtime_extra_stays_out_of_stable_system_append() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = PiSessionConfig::persistent(temp.path(), temp.path());
+        config.append_system_prompt = Some("MODE_POLICY".to_string());
+
+        let options = config.into_sdk_options();
+        assert!(!options
+            .append_system_prompt
+            .unwrap_or_default()
+            .contains("MODE_POLICY"));
+    }
+
+    #[test]
+    fn empty_dynamic_sections_yield_empty_snapshot() {
+        assert_eq!(build_runtime_snapshot(None, None, None), "");
+    }
 }
 
 #[cfg(test)]
@@ -3693,6 +4118,8 @@ mod title_tests {
                 text: "  帮我\n审查一下   最近的改动 ".to_string(),
             }],
             usage: None,
+            session_usage: None,
+            context_breakdown: None,
         }];
         assert_eq!(
             derive_agent_session_title(&messages).as_deref(),
@@ -4037,6 +4464,7 @@ mod tests {
             append_system_prompt: None,
             thinking: None,
             max_tool_iterations: None,
+            permission_preset: Some("auto_review".to_string()),
             session_kind: "primary".to_string(),
             parent_session_id: None,
             parent_tool_call_id: None,

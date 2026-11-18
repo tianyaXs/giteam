@@ -24,6 +24,9 @@
   --text-xs: 12px;
   --text-lg: 18px;
 
+  /* Bare `border` must not fall back to currentColor (near-black). */
+  --default-border-color: var(--color-border);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

@@ -69,6 +69,18 @@ describe("stripInjectedUserPromptBlocks", () => {
     expect(isCompactionSummaryUserText(raw)).toBe(true);
     expect(stripInjectedUserPromptBlocks(raw)).toBe("");
   });
+
+  it("strips legacy runtime context embedded in user text", () => {
+    const raw = [
+      "帮我修登录",
+      "",
+      "# Runtime Context",
+      "",
+      "## 仓库近期变更上下文",
+      "- 其他会话",
+    ].join("\n");
+    expect(stripInjectedUserPromptBlocks(raw)).toBe("帮我修登录");
+  });
 });
 
 describe("normalizeUserMessageForDisplay", () => {

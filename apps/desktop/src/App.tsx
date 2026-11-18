@@ -248,6 +248,14 @@ import {
   type AgentThinkingLevel
 } from "./lib/agentComposerSettings";
 import {
+  autoAcceptFromPermissionPreset,
+  loadPermissionPreset,
+  parseAgentPermissionPreset,
+  permissionPresetFromAutoAccept,
+  savePermissionPreset,
+  type AgentPermissionPreset
+} from "./lib/agentPermissionPresets";
+import {
   buildConfiguredModelCandidates,
   buildSyncModelRefs,
   normalizeModelRef,
@@ -301,6 +309,7 @@ import {
 } from "./lib/agentProviderCatalog";
 import { PROVIDER_PRESETS, getProviderDisplayName } from "./lib/agentProviders";
 import {
+  agentChatUsageEquals,
   clipAgentSessionTitle,
   compareAgentSessionActivity,
   filterActiveAgentSessionSummaries,
@@ -545,6 +554,7 @@ const DRAG_REGION_INTERACTIVE_SELECTOR = [
 const AGENT_COMPOSER_SELECTION_KEY = "giteam.agent.composer-agent.v1";
 const AGENT_THINKING_SELECTION_KEY = "giteam.agent.thinking-selection.v1";
 const AGENT_AUTO_ACCEPT_PERMISSIONS_KEY = "giteam.agent.auto-accept-permissions.v1";
+const AGENT_PERMISSION_PRESET_KEY = "giteam.agent.permission-preset.v1";
 
 // One-time migration from pre-Pi localStorage keys.
 migrateLocalStoragePrefix("giteam.opencode.model-visibility.v1", AGENT_MODEL_VIS_KEY);
@@ -656,8 +666,22 @@ function agentMessageToChatMessage(message: AgentMessage): AgentChatMessage | nu
     graphRefs,
     attachments: images.length > 0 ? images : undefined,
     usage: message.usage
-      ? { cacheRead: message.usage.cacheRead, input: message.usage.input }
-      : undefined
+      ? {
+          cacheRead: message.usage.cacheRead,
+          cacheWrite: message.usage.cacheWrite,
+          input: message.usage.input,
+          output: message.usage.output
+        }
+      : undefined,
+    sessionUsage: message.sessionUsage
+      ? {
+          cacheRead: message.sessionUsage.cacheRead,
+          cacheWrite: message.sessionUsage.cacheWrite,
+          input: message.sessionUsage.input,
+          output: message.sessionUsage.output
+        }
+      : undefined,
+    contextBreakdown: message.contextBreakdown
   };
 }
 
@@ -1304,7 +1328,13 @@ export function App() {
   const [showAgentThinkingPicker, setShowAgentThinkingPicker] = useState(false);
   const [agentDraftThinkingLevel, setAgentDraftThinkingLevel] = useState<AgentThinkingLevel>(() => normalizeThinkingLevel(loadLocalString(AGENT_THINKING_SELECTION_KEY, "off")));
   const [agentSessionThinkingLevel, setAgentSessionThinkingLevel] = useState<Record<string, AgentThinkingLevel>>({});
-  const [agentAutoAcceptPermissions, setAgentAutoAcceptPermissions] = useState(() => loadLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, false));
+  const [agentPermissionPreset, setAgentPermissionPreset] = useState<AgentPermissionPreset>(() =>
+    loadPermissionPreset(AGENT_PERMISSION_PRESET_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, "default")
+  );
+  const agentAutoAcceptPermissions = autoAcceptFromPermissionPreset(agentPermissionPreset);
+  const setAgentAutoAcceptPermissions = (enabled: boolean) => {
+    setAgentPermissionPreset(permissionPresetFromAutoAccept(enabled));
+  };
   const [agentPermissionLoading, setAgentPermissionLoading] = useState(false);
   const [showAgentModulePanel, setShowAgentModulePanel] = useState(false);
   const [agentModuleTab, setAgentModuleTab] = useState<AgentModuleTab>("permissions");
@@ -1314,13 +1344,24 @@ export function App() {
   const [showSkillsmpSettings, setShowSkillsmpSettings] = useState(false);
 
   useEffect(() => {
+    savePermissionPreset(AGENT_PERMISSION_PRESET_KEY, agentPermissionPreset);
+    saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, agentAutoAcceptPermissions);
     setGeneralSettings((prev) => {
-      if (prev.autoAcceptPermissions === agentAutoAcceptPermissions) return prev;
-      const next = { ...prev, autoAcceptPermissions: agentAutoAcceptPermissions };
+      if (
+        prev.autoAcceptPermissions === agentAutoAcceptPermissions
+        && prev.permissionPreset === agentPermissionPreset
+      ) {
+        return prev;
+      }
+      const next = {
+        ...prev,
+        autoAcceptPermissions: agentAutoAcceptPermissions,
+        permissionPreset: agentPermissionPreset
+      };
       saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
       return next;
     });
-  }, [agentAutoAcceptPermissions]);
+  }, [agentAutoAcceptPermissions, agentPermissionPreset]);
 
   useEffect(() => {
     const lang = generalSettings.language === "system" ? navigator.language || "zh-CN" : generalSettings.language;
@@ -2055,15 +2096,22 @@ export function App() {
       || !activeAgentSession.loaded
     )
   );
-  // 最近一次 assistant 回复的 prompt 缓存用量（输入框下方命中率展示）。
-  const latestCacheUsage = useMemo(() => {
+  // 最近一次 assistant 单次 usage + 分类占用（非会话累计）。
+  const sessionContextUsage = useMemo(() => {
     if (!activeAgentSession) return null;
     const messages = activeAgentSession.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role === "assistant" && msg.usage) {
-        return msg.usage;
-      }
+      const usage = messages[i].usage;
+      if (usage) return usage;
+    }
+    return null;
+  }, [activeAgentSession]);
+  const sessionContextBreakdown = useMemo(() => {
+    if (!activeAgentSession) return null;
+    const messages = activeAgentSession.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const breakdown = messages[i].contextBreakdown;
+      if (breakdown) return breakdown;
     }
     return null;
   }, [activeAgentSession]);
@@ -2222,13 +2270,13 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [repoPath, activeAgentSessionId, activeAgentSessionBusy, showAgentModulePanel, agentModuleTab, agentAutoAcceptPermissions]);
 
-  // UI 偏好是全局的，但 backend auto_approve 挂在每个 session 的 hub 上；
-  // 恢复/切换会话会新建 hub（默认 false），必须把偏好重新推到当前 session。
+  // UI 偏好是全局的，但 backend permission preset 挂在每个 session 的 hub 上；
+  // 恢复/切换会话会新建 hub（默认 default），必须把偏好重新推到当前 session。
   useEffect(() => {
     const sid = activeAgentSessionId.trim();
     if (!repoPath.trim() || !sid) return;
-    void ensureSessionAutoAcceptPermissions(sid, agentAutoAcceptPermissions);
-  }, [repoPath, activeAgentSessionId, agentAutoAcceptPermissions]);
+    void ensureSessionPermissionPreset(sid, agentPermissionPreset);
+  }, [repoPath, activeAgentSessionId, agentPermissionPreset]);
 
   useEffect(() => {
     if (!showAgentModulePanel) return;
@@ -2359,7 +2407,7 @@ export function App() {
         }
       }
       selectAgentSession(created.id, "new");
-      if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
+      void ensureSessionPermissionPreset(created.id, agentPermissionPreset);
       if (activeAgentAgent) setAgentSessionAgent((prev) => ({ ...prev, [created.id]: activeAgentAgent }));
       bindAgentSessionToWorkspace(created.id, target, branchInput);
       setMessage(`已绑定 Agent: ${pathLeaf(target)}`);
@@ -2825,16 +2873,23 @@ export function App() {
   }
 
   async function ensureSessionAutoAcceptPermissions(sessionId: string, enabled: boolean) {
-    // 显式接收 enabled：调用方在 setAgentAutoAcceptPermissions(next) 之后同步调用本函数，
-    // 此时 state 尚未更新，闭包里的 agentAutoAcceptPermissions 仍是旧值（false），
-    // 若误用闭包旧值会触发提前 return、setAutoApprove 永不调用 → 开了 auto 仍弹审批。
-    // 关闭时也必须同步到后端，否则 session hub 会一直保持 auto_approve=true。
+    await ensureSessionPermissionPreset(
+      sessionId,
+      permissionPresetFromAutoAccept(enabled)
+    );
+  }
+
+  async function ensureSessionPermissionPreset(sessionId: string, preset: AgentPermissionPreset) {
+    // 显式接收 preset：调用方在 setAgentPermissionPreset 之后同步调用本函数，
+    // 此时 state 尚未更新，闭包里仍是旧值；关闭时也必须同步到后端。
     if (!repoPath.trim() || !sessionId.trim()) return;
     try {
-      await agentClient.setAutoApprove(sessionId, enabled);
-      appendAgentDebugLog(`permission.session.autoApprove ${sessionId} enabled=${enabled ? 1 : 0}`);
-      if (enabled) {
-        // 开关打开时清掉已弹出的待审批，避免「开了 auto 还要点一遍」。
+      const applied = parseAgentPermissionPreset(
+        await agentClient.setPermissionPreset(sessionId, preset)
+      );
+      appendAgentDebugLog(`permission.session.preset ${sessionId} preset=${applied}`);
+      if (autoAcceptFromPermissionPreset(applied)) {
+        // 自动放行档打开时清掉已弹出的待审批，避免还要点一遍。
         const pending = (await agentClient.listInteractions(sessionId)).filter(
           (item) => item.kind === "permission"
         );
@@ -2843,7 +2898,13 @@ export function App() {
         }
       }
     } catch (e) {
-      appendAgentDebugLog(`permission.session.autoApprove.error ${sessionId} ${String(e)}`);
+      appendAgentDebugLog(`permission.session.preset.error ${sessionId} ${String(e)}`);
+      // 旧后端无 preset RPC 时回退到 auto-approve 布尔。
+      try {
+        await agentClient.setAutoApprove(sessionId, autoAcceptFromPermissionPreset(preset));
+      } catch (fallbackError) {
+        appendAgentDebugLog(`permission.session.autoApprove.error ${sessionId} ${String(fallbackError)}`);
+      }
     }
   }
 
@@ -4245,7 +4306,7 @@ export function App() {
     bindAgentSessionToWorkspace(created.id, repoPath, worktreeOverview.branch || selectedBranch);
     setAgentPromptInput("");
     appendAgentDebugLog(`session.created ${created.id}`);
-    if (agentAutoAcceptPermissions) void ensureSessionAutoAcceptPermissions(created.id, agentAutoAcceptPermissions);
+    void ensureSessionPermissionPreset(created.id, agentPermissionPreset);
     return created.id;
   }
 
@@ -4569,16 +4630,13 @@ export function App() {
   useEffect(() => {
     if (!draggingSplit) return;
     const root = document.documentElement;
+    // 侧栏 / 右侧面板由 ElasticSplitter 自己跟手；这里只锁光标，changes 仍走 window 拖拽。
+    const ownsPointer = draggingSplit.kind === "changes";
     const onMove = (e: MouseEvent) => {
+      if (!ownsPointer) return;
       e.preventDefault();
       const delta = e.clientX - draggingSplit.startX;
-      if (draggingSplit.kind === "sidebar") {
-        setSidebarWidth(clamp(draggingSplit.startWidth + delta, 292, 340));
-      } else if (draggingSplit.kind === "right") {
-        setRightPaneWidth(clamp(draggingSplit.startWidth - delta, 520, 1120));
-      } else {
-        setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 232, 360));
-      }
+      setChangesSidebarWidth(clamp(draggingSplit.startWidth + delta, 232, 360));
     };
     const clearSplitResizeLock = () => {
       root.classList.remove("wb-split-resizing");
@@ -4601,14 +4659,18 @@ export function App() {
     document.body.style.cursor = "col-resize";
     (document.body.style as CSSStyleDeclaration & { webkitUserSelect?: string }).webkitUserSelect = "none";
     window.getSelection()?.removeAllRanges();
-    window.addEventListener("mousemove", onMove, { passive: false });
-    window.addEventListener("mouseup", onUp);
-    window.addEventListener("blur", onUp);
+    if (ownsPointer) {
+      window.addEventListener("mousemove", onMove, { passive: false });
+      window.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onUp);
+    }
     return () => {
       clearSplitResizeLock();
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("blur", onUp);
+      if (ownsPointer) {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onUp);
+      }
     };
   }, [draggingSplit]);
   function ensureRepoSelected(): boolean {
@@ -6070,12 +6132,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
-  async function runAgentPrompt(options?: { promptOverride?: string }) {
+  async function runAgentPrompt(options?: {
+    promptOverride?: string;
+    attachmentsOverride?: AgentAttachment[];
+  }) {
     if (!ensureRepoSelected()) return;
-    const isQueueFlush = Boolean(options?.promptOverride?.trim());
+    const isQueueFlush = Boolean(options?.promptOverride?.trim())
+      && options?.attachmentsOverride === undefined;
     const typedPrompt = (options?.promptOverride ?? agentPromptInput).trim();
     const prompt = typedPrompt;
-    const attachments = isQueueFlush ? [] : agentImageAttachments;
+    const attachments = options?.attachmentsOverride !== undefined
+      ? options.attachmentsOverride
+      : isQueueFlush
+        ? []
+        : agentImageAttachments;
     const graphRefs = isQueueFlush ? [] : agentGraphContextRefs;
     if (!prompt && attachments.length === 0 && graphRefs.length === 0) return;
     // 在任何 await 之前上锁并清空输入，避免连按 Enter 发出两次相同内容。
@@ -6128,8 +6198,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       );
     }
 
-    // 发消息前确保当前 session hub 已同步 auto 偏好（覆盖：新建竞态、冷启动恢复会话）。
-    await ensureSessionAutoAcceptPermissions(sessionId, agentAutoAcceptPermissions);
+    // 发消息前确保当前 session hub 已同步 permission preset（覆盖：新建竞态、冷启动恢复会话）。
+    await ensureSessionPermissionPreset(sessionId, agentPermissionPreset);
     // 发送前把 UI 选择落到服务端会话，并以返回 summary 回写 AgentChatSession（唯一真相）。
     const selectedParsed = parseModelRef(selectedModel);
     if (selectedParsed) {
@@ -6527,8 +6597,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           };
         }
         if (
-          current.content === nextContent &&
-          String(current.error || "").trim() === preservedError
+          current.content === nextContent
+          && String(current.error || "").trim() === preservedError
+          && agentChatUsageEquals(current.usage, mapped.usage)
+          && agentChatUsageEquals(current.sessionUsage, mapped.sessionUsage)
         ) {
           return session;
         }
@@ -10946,7 +11018,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             <AgentComposerPanel
               permissions={agentActivePermissions}
               activeSessionStale={agentActiveSessionStale}
-              cacheUsage={latestCacheUsage}
+              contextUsage={sessionContextUsage}
+              contextBreakdown={sessionContextBreakdown}
+              contextWindow={agentModelInfoByRef[activeAgentModel]?.contextWindow ?? null}
               onOpenPermissionsPanel={() => openAgentModulePanel("permissions")}
               onReplyPermission={(requestId, reply) => { void sendPermissionReply(requestId, reply); }}
               questionLoading={agentQuestionLoading}
@@ -11120,10 +11194,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               thinkingLevelOptions={activeAgentThinkingOptions}
               onApplyThinkingLevel={(level) => void applyAgentThinkingLevel(level)}
               autoAcceptPermissions={agentAutoAcceptPermissions}
+              permissionPreset={agentPermissionPreset}
+              onApplyPermissionPreset={(preset) => {
+                setAgentPermissionPreset(preset);
+                if (activeAgentSessionId) void ensureSessionPermissionPreset(activeAgentSessionId, preset);
+              }}
               onToggleAutoAcceptPermissions={() => {
                 const next = !agentAutoAcceptPermissions;
                 setAgentAutoAcceptPermissions(next);
-                saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
                 if (activeAgentSessionId) void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next);
               }}
               configuredModelCandidates={agentConfiguredModelCandidates}
@@ -11166,6 +11244,24 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   return;
                 }
                 void runAgentPrompt();
+              }}
+              onComposerSubmit={({ text, attachments }) => {
+                if (
+                  activeAgentSessionBusy
+                  && !text.trim()
+                  && attachments.length === 0
+                  && agentGraphContextRefs.length === 0
+                ) {
+                  void stopAgentPrompt();
+                  return;
+                }
+                if (attachments.length > 0) {
+                  setAgentImageAttachments(attachments);
+                }
+                void runAgentPrompt({
+                  promptOverride: text,
+                  attachmentsOverride: attachments
+                });
               }}
             />
           )}
@@ -11851,14 +11947,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             sidebarCollapsed={!leftDrawerOpen}
             sidebarResizing={draggingSplit?.kind === "sidebar"}
             rightPanelResizing={draggingSplit?.kind === "right"}
-            onSidebarResizeStart={(e) => {
-              e.preventDefault();
-              beginSplitDrag("sidebar", e.clientX);
-            }}
-            onRightPanelResizeStart={(e) => {
-              e.preventDefault();
-              beginSplitDrag("right", e.clientX);
-            }}
+            onSidebarWidthChange={setSidebarWidth}
+            onRightPanelWidthChange={setRightPaneWidth}
+            onSidebarResizeStart={() => beginSplitDrag("sidebar", 0)}
+            onSidebarResizeEnd={() => setDraggingSplit(null)}
+            onRightPanelResizeStart={() => beginSplitDrag("right", 0)}
+            onRightPanelResizeEnd={() => setDraggingSplit(null)}
             panelPlacement={panelPlacement}
           />
         </SidebarProvider>
@@ -12306,13 +12400,20 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             }}
             generalSettings={generalSettings}
             onGeneralSettingsChange={(next) => {
-              setGeneralSettings(next);
-              saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
-              if (next.autoAcceptPermissions !== agentAutoAcceptPermissions) {
-                setAgentAutoAcceptPermissions(next.autoAcceptPermissions);
-                saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next.autoAcceptPermissions);
+              const nextPreset = parseAgentPermissionPreset(
+                next.permissionPreset || permissionPresetFromAutoAccept(next.autoAcceptPermissions)
+              );
+              const normalized = {
+                ...next,
+                permissionPreset: nextPreset,
+                autoAcceptPermissions: autoAcceptFromPermissionPreset(nextPreset)
+              };
+              setGeneralSettings(normalized);
+              saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, normalized);
+              if (nextPreset !== agentPermissionPreset) {
+                setAgentPermissionPreset(nextPreset);
                 if (activeAgentSessionId) {
-                  void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next.autoAcceptPermissions);
+                  void ensureSessionPermissionPreset(activeAgentSessionId, nextPreset);
                 }
               }
             }}
@@ -12904,10 +13005,14 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           onAgentSearchChange={setAgentAgentSearch}
           onRefreshAgents={() => void refreshAgentDefinitions()}
           onApplyAgent={applyAgentAgent}
+          permissionPreset={agentPermissionPreset}
+          onApplyPermissionPreset={(preset) => {
+            setAgentPermissionPreset(preset);
+            if (activeAgentSessionId) void ensureSessionPermissionPreset(activeAgentSessionId, preset);
+          }}
           onToggleAutoAccept={() => {
             const next = !agentAutoAcceptPermissions;
             setAgentAutoAcceptPermissions(next);
-            saveLocalBool(AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, next);
             if (activeAgentSessionId) void ensureSessionAutoAcceptPermissions(activeAgentSessionId, next);
           }}
           onRefreshPermissions={() => void refreshPendingPermissions()}

@@ -42,6 +42,10 @@ fn find_memory_file(start: &Path) -> Option<PathBuf> {
         if giteam.is_file() {
             return Some(giteam);
         }
+        // 停在 git 根：避免穿透到家目录/父盘误注入无关 GITEAM.md。
+        if dir.join(".git").exists() {
+            break;
+        }
         current = dir.parent();
     }
     None
@@ -84,6 +88,7 @@ mod tests {
         let root = unique_dir("pm-walkup");
         let nested = root.join("a").join("b");
         fs::create_dir_all(&nested).expect("create nested dirs");
+        fs::create_dir_all(root.join(".git")).expect("create .git marker");
         fs::write(root.join(GITEAM_MEMORY_FILE), "  规范：禁止裸 git commit  ")
             .expect("write GITEAM.md");
 
@@ -91,6 +96,17 @@ mod tests {
         assert_eq!(memory, "规范：禁止裸 git commit");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stops_at_git_root_and_ignores_parent_giteam() {
+        let outer = unique_dir("pm-outer");
+        let repo = outer.join("repo");
+        fs::create_dir_all(repo.join("src")).expect("repo");
+        fs::create_dir_all(repo.join(".git")).expect(".git");
+        fs::write(outer.join(GITEAM_MEMORY_FILE), "outer-only").expect("outer memory");
+        assert!(read_project_memory(&repo.join("src")).is_none());
+        let _ = fs::remove_dir_all(&outer);
     }
 
     #[test]

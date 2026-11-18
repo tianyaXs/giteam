@@ -188,6 +188,13 @@ struct PiControlAutoApproveRequest {
     enabled: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PiControlPermissionPresetRequest {
+    session_id: String,
+    preset: String,
+}
+
 fn pi_session_dir(repo_path: &str) -> Result<PathBuf, String> {
     crate::pi_agent::ensure_repo_pi_sessions_dir(Path::new(repo_path))
         .map_err(|error| error.to_string())
@@ -2342,6 +2349,30 @@ fn handle_api_request(req: HttpRequest, remote_ip: Option<IpAddr>) -> (u16, Valu
             PiAgentService::global().set_auto_approve(request.session_id.as_str(), request.enabled),
         ) {
             Ok(()) => (200, serde_json::json!({ "ok": true })),
+            Err(error) => pi_error_response(error),
+        };
+    }
+
+    if req.method == "POST" && req.path == "/api/v1/agent/permission-preset" {
+        let raw = match parse_body_json(&req) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error })),
+        };
+        let request: PiControlPermissionPresetRequest = match serde_json::from_value(raw) {
+            Ok(value) => value,
+            Err(error) => return (400, serde_json::json!({ "error": error.to_string() })),
+        };
+        if request.session_id.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "sessionId is required" }));
+        }
+        if request.preset.trim().is_empty() {
+            return (400, serde_json::json!({ "error": "preset is required" }));
+        }
+        return match pi_block_on(PiAgentService::global().set_permission_preset(
+            request.session_id.as_str(),
+            request.preset.as_str(),
+        )) {
+            Ok(preset) => (200, serde_json::json!({ "ok": true, "preset": preset })),
             Err(error) => pi_error_response(error),
         };
     }

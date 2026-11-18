@@ -82,6 +82,8 @@ fn message_parts_round_trip_without_provider_specific_types() {
             cache_read: 1_024,
             cache_write: 256,
         }),
+        session_usage: None,
+        context_breakdown: None,
     };
 
     let json = serde_json::to_string(&message).expect("message should serialize");

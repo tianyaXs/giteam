@@ -101,7 +101,9 @@ impl Tool for EditGuardTool {
         on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
     ) -> Result<ToolOutput> {
         if let Some(path) = input.get("path").and_then(Value::as_str) {
-            if !self.hub.was_read(Path::new(path)) {
+            let path_ref = Path::new(path);
+            let is_new_write = self.inner.name() == "write" && !path_ref.exists();
+            if !is_new_write && !self.hub.was_read(path_ref) {
                 return Ok(denied_output(
                     self.inner.name(),
                     "请先用 read 工具读取该文件再编辑",

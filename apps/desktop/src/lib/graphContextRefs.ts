@@ -93,6 +93,12 @@ export const INJECTED_USER_PROMPT_BLOCK_TAGS = ["graph_context"] as const;
 
 const GRAPH_CONTEXT_BLOCK_RE = /\n*<graph_context>[\s\S]*?<\/graph_context>\n*/gi;
 
+/** 遗留/历史拼进 user 正文的 Runtime Context（现已改为独立 Custom）。 */
+const RUNTIME_CONTEXT_BLOCK_RE =
+  /\n*# Runtime Context\n[\s\S]*$/;
+const RUNTIME_CONTEXT_TAG_RE =
+  /\n*<runtime_context>[\s\S]*?<\/runtime_context>\n*/gi;
+
 /** Pi session.rs COMPACTION_SUMMARY_* — 压缩摘要注入 user 消息，仅模型可见。 */
 const COMPACTION_SUMMARY_BLOCK_RE =
   /\n*The conversation history before this point was compacted into the following summary:\n\n<summary>\n[\s\S]*?\n<\/summary>\n*/g;
@@ -172,6 +178,8 @@ function stripInjectedSessionSummaryBlocks(content: string): string {
 export function stripInjectedUserPromptBlocks(content: string): string {
   let value = content ?? "";
   value = stripInjectedSessionSummaryBlocks(value);
+  value = value.replace(RUNTIME_CONTEXT_TAG_RE, "\n");
+  value = value.replace(RUNTIME_CONTEXT_BLOCK_RE, "\n");
   for (const tag of INJECTED_USER_PROMPT_BLOCK_TAGS) {
     if (tag === "graph_context") {
       value = value.replace(GRAPH_CONTEXT_BLOCK_RE, "\n");

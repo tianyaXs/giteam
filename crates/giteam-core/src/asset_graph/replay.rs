@@ -134,6 +134,8 @@ pub fn parse_session_jsonl(repo_path: &str, text: &str) -> Option<ReplayOutcome>
                                     created_at_ms: timestamp_ms,
                                     parts: vec![AgentPart::Text { text: content }],
                                     usage: None,
+                                    session_usage: None,
+                                    context_breakdown: None,
                                 },
                             },
                         ));
@@ -188,6 +190,8 @@ pub fn parse_session_jsonl(repo_path: &str, text: &str) -> Option<ReplayOutcome>
                                         created_at_ms: timestamp_ms,
                                         parts: vec![AgentPart::Text { text: text_parts }],
                                         usage: None,
+                                        session_usage: None,
+                                        context_breakdown: None,
                                     },
                                 },
                             ));

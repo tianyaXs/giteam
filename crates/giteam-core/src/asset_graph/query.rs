@@ -34,6 +34,9 @@ pub struct GraphCounts {
 #[serde(rename_all = "camelCase")]
 pub struct SessionDigest {
     pub session_key: String,
+    /// 原始 session id（props.sessionId）；过滤当前会话用。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
     pub session_label: String,
     pub intent: String,
     pub last_seen_ms: i64,
@@ -228,6 +231,7 @@ impl<'a> GraphQuery<'a> {
                     commits: self.session_assets(&session_id, "produced", "commit"),
                     unresolved_errors: self.session_unresolved_errors(&session_id),
                     session_key,
+                    session_id,
                     session_label,
                     intent,
                     last_seen_ms,
@@ -1990,20 +1994,80 @@ impl<'a> GraphQuery<'a> {
     /// 闲聊会话（props.chitchat）与 quality=low 会话不进摘要；优先列高质量实体。
     #[must_use]
     pub fn recent_changes_digest(&self, max_sessions: usize) -> String {
-        let sessions = self.recent_sessions(max_sessions.saturating_mul(2));
-        let mut lines: Vec<String> = Vec::with_capacity(sessions.len() + 8);
-        // 高质量实体优先（实体核 → 会话卫星）；低质量会话跳过。
-        for entity_line in self.recent_high_quality_entity_lines(6) {
-            lines.push(entity_line);
-        }
+        self.recent_changes_digest_filtered(max_sessions, None, None)
+    }
+
+    /// 同 [`Self::recent_changes_digest`]，可排除当前会话，并按 query 做相关性裁剪。
+    #[must_use]
+    pub fn recent_changes_digest_filtered(
+        &self,
+        max_sessions: usize,
+        exclude_session_id: Option<&str>,
+        relevance_query: Option<&str>,
+    ) -> String {
+        let exclude = exclude_session_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let query_tokens = relevance_query
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(token_set);
+        let sessions = self.recent_sessions(max_sessions.saturating_mul(3));
+        let mut scored: Vec<(f64, String)> = Vec::with_capacity(sessions.len());
         for session in sessions {
+            if exclude.is_some_and(|id| id == session.session_id) {
+                continue;
+            }
             if session.intent.is_empty() {
                 continue;
             }
-            // 闲聊 / LLM quality=low 不入启动注入（避免「你好」类噪声）。
+            // 闲聊 / LLM quality=low / 元讨论意图不入启动注入。
             if self.session_is_chitchat(&session.session_key)
                 || self.session_quality_is_low(&session.session_key)
+                || intent_looks_meta(&session.intent)
             {
+                continue;
+            }
+            let has_footprint = !session.files_modified.is_empty()
+                || !session.commits.is_empty()
+                || !session.unresolved_errors.is_empty();
+            let haystack = format!(
+                "{} {} {}",
+                session.intent,
+                session.files_modified.join(" "),
+                session.unresolved_errors.join(" ")
+            );
+            let score = match query_tokens.as_ref() {
+                Some(query) => {
+                    let overlap = jaccard(query, &token_set(&haystack));
+                    // 无重叠的会话降权；有未闭环错误时略抬高，避免漏掉相关故障。
+                    let error_boost = if session.unresolved_errors.is_empty() {
+                        0.0
+                    } else {
+                        0.05
+                    };
+                    let footprint_boost = if has_footprint { 0.05 } else { 0.0 };
+                    overlap + error_boost + footprint_boost
+                }
+                // 无 query：有文件/提交/错误足迹的会话优先；纯问答按时间序低权保留。
+                None => {
+                    if has_footprint {
+                        1.0
+                    } else {
+                        0.15
+                    }
+                }
+            };
+            // 有 query 时丢掉完全无关项；无足迹且无强相关时跳过（避免元 Q&A 污染）。
+            if query_tokens.is_some() {
+                if score < 0.08 {
+                    continue;
+                }
+                if !has_footprint && score < 0.2 {
+                    continue;
+                }
+            } else if !has_footprint {
+                // 被动注入路径：只保留有资产足迹的会话。
                 continue;
             }
             let files = if session.files_modified.is_empty() {
@@ -2048,15 +2112,32 @@ impl<'a> GraphQuery<'a> {
                         .join(" / ")
                 )
             };
-            lines.push(format!(
-                "- [{}] 会话 {}「{}」{}{}{}",
-                age_label(session.last_seen_ms),
-                truncate_chars(&session.session_label, 12),
-                truncate_chars(&session.intent, 60),
-                files,
-                commits,
-                pending
+            scored.push((
+                score,
+                format!(
+                    "- [{}] 会话 {}「{}」{}{}{}",
+                    age_label(session.last_seen_ms),
+                    truncate_chars(&session.session_label, 12),
+                    truncate_chars(&session.intent, 60),
+                    files,
+                    commits,
+                    pending
+                ),
             ));
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut lines: Vec<String> = Vec::with_capacity(max_sessions + 8);
+        // 高质量实体优先（实体核 → 会话卫星）；低质量会话跳过。
+        for entity_line in self.recent_high_quality_entity_lines(6) {
+            if let Some(query) = query_tokens.as_ref() {
+                if jaccard(query, &token_set(&entity_line)) < 0.05 {
+                    continue;
+                }
+            }
+            lines.push(entity_line);
+        }
+        for (_, line) in scored.into_iter().take(max_sessions) {
+            lines.push(line);
         }
         if lines.is_empty() {
             return String::new();
@@ -2076,6 +2157,25 @@ impl<'a> GraphQuery<'a> {
         }
         digest
     }
+}
+
+/// 元讨论 / 自检类意图：对编码任务无帮助，不应进入被动 digest。
+fn intent_looks_meta(intent: &str) -> bool {
+    let lower = intent.to_lowercase();
+    const NEEDLES: &[&str] = &[
+        "runtime context",
+        "sessionusage",
+        "cache read",
+        "cache_read",
+        "系统注入",
+        "工作区围栏",
+        "只根据你能看到",
+        "有没有夹带",
+        "其它会话的摘要",
+        "其他会话的摘要",
+        "path escapes workspace",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
 }
 
 /// 分词集合（文本重叠用）：ASCII 词 + CJK bigram，去停用词。
@@ -2140,13 +2240,19 @@ fn age_label(timestamp_ms: i64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let delta_secs = (now_ms - timestamp_ms).max(0) / 1000;
+    age_label_from_delta_secs((now_ms - timestamp_ms).max(0) / 1000)
+}
+
+/// 粗粒度相对时间：避免「25m前→26m前」每分钟改写 digest，打爆 runtime 前缀缓存。
+/// 1 小时内固定为「1h内」；之后按整小时/整天分桶。
+fn age_label_from_delta_secs(delta_secs: i64) -> String {
+    let delta_secs = delta_secs.max(0);
     if delta_secs < 3600 {
-        format!("{:2}m前", delta_secs / 60)
+        "1h内".to_string()
     } else if delta_secs < 86_400 {
-        format!("{:2}h前", delta_secs / 3600)
+        format!("{}h前", delta_secs / 3600)
     } else {
-        format!("{:2}d前", delta_secs / 86_400)
+        format!("{}d前", delta_secs / 86_400)
     }
 }
 
@@ -2693,6 +2799,8 @@ mod tests {
                 created_at_ms: 0,
                 parts: vec![AgentPart::Text { text: text.into() }],
                 usage: None,
+                session_usage: None,
+                context_breakdown: None,
             },
         }
     }
@@ -2779,6 +2887,54 @@ mod tests {
         assert!(digest.contains("加个功能"), "{digest}");
         assert!(digest.contains("未闭环错误"), "{digest}");
         assert!(digest.contains("something exploded"), "{digest}");
+        let _ = dir;
+    }
+
+    #[test]
+    fn digest_skips_meta_and_no_footprint_sessions() {
+        let (dir, db) = seeded();
+        // 元讨论 + 仅 ls：无文件/提交/错误足迹，不应进被动 digest。
+        let mut meta = SessionAccumulator::new("/repo", "sess-meta", "run-meta");
+        meta.ingest(&env(
+            1,
+            "sess-meta",
+            "run-meta",
+            AgentEvent::TurnStarted { index: 0 },
+        ));
+        meta.ingest(&env(
+            2,
+            "sess-meta",
+            "run-meta",
+            message(
+                "m-meta",
+                AgentRole::User,
+                "请只根据你能看到的上下文回答 Runtime Context",
+            ),
+        ));
+        meta.ingest(&env(
+            3,
+            "sess-meta",
+            "run-meta",
+            AgentEvent::ToolStarted {
+                tool_call_id: "tls".into(),
+                tool_name: "ls".into(),
+                input: serde_json::json!({"path": "."}),
+            },
+        ));
+        meta.ingest(&env(
+            4,
+            "sess-meta",
+            "run-meta",
+            AgentEvent::TurnCompleted { index: 0 },
+        ));
+        store::write_batch(&db, &meta.take_batch()).unwrap();
+
+        let q = GraphQuery::new(&db);
+        let digest = q.recent_changes_digest(10);
+        assert!(
+            !digest.contains("Runtime Context") && !digest.contains("只根据你能看到"),
+            "meta session leaked into digest: {digest}"
+        );
         let _ = dir;
     }
 
@@ -3318,5 +3474,17 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let _ = dir;
+    }
+
+    #[test]
+    fn age_label_buckets_are_stable_within_an_hour() {
+        assert_eq!(age_label_from_delta_secs(0), "1h内");
+        assert_eq!(age_label_from_delta_secs(60), "1h内");
+        assert_eq!(age_label_from_delta_secs(25 * 60), "1h内");
+        assert_eq!(age_label_from_delta_secs(26 * 60), "1h内");
+        assert_eq!(age_label_from_delta_secs(3599), "1h内");
+        assert_eq!(age_label_from_delta_secs(3600), "1h前");
+        assert_eq!(age_label_from_delta_secs(2 * 3600 + 10), "2h前");
+        assert_eq!(age_label_from_delta_secs(86_400), "1d前");
     }
 }

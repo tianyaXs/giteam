@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { FullAccessRiskDialog } from "./FullAccessRiskDialog";
 import {
   INSTALLED_VIA_SKILLS_DESCRIPTION,
   type AgentInstalledSkillGroup,
@@ -45,6 +46,8 @@ type AgentModulePanelProps = {
   visibleAgents: AgentDefinition[];
   activeAgent: string;
   autoAcceptPermissions: boolean;
+  permissionPreset?: "default" | "auto_review" | "full_access";
+  onApplyPermissionPreset?: (preset: "default" | "auto_review" | "full_access") => void;
   permissionLoading: boolean;
   activePermissions: PermissionInteraction[];
   skillsLoading: boolean;
@@ -191,15 +194,51 @@ function AgentsSection(props: AgentModulePanelProps) {
 }
 
 function PermissionsSection(props: AgentModulePanelProps) {
+  const [fullAccessConfirmOpen, setFullAccessConfirmOpen] = useState(false);
+  const preset = props.permissionPreset || (props.autoAcceptPermissions ? "auto_review" : "default");
   return (
     <div className="flex flex-col gap-3">
+      <FullAccessRiskDialog
+        open={fullAccessConfirmOpen}
+        onOpenChange={setFullAccessConfirmOpen}
+        onConfirm={() => {
+          setFullAccessConfirmOpen(false);
+          props.onApplyPermissionPreset?.("full_access");
+        }}
+      />
       <Card className="rounded-lg shadow-none">
         <CardContent className="flex items-center justify-between gap-4 p-3">
           <div className="grid min-w-0 gap-1">
-            <strong className="text-sm font-semibold">自动接受权限</strong>
-            <small className="text-sm text-muted-foreground">开启后自动通过当前会话的工具授权请求（写文件、执行命令等）。</small>
+            <strong className="text-sm font-semibold">权限模式</strong>
+            <small className="text-sm text-muted-foreground">与输入框同步：请求批准 / 替我审批 / 完全访问（放开工作区围栏）。</small>
           </div>
-          <Switch checked={props.autoAcceptPermissions} aria-label="自动接受权限" onCheckedChange={props.onToggleAutoAccept} />
+          {props.onApplyPermissionPreset ? (
+            <Select
+              value={preset}
+              onValueChange={(value) => {
+                if (value === "full_access") {
+                  setFullAccessConfirmOpen(true);
+                  return;
+                }
+                if (value === "default" || value === "auto_review") {
+                  props.onApplyPermissionPreset?.(value);
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 w-36 rounded-md bg-muted/30 text-sm" aria-label="权限模式">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="default">请求批准</SelectItem>
+                  <SelectItem value="auto_review">替我审批</SelectItem>
+                  <SelectItem value="full_access">完全访问</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          ) : (
+            <Switch checked={props.autoAcceptPermissions} aria-label="自动允许授权" onCheckedChange={props.onToggleAutoAccept} />
+          )}
         </CardContent>
       </Card>
       <div className="flex flex-wrap justify-end gap-2">

@@ -17,10 +17,11 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Slider } from "../ui/slider";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { SegmentedControl } from "../ui/segmented";
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 import { Tabs, TabsContent } from "../ui/tabs";
 import { AgentMcpSection } from "../agent/AgentMcpPanel";
+import { FullAccessRiskDialog } from "../agent/FullAccessRiskDialog";
 import { NavigatorPreview } from "./NavigatorPreview";
 import { ServiceSettingsPanel } from "./ServiceSettingsPanel";
 
@@ -35,6 +36,8 @@ type ControlServerSettingsDraft = {
 export type GeneralSettingsDraft = {
   language: "system" | "zh-CN" | "zh-TW" | "en-US";
   autoAcceptPermissions: boolean;
+  /** 对齐 dsh：default / auto_review / full_access；与 autoAcceptPermissions 同步。 */
+  permissionPreset: "default" | "auto_review" | "full_access";
   showReasoningSummaries: boolean;
   shellToolPartsExpanded: boolean;
   editToolPartsExpanded: boolean;
@@ -72,7 +75,10 @@ const SETTINGS_TEXT = {
     updates: "关于", updatesKicker: "应用", updatesDesc: "查看当前版本，并检查、安装桌面端更新。",
     notifications: "通知", notificationsKicker: "提醒", notificationsDesc: "控制哪些事件会发送系统通知。",
     sounds: "声音", soundsKicker: "提醒", soundsDesc: "控制 Agent、授权和错误事件的提示音。",
-    language: "界面语言", languageDesc: "选择界面语言；系统会跟随当前环境。", autoAccept: "自动允许授权", autoAcceptDesc: "自动通过当前 Giteam 会话的工具授权请求。",
+    language: "界面语言", languageDesc: "选择界面语言；系统会跟随当前环境。", autoAccept: "权限模式", autoAcceptDesc: "选择新会话默认权限档，并与输入框当前档同步：请求批准 / 替我审批 / 完全访问。",
+    permissionDefault: "请求批准", permissionAuto: "替我审批", permissionFull: "完全访问",
+    permissionFullConfirmTitle: "确认启用完全访问？", permissionFullConfirmDesc: "启用后将放开工作区围栏，并自动通过工具授权。仅在你信任后续任务时使用。",
+    permissionFullAck: "我已了解风险，并愿意继续", permissionFullCancel: "取消", permissionFullEnable: "启用完全访问",
     reasoning: "推理摘要", reasoningDesc: "在对话中显示模型推理摘要。", shellParts: "Shell 工具详情", shellPartsDesc: "默认展开 Shell 工具调用详情。", editParts: "编辑工具详情", editPartsDesc: "默认展开编辑工具调用详情。", progressBar: "会话进度条", progressBarDesc: "在会话工作中显示进度条。", maxToolIterations: "单次任务最大工具调用次数", maxToolIterationsDesc: "限制单次任务的工具调用轮数；0 为不限制，对新建会话生效。", closeBehavior: "关闭按钮行为", closeBehaviorDesc: "点击窗口关闭按钮时的动作：最小化到系统托盘后台运行、直接退出，或每次询问。", closeBehaviorTray: "最小化到托盘", closeBehaviorQuit: "直接退出", closeBehaviorAsk: "每次询问", navigator: "概览标尺", navigatorDesc: "会话侧边的可拖动快速滚动标尺：点击跳转、长按拖动。", navigatorPreviewCaption: "实时预览", navigatorPosition: "标尺位置", navigatorPositionDesc: "贴内容列左缘或右缘。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "标尺范围", navigatorScopeDesc: "仅「我发送」的消息，或全部消息。", navigatorScopeSent: "仅我发送", navigatorScopeAll: "全部消息",
     theme: "主题", themeDesc: "在浅色和深色主题之间切换。", light: "浅色", dark: "深色", uiFont: "界面缩放", uiFontDesc: "等比缩放整个界面，含字号、间距与图标。", codeFont: "代码字号", codeFontDesc: "调整代码、终端和等宽文本大小。", fontSizeSection: "显示大小", fontSizeSectionDesc: "调整界面缩放与代码字号，拖动即时预览。", presetCompact: "紧凑", presetStandard: "标准", presetRoomy: "宽松", resetDefault: "重置",
     changes: "审查", changesDesc: "显示当前仓库变更列表。", worktree: "分支", worktreeDesc: "显示当前分支与分支切换入口。", terminal: "终端", terminalDesc: "显示内置终端入口。", skillsModuleDesc: "显示技能市场。",
@@ -107,7 +113,10 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     updates: "關於", updatesKicker: "應用", updatesDesc: "查看目前版本，並檢查、安裝桌面端更新。",
     notifications: "通知", notificationsKicker: "提醒", notificationsDesc: "控制哪些事件會傳送系統通知。",
     sounds: "聲音", soundsKicker: "提醒", soundsDesc: "控制 Agent、授權和錯誤事件的提示音。",
-    language: "介面語言", languageDesc: "選擇介面語言；系統會跟隨目前環境。", autoAccept: "自動允許授權", autoAcceptDesc: "自動通過目前 Giteam 會話的工具授權請求。",
+    language: "介面語言", languageDesc: "選擇介面語言；系統會跟隨目前環境。", autoAccept: "權限模式", autoAcceptDesc: "選擇新會話預設權限檔，並與輸入框目前檔同步：請求批准 / 替我審批 / 完全訪問。",
+    permissionDefault: "請求批准", permissionAuto: "替我審批", permissionFull: "完全訪問",
+    permissionFullConfirmTitle: "確認啟用完全訪問？", permissionFullConfirmDesc: "啟用後將放開工作區圍欄，並自動通過工具授權。僅在你信任後續任務時使用。",
+    permissionFullAck: "我已了解風險，並願意繼續", permissionFullCancel: "取消", permissionFullEnable: "啟用完全訪問",
     reasoning: "推理摘要", reasoningDesc: "在對話中顯示模型推理摘要。", shellParts: "Shell 工具詳情", shellPartsDesc: "預設展開 Shell 工具呼叫詳情。", editParts: "編輯工具詳情", editPartsDesc: "預設展開編輯工具呼叫詳情。", progressBar: "會話進度列", progressBarDesc: "在會話工作中顯示進度列。", maxToolIterations: "單次任務最大工具呼叫次數", maxToolIterationsDesc: "限制單次任務的工具呼叫輪數；0 為不限制，對新建會話生效。", closeBehavior: "關閉按鈕行為", closeBehaviorDesc: "點擊視窗關閉按鈕時的動作：最小化到系統托盤背景執行、直接結束，或每次詢問。", closeBehaviorTray: "最小化到托盤", closeBehaviorQuit: "直接結束", closeBehaviorAsk: "每次詢問", navigator: "概覽標尺", navigatorDesc: "會話側邊的可拖動快速滾動標尺：點擊跳轉、長按拖動。", navigatorPreviewCaption: "即時預覽", navigatorPosition: "標尺位置", navigatorPositionDesc: "貼內容列左緣或右緣。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "標尺範圍", navigatorScopeDesc: "僅「我傳送」的訊息，或全部訊息。", navigatorScopeSent: "僅我傳送", navigatorScopeAll: "全部訊息",
     theme: "主題", themeDesc: "在淺色和深色主題之間切換。", light: "淺色", dark: "深色", uiFont: "介面縮放", uiFontDesc: "等比縮放整個介面，含字號、間距與圖示。", codeFont: "程式碼字號", codeFontDesc: "調整程式碼、終端機和等寬文字大小。", fontSizeSection: "顯示大小", fontSizeSectionDesc: "調整介面縮放與程式碼字號，拖動即時預覽。", presetCompact: "緊湊", presetStandard: "標準", presetRoomy: "寬鬆", resetDefault: "重設",
     changes: "審查", changesDesc: "顯示目前倉庫變更列表。", worktree: "分支", worktreeDesc: "顯示目前分支與分支切換入口。", terminal: "終端機", terminalDesc: "顯示內建終端機入口。", skillsModuleDesc: "顯示技能市場。",
@@ -126,7 +135,10 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     save: "儲存", saving: "儲存中...", installFirst: "先安裝", install: "安裝", update: "更新", uninstall: "解除安裝", installing: "安裝中", updating: "更新中", uninstalling: "解除安裝中", checking: "檢查中...", check: "檢查", refresh: "重新整理", installed: "已安裝", missing: "缺少", saveMobileTitle: "儲存行動端控制設定", installDependencyTitle: "先安裝 giteam 依賴", saveToApply: "儲存後生效"
   },
   "en-US": {
-    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Manage plugins, skills, and MCP.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Auto Accept Permissions", autoAcceptDesc: "Automatically approve tool permission requests for the current Giteam session.", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", update: "Update", uninstall: "Uninstall", installing: "Installing", updating: "Updating", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
+    followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Manage plugins, skills, and MCP.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Permission Mode", autoAcceptDesc: "Default permission tier for new sessions; syncs with the composer chip: Ask / Auto / Full access.",
+    permissionDefault: "Ask", permissionAuto: "Auto approve", permissionFull: "Full access",
+    permissionFullConfirmTitle: "Enable Full access?", permissionFullConfirmDesc: "Full access lifts workspace path confinement and auto-approves tool permissions. Only use it when you trust subsequent tasks.",
+    permissionFullAck: "I understand the risks and want to continue", permissionFullCancel: "Cancel", permissionFullEnable: "Enable Full access", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", update: "Update", uninstall: "Uninstall", installing: "Installing", updating: "Updating", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -293,6 +305,62 @@ function SwitchControl(props: { checked: boolean; disabled?: boolean; onChange: 
   );
 }
 
+function PermissionPresetPicker(props: {
+  value: GeneralSettingsDraft["permissionPreset"];
+  labels: {
+    default: string;
+    auto: string;
+    full: string;
+    confirmTitle: string;
+    confirmDesc: string;
+    ack: string;
+    cancel: string;
+    enable: string;
+  };
+  onChange: (value: GeneralSettingsDraft["permissionPreset"]) => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const current = props.value || "default";
+  return (
+    <>
+      <Select
+        value={current}
+        onValueChange={(value) => {
+          if (value === "full_access") {
+            setConfirmOpen(true);
+            return;
+          }
+          if (value === "default" || value === "auto_review") props.onChange(value);
+        }}
+      >
+        <SelectTrigger className="h-8 w-52 rounded-md bg-muted/30 text-sm">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="default">{props.labels.default}</SelectItem>
+            <SelectItem value="auto_review">{props.labels.auto}</SelectItem>
+            <SelectItem value="full_access">{props.labels.full}</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+      <FullAccessRiskDialog
+        open={confirmOpen}
+        title={props.labels.confirmTitle}
+        description={props.labels.confirmDesc}
+        acknowledgeLabel={props.labels.ack}
+        cancelLabel={props.labels.cancel}
+        confirmLabel={props.labels.enable}
+        onOpenChange={setConfirmOpen}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          props.onChange("full_access");
+        }}
+      />
+    </>
+  );
+}
+
 function LanguagePicker(props: { value: GeneralSettingsDraft["language"]; systemLabel: string; onChange: (value: GeneralSettingsDraft["language"]) => void }) {
   const selected = LANGUAGE_OPTIONS.find((option) => option.value === props.value) || LANGUAGE_OPTIONS[0];
   const labelFor = (option: { label: string; system?: boolean }) => option.system ? props.systemLabel : option.label;
@@ -315,7 +383,7 @@ function LanguagePicker(props: { value: GeneralSettingsDraft["language"]; system
 }
 
 // 主题缩略图专用配色：硬编码而非 CSS 变量，确保两个预览始终各自固定外观，
-// 不随当前应用主题变化（取自 tokens.css 的浅色/深色值并做小尺寸视觉调优）。
+// 不随当前应用主题变化。
 const THEME_PRESETS = {
   light: {
     bg: "#ffffff",
@@ -371,9 +439,6 @@ function ThemePicker(props: {
     { value: "light", label: props.lightLabel },
     { value: "dark", label: props.darkLabel }
   ];
-  // Official ToggleGroup composition (variant=outline, single): selection
-  // state, focus ring and keyboard semantics are owned by the component;
-  // the card thumbnail stays as aria-hidden preview inside each item.
   return (
     <ToggleGroup
       type="single"
@@ -383,20 +448,18 @@ function ThemePicker(props: {
       }}
       variant="outline"
     >
-      {options.map((option) => {
-        return (
-          <ToggleGroupItem
-            key={option.value}
-            value={option.value}
-            aria-label={option.label}
-            title={option.label}
-            className="h-auto w-[88px] flex-col gap-1 p-1"
-          >
-            <ThemePreview variant={option.value} />
-            <span className="text-[11px] leading-[14px]">{option.label}</span>
-          </ToggleGroupItem>
-        );
-      })}
+      {options.map((option) => (
+        <ToggleGroupItem
+          key={option.value}
+          value={option.value}
+          aria-label={option.label}
+          title={option.label}
+          className="h-auto w-[88px] flex-col gap-1 p-1"
+        >
+          <ThemePreview variant={option.value} />
+          <span className="text-[11px] leading-[14px]">{option.label}</span>
+        </ToggleGroupItem>
+      ))}
     </ToggleGroup>
   );
 }
@@ -1029,7 +1092,25 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {
           title: text.autoAccept,
           description: text.autoAcceptDesc,
-          action: <SwitchControl checked={props.generalSettings.autoAcceptPermissions} onChange={(checked) => updateGeneral({ autoAcceptPermissions: checked })} />
+          action: (
+            <PermissionPresetPicker
+              value={props.generalSettings.permissionPreset || (props.generalSettings.autoAcceptPermissions ? "auto_review" : "default")}
+              labels={{
+                default: text.permissionDefault,
+                auto: text.permissionAuto,
+                full: text.permissionFull,
+                confirmTitle: text.permissionFullConfirmTitle,
+                confirmDesc: text.permissionFullConfirmDesc,
+                ack: text.permissionFullAck,
+                cancel: text.permissionFullCancel,
+                enable: text.permissionFullEnable
+              }}
+              onChange={(permissionPreset) => updateGeneral({
+                permissionPreset,
+                autoAcceptPermissions: permissionPreset !== "default"
+              })}
+            />
+          )
         },
         {
           title: text.reasoning,
@@ -1102,7 +1183,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
               value={props.theme}
               lightLabel={text.light}
               darkLabel={text.dark}
-              onSelect={(value) => { if (value !== props.theme) props.onToggleTheme(); }}
+              onSelect={(value) => {
+                if (value !== props.theme) props.onToggleTheme();
+              }}
             />
           )
         }

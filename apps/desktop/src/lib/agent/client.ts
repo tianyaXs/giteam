@@ -154,12 +154,40 @@ export type AgentTokenUsage = {
   cacheWrite: number;
 };
 
+export type ContextCategoryId =
+  | "system"
+  | "rules"
+  | "skills"
+  | "workspace"
+  | "tools"
+  | "mcp"
+  | "runtime"
+  | "summary"
+  | "conversation";
+
+export type ContextCategoryUsage = {
+  id: ContextCategoryId;
+  label: string;
+  estimatedTokens: number;
+};
+
+export type ContextBreakdown = {
+  estimatedTotal: number;
+  billedPrompt: number;
+  categories: ContextCategoryUsage[];
+  estimator: string;
+};
+
 export type AgentMessage = {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "custom";
   createdAtMs: number;
   parts: AgentPart[];
   usage?: AgentTokenUsage;
+  /** 截至此 assistant 消息的完整持久会话累计用量。 */
+  sessionUsage?: AgentTokenUsage;
+  /** 上下文窗口分类占用（chars÷4 估计）。 */
+  contextBreakdown?: ContextBreakdown;
 };
 
 export type AgentEvent = {
@@ -313,6 +341,8 @@ export type AgentClient = {
   replyInteraction(interactionId: string, reply: AgentInteractionReply): Promise<void>;
   /** 显式开启/关闭 session 级自动接受（默认关；审计事件照常发布）。 */
   setAutoApprove(sessionId: string, enabled: boolean): Promise<void>;
+  /** 对齐 dsh：一次设置 sandbox + auto_approve（default / auto_review / full_access）。 */
+  setPermissionPreset(sessionId: string, preset: string): Promise<string>;
   /**
    * 热切换已存在 session 的工具白名单与系统提示追加段（Build/Plan 模式切换）。
    * 后端重建 session handle：保留 sessionId 与对话历史，仅更换工具集 + 系统提示。
@@ -401,6 +431,8 @@ function createTauriAgentClient(): AgentClient {
       invoke<void>("agent_reply_interaction", { interactionId, reply }),
     setAutoApprove: (sessionId, enabled) =>
       invoke<void>("agent_set_auto_approve", { sessionId, enabled }),
+    setPermissionPreset: (sessionId, preset) =>
+      invoke<string>("agent_set_permission_preset", { sessionId, preset }),
     setSessionOptions: (sessionId, input) =>
       invoke<AgentSessionSummary>("agent_set_session_options", {
         request: { sessionId, ...input }
@@ -537,6 +569,14 @@ function createHttpAgentClient(baseUrl: string, token?: string): AgentClient {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, enabled }),
     }),
+    setPermissionPreset: async (sessionId, preset) => {
+      const result = await request<{ ok?: boolean; preset?: string }>("/api/v1/agent/permission-preset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, preset }),
+      });
+      return String(result?.preset || preset);
+    },
     setSessionOptions: (sessionId, input) => request<AgentSessionSummary>("/api/v1/agent/session-options", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

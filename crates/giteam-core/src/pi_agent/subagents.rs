@@ -13,6 +13,19 @@ use async_trait::async_trait;
 /// stall 超时把整个 task 判死。歧义应带回摘要由父侧决策。
 pub const PLAN_ENABLED_TOOLS: &[&str] = &["read", "grep", "find", "ls", "web_fetch", "web_search"];
 
+/// Explore 白名单：比 plan 更偏代码检索，仍只读、不可委派。
+pub const EXPLORE_ENABLED_TOOLS: &[&str] = &[
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "web_fetch",
+    "web_search",
+    "asset_search",
+    "asset_context",
+    "asset_trace",
+];
+
 /// 子 agent 墙钟超时（秒）：绝对上限（Hermes 旧默认 600）。
 /// 可用环境变量 `GITEAM_SUBAGENT_TIMEOUT_SECS` 覆盖；`0` = 不限时。
 pub const DEFAULT_CHILD_TIMEOUT_SECS: u64 = 600;
@@ -37,6 +50,13 @@ instead of re-reading the same huge range.\n\
 You cannot ask the user questions — if a requirement is truly ambiguous, \
 state the ambiguity and the candidate options in your final summary and let \
 the parent agent decide.";
+
+const EXPLORE_ROLE_RULES: &str = "\
+You are an exploration subagent. Map the relevant code paths and report findings.\n\
+Do NOT create, edit, or delete files. Do NOT run mutating shell commands.\n\
+Return: key files, symbols, call chains, and open risks — not an implementation plan.\n\
+Prefer grep/find/asset_search before large reads; keep each read small (limit ≤ 200).\n\
+You cannot ask the user questions; note ambiguities in the final summary.";
 
 /// Extract 角色：从一轮会话记录中抽取语义实体/关系，输出严格 JSON。
 /// 实体边界参照 semantica（NER 类型 + 决策智能字段）并适配代码仓库域。
@@ -154,6 +174,7 @@ Do not attempt tool calls. Reply with the JSON object only."
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentType {
     Plan,
+    Explore,
     Extract,
 }
 
@@ -162,6 +183,7 @@ impl SubagentType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
+            Self::Explore => "explore",
             Self::Extract => "extract",
         }
     }
@@ -184,14 +206,21 @@ pub fn resolve(subagent_type: &str) -> Result<SubagentDefinition, String> {
                 .map(|name| (*name).to_string())
                 .collect(),
         }),
+        "explore" => Ok(SubagentDefinition {
+            subagent_type: SubagentType::Explore,
+            enabled_tools: EXPLORE_ENABLED_TOOLS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        }),
         "extract" => Ok(SubagentDefinition {
             subagent_type: SubagentType::Extract,
             // 纯抽取：无工具——prompt 已带全部上下文，模型只输出 JSON。
             enabled_tools: Vec::new(),
         }),
-        "" => Err("subagent_type is required (supported: plan, extract)".to_string()),
+        "" => Err("subagent_type is required (supported: plan, explore, extract)".to_string()),
         other => Err(format!(
-            "unknown subagent_type '{other}' (supported: plan, extract)"
+            "unknown subagent_type '{other}' (supported: plan, explore, extract)"
         )),
     }
 }
@@ -224,6 +253,9 @@ Use this exact path for local repository/workdir operations unless the task expl
         SubagentType::Plan => {
             parts.push(format!("\n{PLAN_ROLE_RULES}"));
         }
+        SubagentType::Explore => {
+            parts.push(format!("\n{EXPLORE_ROLE_RULES}"));
+        }
         SubagentType::Extract => {
             parts.push(format!("\n{EXTRACT_ROLE_RULES}"));
         }
@@ -238,10 +270,15 @@ You may issue several of them in one turn (they run in parallel). \
 There is no bash and no file editing unless listed above, and you cannot spawn \
 further subagents — do not attempt tools outside this list."
     ));
-    parts.push(
-        "\nComplete this task using the tools available to you. \
-Never assume the repository lives at /workspace/ or any other container-style \
-path unless the task or context explicitly gives that path.\n\
+    let delivery = match definition.subagent_type {
+        SubagentType::Explore => "\
+When finished, provide a clear, concise summary of:\n\
+- What you inspected\n\
+- Key file paths, symbols, and call chains\n\
+- Open risks or unknowns\n\
+- Evidence the parent can act on (no full implementation plan unless asked)\n\n\
+Lead with findings and prefer bullets — your response is returned to the parent agent.",
+        _ => "\
 When finished, provide a clear, concise summary of:\n\
 - What you did\n\
 - What you found or accomplished\n\
@@ -250,9 +287,13 @@ When finished, provide a clear, concise summary of:\n\
 - Any issues or unresolved questions\n\n\
 Lead with outcomes and prefer bullets over process narration — your response is \
 returned to the parent agent as a summary, and overlong summaries crowd out the \
-parent's context window. Do not ask the parent to switch modes; just deliver the plan."
-            .to_string(),
-    );
+parent's context window. Do not ask the parent to switch modes; just deliver the plan.",
+    };
+    parts.push(format!(
+        "\nComplete this task using the tools available to you. \
+Never assume the repository lives at /workspace/ or any other container-style \
+path unless the task or context explicitly gives that path.\n{delivery}"
+    ));
     parts.join("\n")
 }
 
@@ -489,6 +530,17 @@ mod tests {
         );
         assert!(!prompt.contains("todowrite"));
         assert!(!prompt.contains("switching to Build"));
+    }
+
+    #[test]
+    fn resolve_explore_type_returns_readonly_tools() {
+        let def = resolve("explore").expect("explore");
+        assert_eq!(def.subagent_type, SubagentType::Explore);
+        assert!(def.enabled_tools.iter().any(|tool| tool == "asset_search"));
+        assert!(!def.enabled_tools.iter().any(|tool| tool == "task"));
+        let prompt = build_child_system_prompt(&def, "定位登录超时", None, None);
+        assert!(prompt.contains("exploration subagent"));
+        assert!(prompt.contains("Open risks or unknowns"));
     }
 
     #[test]

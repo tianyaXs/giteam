@@ -142,6 +142,8 @@ struct ApprovalPolicy {
     auto_approve: bool,
     /// session 级 always 规则：通常为工具名（「总是允许」）；亦兼容旧的细粒度键。
     always_rules: Vec<String>,
+    /// 项目级 deny：优先于 auto_approve / always。
+    deny_rules: Vec<String>,
 }
 
 /// 单个 session 的交互枢纽：持有当前 run 上下文与审批策略。
@@ -150,6 +152,8 @@ pub struct InteractionHub {
     store: Arc<InteractionStore>,
     run: Mutex<Option<InteractionRunContext>>,
     policy: Mutex<ApprovalPolicy>,
+    /// 会话级文件围栏模式（随 permission preset 热切换）。
+    sandbox_mode: Mutex<super::sandbox_policy::SandboxMode>,
     /// 本会话被 read 工具读取过的文件（canonicalize 后），EditGuardTool 据此放行 edit。
     read_files: Mutex<HashSet<PathBuf>>,
     /// 会话所在仓库（绑定后加载/写入 `.giteam/permissions.json`）；None 时持久化规则不可用。
@@ -163,6 +167,7 @@ impl InteractionHub {
             store,
             run: Mutex::new(None),
             policy: Mutex::new(ApprovalPolicy::default()),
+            sandbox_mode: Mutex::new(super::sandbox_policy::default_mode()),
             read_files: Mutex::new(HashSet::new()),
             repo_path: Mutex::new(None),
         }
@@ -188,23 +193,89 @@ impl InteractionHub {
     }
 
     pub fn set_auto_approve(&self, enabled: bool) {
+        let next = self.permission_preset().with_auto_approve(enabled);
+        self.set_permission_preset(next);
+    }
+
+    /// 对齐 dsh：一次写入 sandbox + auto_approve。
+    pub fn set_permission_preset(&self, preset: super::permission_presets::PermissionPreset) {
+        let spec = preset.spec();
+        if let Ok(mut mode) = self.sandbox_mode.lock() {
+            *mode = spec.sandbox;
+        }
         if let Ok(mut policy) = self.policy.lock() {
-            policy.auto_approve = enabled;
+            policy.auto_approve = spec.auto_approve;
         }
     }
 
-    /// 快路径：显式自动接受，或命中 session 级 always 规则。
+    #[must_use]
+    pub fn sandbox_mode(&self) -> super::sandbox_policy::SandboxMode {
+        self.sandbox_mode
+            .lock()
+            .map(|mode| *mode)
+            .unwrap_or_else(|_| super::sandbox_policy::default_mode())
+    }
+
+    #[must_use]
+    pub fn auto_approve_enabled(&self) -> bool {
+        self.policy
+            .lock()
+            .map(|policy| policy.auto_approve)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn permission_preset(&self) -> super::permission_presets::PermissionPreset {
+        super::permission_presets::PermissionPreset::from_knobs(
+            self.sandbox_mode(),
+            self.auto_approve_enabled(),
+        )
+    }
+
+    /// 供围栏工具热读：优先会话绑定的 repo_path，否则回退传入 cwd。
+    #[must_use]
+    pub fn sandbox_policy_for(&self, fallback_cwd: &std::path::Path) -> super::sandbox_policy::SandboxExecutionPolicy {
+        let root = self
+            .repo_path
+            .lock()
+            .ok()
+            .and_then(|path| path.clone())
+            .unwrap_or_else(|| fallback_cwd.to_path_buf());
+        super::sandbox_policy::resolve_with_mode(&root, self.sandbox_mode())
+    }
+
+    /// 快路径：未命中 deny 时，显式自动接受或命中 session 级 always 规则。
     #[must_use]
     pub fn is_allowed(&self, tool: &str, input: &Value) -> bool {
         let Ok(policy) = self.policy.lock() else {
             return false;
         };
+        let key = always_rule_key(tool, input);
+        if policy
+            .deny_rules
+            .iter()
+            .any(|rule| rule == &key || rule == tool)
+        {
+            return false;
+        }
         if policy.auto_approve {
             return true;
         }
-        let key = always_rule_key(tool, input);
         policy
             .always_rules
+            .iter()
+            .any(|rule| rule == &key || rule == tool)
+    }
+
+    /// 硬拒绝：命中项目 deny 规则（审批 UI 也应直接拒绝，不可 Always）。
+    #[must_use]
+    pub fn is_denied(&self, tool: &str, input: &Value) -> bool {
+        let Ok(policy) = self.policy.lock() else {
+            return false;
+        };
+        let key = always_rule_key(tool, input);
+        policy
+            .deny_rules
             .iter()
             .any(|rule| rule == &key || rule == tool)
     }
@@ -221,11 +292,16 @@ impl InteractionHub {
     /// 绑定会话所在仓库并加载项目级权限规则（`.giteam/permissions.json`）。
     /// service 创建/恢复 hub 后调用一次，使持久化规则随会话生效（跨重启）。
     pub fn set_repo_path(&self, repo_path: PathBuf) {
-        let rules = super::permissions::load_allow_rules(&repo_path);
+        let rules = super::permissions::load_permission_rules(&repo_path);
         if let Ok(mut policy) = self.policy.lock() {
-            for rule in rules {
+            for rule in rules.allow {
                 if !policy.always_rules.contains(&rule) {
                     policy.always_rules.push(rule);
+                }
+            }
+            for rule in rules.deny {
+                if !policy.deny_rules.contains(&rule) {
+                    policy.deny_rules.push(rule);
                 }
             }
         }
@@ -791,6 +867,45 @@ mod tests {
         );
         assert!(InteractionRisk::for_tool("web_fetch").requires_approval());
         assert!(InteractionRisk::for_tool("unknown_tool").requires_approval());
+    }
+
+    #[test]
+    fn permission_preset_hot_switches_sandbox_and_auto_approve() {
+        let store = Arc::new(InteractionStore::default());
+        let hub = InteractionHub::new(store);
+        assert_eq!(
+            hub.permission_preset(),
+            super::super::permission_presets::PermissionPreset::Default
+        );
+        assert!(!hub.auto_approve_enabled());
+        assert_eq!(
+            hub.sandbox_mode(),
+            super::super::sandbox_policy::SandboxMode::WorkspaceWrite
+        );
+
+        hub.set_permission_preset(super::super::permission_presets::PermissionPreset::AutoReview);
+        assert!(hub.auto_approve_enabled());
+        assert_eq!(
+            hub.sandbox_mode(),
+            super::super::sandbox_policy::SandboxMode::WorkspaceWrite
+        );
+
+        hub.set_permission_preset(super::super::permission_presets::PermissionPreset::FullAccess);
+        assert!(hub.auto_approve_enabled());
+        assert_eq!(
+            hub.sandbox_mode(),
+            super::super::sandbox_policy::SandboxMode::DangerFullAccess
+        );
+
+        hub.set_auto_approve(false);
+        assert_eq!(
+            hub.permission_preset(),
+            super::super::permission_presets::PermissionPreset::Default
+        );
+        assert_eq!(
+            hub.sandbox_mode(),
+            super::super::sandbox_policy::SandboxMode::WorkspaceWrite
+        );
     }
 
     #[test]

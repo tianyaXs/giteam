@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::context_breakdown::ContextBreakdown;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentRole {
@@ -21,9 +23,15 @@ pub struct AgentMessage {
     pub parts: Vec<AgentPart>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<AgentTokenUsage>,
+    /// 截至这条 assistant 消息的整个持久会话累计用量；非 assistant 或旧数据缺省。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_usage: Option<AgentTokenUsage>,
+    /// 上下文窗口分类占用（chars÷4 估计）；仅最近完成的 assistant 可能带。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_breakdown: Option<ContextBreakdown>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTokenUsage {
     pub input: u64,
@@ -33,7 +41,7 @@ pub struct AgentTokenUsage {
 }
 
 impl AgentTokenUsage {
-    fn from_pi(usage: &pi::model::Usage) -> Self {
+    pub(crate) fn from_pi(usage: &pi::model::Usage) -> Self {
         Self {
             input: usage.input,
             output: usage.output,
@@ -41,6 +49,93 @@ impl AgentTokenUsage {
             cache_write: usage.cache_write,
         }
     }
+
+    fn add_assign(&mut self, next: &Self) {
+        self.input = self.input.saturating_add(next.input);
+        self.output = self.output.saturating_add(next.output);
+        self.cache_read = self.cache_read.saturating_add(next.cache_read);
+        self.cache_write = self.cache_write.saturating_add(next.cache_write);
+    }
+
+    fn sub_assign(&mut self, previous: &Self) {
+        self.input = self.input.saturating_sub(previous.input);
+        self.output = self.output.saturating_sub(previous.output);
+        self.cache_read = self.cache_read.saturating_sub(previous.cache_read);
+        self.cache_write = self.cache_write.saturating_sub(previous.cache_write);
+    }
+}
+
+/// 会话级 usage projection：同一消息的最终/重复样本替换，不累加两次。
+/// compaction 后的恢复由原始 SessionEntry 重建，不依赖裁剪后的 model messages。
+#[derive(Debug, Default)]
+pub(crate) struct AgentUsageProjection {
+    by_message: HashMap<String, AgentTokenUsage>,
+    total: AgentTokenUsage,
+}
+
+impl AgentUsageProjection {
+    pub(crate) fn replace(&mut self, message_id: String, next: AgentTokenUsage) {
+        if let Some(previous) = self.by_message.insert(message_id, next.clone()) {
+            self.total.sub_assign(&previous);
+        }
+        self.total.add_assign(&next);
+    }
+
+    /// 实时 MessageCompleted 用：同毫秒多步不能共用一个 id，否则后一步会盖掉前一步。
+    /// 流式 usage 未接入前不走 replace；run 结束仍以原始 entries 重建为准。
+    pub(crate) fn insert_new(&mut self, base_id: String, next: AgentTokenUsage) {
+        let mut id = base_id.clone();
+        let mut n = 0usize;
+        while self.by_message.contains_key(&id) {
+            n += 1;
+            id = format!("{base_id}-{n}");
+        }
+        self.replace(id, next);
+    }
+
+    pub(crate) fn total(&self) -> AgentTokenUsage {
+        self.total.clone()
+    }
+}
+
+/// 只把累计快照放在最后一条 assistant 上；前端无需遍历或累加分页消息。
+pub(crate) fn attach_session_usage(
+    messages: &mut [AgentMessage],
+    usage: AgentTokenUsage,
+) {
+    if let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.role == AgentRole::Assistant)
+    {
+        message.session_usage = Some(usage);
+    }
+}
+
+/// 从当前分支的原始日志重建总量；Compaction 条目不删除前后的 assistant 用量。
+pub(crate) fn project_session_usage(
+    entries: &[&pi::session::SessionEntry],
+) -> AgentUsageProjection {
+    let mut projection = AgentUsageProjection::default();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for entry in entries {
+        let pi::session::SessionEntry::Message(entry) = entry else {
+            continue;
+        };
+        let pi::session::SessionMessage::Assistant { message } = &entry.message else {
+            continue;
+        };
+        let base_id = message_id("assistant", message.timestamp);
+        let count = seen.entry(base_id.clone()).or_default();
+        let id = if *count == 0 {
+            base_id
+        } else {
+            format!("{base_id}-{}", *count)
+        };
+        *count += 1;
+        projection.replace(id, AgentTokenUsage::from_pi(&message.usage));
+    }
+    projection
 }
 
 /// Prompt 附带的图片。优先 `path`（由桌面端落盘），否则用 `data`（纯 base64）。
@@ -107,6 +202,8 @@ impl AgentMessage {
                     created_at_ms: timestamp_ms(message.timestamp),
                     parts,
                     usage: None,
+                    session_usage: None,
+                    context_breakdown: None,
                 }
             }
             pi::sdk::Message::Assistant(message) => {
@@ -123,6 +220,8 @@ impl AgentMessage {
                     is_error: message.is_error,
                 }],
                 usage: None,
+                session_usage: None,
+                context_breakdown: None,
             },
             pi::sdk::Message::Custom(message) => Self {
                 id: message_id("custom", message.timestamp),
@@ -134,6 +233,8 @@ impl AgentMessage {
                     details: message.details,
                 }],
                 usage: None,
+                session_usage: None,
+                context_breakdown: None,
             },
         }
     }
@@ -148,6 +249,8 @@ impl AgentMessage {
             created_at_ms: timestamp_ms(message.timestamp),
             parts: map_content_blocks(message.content),
             usage: Some(AgentTokenUsage::from_pi(&message.usage)),
+            session_usage: None,
+            context_breakdown: None,
         }
     }
 }
@@ -235,6 +338,8 @@ mod tests {
                 },
             ],
             usage: None,
+            session_usage: None,
+            context_breakdown: None,
         };
         let json = serde_json::to_value(&message).expect("serialize message");
         let parts = json["parts"].as_array().expect("parts array");
@@ -263,6 +368,8 @@ mod tests {
                 text: text.to_string(),
             }],
             usage: None,
+            session_usage: None,
+            context_breakdown: None,
         };
         let messages = assign_stable_message_ids(vec![
             make(AgentRole::Assistant, "a"),
@@ -289,6 +396,8 @@ mod tests {
             created_at_ms: 1,
             parts: Vec::new(),
             usage: None,
+            session_usage: None,
+            context_breakdown: None,
         };
         let messages = assign_stable_message_ids(vec![
             message("user-1", AgentRole::User),
@@ -296,5 +405,84 @@ mod tests {
         ]);
         assert_eq!(messages[0].id, "user-1");
         assert_eq!(messages[1].id, "assistant-1");
+    }
+
+    fn usage(input: u64, cache_read: u64, cache_write: u64) -> AgentTokenUsage {
+        AgentTokenUsage {
+            input,
+            output: 7,
+            cache_read,
+            cache_write,
+        }
+    }
+
+    #[test]
+    fn usage_projection_replaces_duplicate_message_samples() {
+        let mut projection = AgentUsageProjection::default();
+        projection.replace("a1".to_string(), usage(100, 20, 10));
+        projection.replace("a2".to_string(), usage(200, 40, 20));
+        projection.replace("a1".to_string(), usage(80, 50, 10));
+
+        assert_eq!(
+            projection.total(),
+            AgentTokenUsage {
+                output: 14,
+                ..usage(280, 90, 30)
+            }
+        );
+    }
+
+    #[test]
+    fn usage_projection_insert_new_keeps_same_timestamp_steps() {
+        let mut projection = AgentUsageProjection::default();
+        projection.insert_new("assistant-100".to_string(), usage(100, 20, 10));
+        projection.insert_new("assistant-100".to_string(), usage(200, 40, 20));
+
+        assert_eq!(
+            projection.total(),
+            AgentTokenUsage {
+                output: 14,
+                ..usage(300, 60, 30)
+            }
+        );
+    }
+
+    #[test]
+    fn usage_projection_recovers_across_compaction_entries() {
+        fn assistant(timestamp: i64, input: u64) -> pi::session::SessionEntry {
+            let message = pi::sdk::AssistantMessage {
+                timestamp,
+                usage: pi::model::Usage {
+                    input,
+                    cache_read: input * 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            pi::session::SessionEntry::Message(pi::session::MessageEntry {
+                base: pi::session::EntryBase::new(None, format!("entry-{timestamp}")),
+                message: pi::session::SessionMessage::Assistant { message },
+            })
+        }
+
+        let entries = vec![
+            assistant(1, 100),
+            pi::session::SessionEntry::Compaction(pi::session::CompactionEntry {
+                base: pi::session::EntryBase::new(None, "compact-1".to_string()),
+                summary: "summary".to_string(),
+                first_kept_entry_id: "entry-2".to_string(),
+                tokens_before: 500,
+                details: None,
+                from_hook: None,
+            }),
+            assistant(2, 200),
+            // 同毫秒的真实另一条消息应获得稳定后缀，而不是互相替换。
+            assistant(2, 300),
+        ];
+        let refs: Vec<_> = entries.iter().collect();
+        let projection = project_session_usage(&refs);
+
+        assert_eq!(projection.total().input, 600);
+        assert_eq!(projection.total().cache_read, 1_200);
     }
 }

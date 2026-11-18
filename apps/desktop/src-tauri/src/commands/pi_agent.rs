@@ -447,6 +447,18 @@ pub async fn agent_set_auto_approve(session_id: String, enabled: bool) -> Result
         .map_err(|error| error.to_string())
 }
 
+/// 对齐 dsh：一次设置 sandbox + auto_approve（default / auto_review / full_access）。
+#[tauri::command]
+pub async fn agent_set_permission_preset(
+    session_id: String,
+    preset: String,
+) -> Result<String, String> {
+    service()
+        .set_permission_preset(&session_id, &preset)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// 热切换已存在 session 的工具白名单与系统提示追加段（Build/Plan 模式切换）。
 /// 后端重建 session handle：保留 session_id 与 jsonl 对话历史，仅更换工具集 + 系统提示。
 #[derive(Deserialize)]

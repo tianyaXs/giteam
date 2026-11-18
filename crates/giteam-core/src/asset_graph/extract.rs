@@ -163,10 +163,18 @@ impl SessionAccumulator {
     }
 
     fn ingest_message(&mut self, message: &AgentMessage, envelope: &AgentEventEnvelope) {
-        let text = message_text(message);
+        let raw = message_text(message);
+        let text = if message.role == AgentRole::User {
+            crate::pi_agent::runtime_context::strip_runtime_context(&raw)
+        } else {
+            raw
+        };
         // 语义抽取输入：本轮用户意图 / 助手结论（截断防爆）。
         match message.role {
             AgentRole::User => {
+                if text.trim().is_empty() {
+                    return;
+                }
                 if self.turn_user_text.is_empty() {
                     self.turn_user_text = snippet(&text, 1200);
                 } else {
@@ -241,7 +249,7 @@ impl SessionAccumulator {
         // upsert 的 props 是整对象替换，丢了 sessionId 会破坏按 id 反查。
         // intent 兜底只存 120 字符首句：完整提炼由 extract 子代理的
         // session_intent 写回（每轮覆盖），不再 dump 2000 字符原文。
-        if message.role == AgentRole::User && !self.intent_recorded && !text.trim().is_empty() {
+        if message.role == AgentRole::User && !self.intent_recorded {
             let title = snippet(&text, 80);
             let weak = is_weak_user_title(&title);
             // 弱标题（继续/你好…）先写入但不锁死，留给后续实意消息或 LLM session_intent 覆盖。
@@ -352,6 +360,20 @@ impl SessionAccumulator {
         }
         if saw_asset {
             self.session_had_tool_actions = true;
+            // 首条用户消息常在工具之前写入 chitchat=true；一旦出现文件/命令资产，
+            // 显式清掉闲聊标记，否则 digest 会因 props 浅合并一直把实会话当闲聊丢掉，
+            // 或反过来让元讨论会话在 LLM 覆盖 intent 后漏进摘要。
+            self.push_node(NodeFact {
+                node_type: "session",
+                key: session_key(&self.session_id),
+                label: String::new(),
+                props: serde_json::json!({
+                    "sessionId": self.session_id,
+                    "repoPath": self.repo_path,
+                    "chitchat": false,
+                }),
+                timestamp_ms: envelope.timestamp_ms,
+            });
         }
     }
 
@@ -774,6 +796,8 @@ mod tests {
                 created_at_ms: 1,
                 parts: vec![AgentPart::Text { text: text.into() }],
                 usage: None,
+                session_usage: None,
+                context_breakdown: None,
             },
         }
     }

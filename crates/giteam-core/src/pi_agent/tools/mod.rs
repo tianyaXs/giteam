@@ -19,6 +19,7 @@ mod task;
 mod todo;
 mod tool_budget;
 mod web;
+mod workspace_guard;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +49,23 @@ pub use task::TaskTool;
 pub use todo::TodoTool;
 pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
+pub use workspace_guard::WorkspacePathGuardTool;
+
+/// 收集 registry 内工具的 schema 文本，供上下文分类占用估计。
+#[must_use]
+pub fn collect_tool_schema_blobs(registry: &ToolRegistry) -> Vec<(String, String, String)> {
+    registry
+        .tools()
+        .iter()
+        .map(|tool| {
+            (
+                tool.name().to_string(),
+                tool.description().to_string(),
+                tool.parameters().to_string(),
+            )
+        })
+        .collect()
+}
 
 /// 基于 pi `default_tool_registry` 装配，写/执行类工具包装 ApprovalTool；
 /// question/todowrite/task 与后台三件套（bash/bash_output/kill_shell）不是 pi 内置工具，按启用情况追加。
@@ -116,8 +134,14 @@ impl GiteamToolFactory {
             enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "computer_use"));
         let task_enabled =
             enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
-        let asset_graph_enabled =
-            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
+        let asset_graph_enabled = enabled_tools.is_none_or(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.as_str(),
+                    "asset_context" | "asset_search" | "asset_trace" | "asset_precedents"
+                )
+            })
+        });
         let office_enabled = enabled_tools.is_none_or(|tools| {
             tools.iter().any(|tool| {
                 matches!(
@@ -211,15 +235,36 @@ impl ToolFactory for GiteamToolFactory {
         let tools = default_tool_registry(&builtin, cwd, config).into_tools();
 
         // 统一包装链：
-        // 1) read → ReadRecorder；edit → EditGuard
-        // 2) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
-        // 3) 写/执行类 → ApprovalTool（最外）
-        // edit 路径：edit → EditGuard → ToolBudget → ApprovalTool。
+        // 1) 写/编辑类 → WorkspacePathGuard（按会话当前 SandboxMode 热读，禁止跳出 repo / 只读拒写）
+        // 2) read → ReadRecorder；edit/write/hashline_edit → EditGuard
+        // 3) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
+        // 4) 写/执行类 → ApprovalTool（最外）
         let wrap = |tool: Box<dyn Tool>| -> Box<dyn Tool> {
             let name = tool.name().to_string();
+            let tool: Box<dyn Tool> = if matches!(
+                name.as_str(),
+                "edit"
+                    | "write"
+                    | "hashline_edit"
+                    | "read"
+                    | "write_xlsx"
+                    | "write_docx"
+                    | "write_pptx"
+                    | "edit_xlsx"
+                    | "edit_docx"
+                    | "edit_pptx"
+            ) {
+                Box::new(WorkspacePathGuardTool::new(
+                    tool,
+                    Arc::clone(&self.hub),
+                    cwd,
+                ))
+            } else {
+                tool
+            };
             let tool: Box<dyn Tool> = if name == "read" {
                 Box::new(ReadRecorderTool::new(tool, Arc::clone(&self.hub)))
-            } else if name == "edit" {
+            } else if matches!(name.as_str(), "edit" | "write" | "hashline_edit") {
                 Box::new(EditGuardTool::new(tool, Arc::clone(&self.hub)))
             } else {
                 tool
@@ -246,6 +291,7 @@ impl ToolFactory for GiteamToolFactory {
                 cwd,
                 config,
                 Arc::clone(&background),
+                Arc::clone(&self.hub),
             ))));
             registry.push(wrap(Box::new(BashOutputTool::new(Arc::clone(&background)))));
             registry.push(wrap(Box::new(KillShellTool::new(background))));

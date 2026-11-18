@@ -1,10 +1,13 @@
-import type { CSSProperties, MouseEventHandler, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { motion, useReducedMotion } from "motion/react";
+import { ElasticSplitter } from "../components/elastic-panel-resize/ElasticSplitter";
 
 export type PanelPlacement = "bottom" | "right" | "hidden";
 
 const SIDEBAR_MIN_WIDTH = 292;
 const SIDEBAR_MAX_WIDTH = 340;
+const RIGHT_PANEL_MIN_WIDTH = 520;
+const RIGHT_PANEL_MAX_WIDTH = 1120;
 
 export function Workbench(props: {
   activityBar: ReactNode;
@@ -17,13 +20,16 @@ export function Workbench(props: {
   sidebarCollapsed?: boolean;
   sidebarResizing: boolean;
   rightPanelResizing?: boolean;
-  onSidebarResizeStart: MouseEventHandler<HTMLDivElement>;
-  onRightPanelResizeStart?: MouseEventHandler<HTMLDivElement>;
+  onSidebarWidthChange: (width: number) => void;
+  onRightPanelWidthChange?: (width: number) => void;
+  onSidebarResizeStart?: () => void;
+  onSidebarResizeEnd?: () => void;
+  onRightPanelResizeStart?: () => void;
+  onRightPanelResizeEnd?: () => void;
 }) {
   const reduceMotion = useReducedMotion();
   // 临界阻尼（damping≈2√(stiffness·mass)≈36.4）：消除 width 过冲，让 editor 宽度随
   // 侧栏收放单调变化 → contentLeft（纯 CSS calc 即时跟随）单调 → 消息流/进度卡/标题不再来回滑动。
-  // 标题已改纯 CSS calc（CHAT_CONTENT_LEFT_CSS，与内容列同源同帧），不再需要 motion spring 同参数。
   const sidebarTransition = reduceMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 360, damping: 38, mass: 0.92 };
@@ -83,18 +89,31 @@ export function Workbench(props: {
       </motion.aside>
       <motion.div
         className={props.sidebarResizing ? "wb-splitter wb-splitter-left active" : "wb-splitter wb-splitter-left"}
-        role="separator"
-        aria-orientation="vertical"
         initial={false}
-        animate={props.sidebarCollapsed ? { width: 0, opacity: 0, x: -8 } : { width: 1, opacity: 1, x: 0 }}
+        animate={props.sidebarCollapsed ? { width: 0, opacity: 0, x: -8 } : { width: 32, opacity: 1, x: 0 }}
         transition={splitterTransition}
-        onMouseDown={props.sidebarCollapsed ? undefined : props.onSidebarResizeStart}
         style={{
           flex: "0 0 auto",
-          width: props.sidebarCollapsed ? 0 : 1,
-          minWidth: 0
+          width: props.sidebarCollapsed ? 0 : 32,
+          minWidth: 0,
+          marginLeft: props.sidebarCollapsed ? 0 : -16,
+          marginRight: props.sidebarCollapsed ? 0 : -16,
+          pointerEvents: props.sidebarCollapsed ? "none" : "auto"
         }}
-      />
+      >
+        {!props.sidebarCollapsed ? (
+          <ElasticSplitter
+            value={resolvedSidebarWidth}
+            min={SIDEBAR_MIN_WIDTH}
+            max={SIDEBAR_MAX_WIDTH}
+            direction="grow-right"
+            ariaLabel="调整侧栏宽度"
+            onChange={props.onSidebarWidthChange}
+            onDragStart={props.onSidebarResizeStart}
+            onDragEnd={props.onSidebarResizeEnd}
+          />
+        ) : null}
+      </motion.div>
       <section
         className="wb-editor"
         style={{
@@ -107,19 +126,32 @@ export function Workbench(props: {
       </section>
       <motion.div
         className={props.rightPanelResizing ? "wb-splitter wb-splitter-right active" : "wb-splitter wb-splitter-right"}
-        role="separator"
-        aria-orientation="vertical"
         aria-hidden={!rightPanelOpen}
         initial={false}
-        animate={rightPanelOpen ? { width: 1, opacity: 1, x: 0 } : { width: 0, opacity: 0, x: 8 }}
+        animate={rightPanelOpen ? { width: 32, opacity: 1, x: 0 } : { width: 0, opacity: 0, x: 8 }}
         transition={splitterTransition}
-        onMouseDown={rightPanelOpen ? props.onRightPanelResizeStart : undefined}
         style={{
           flex: "0 0 auto",
-          width: rightPanelOpen ? 1 : 0,
-          minWidth: 0
+          width: rightPanelOpen ? 32 : 0,
+          minWidth: 0,
+          marginLeft: rightPanelOpen ? -16 : 0,
+          marginRight: rightPanelOpen ? -16 : 0,
+          pointerEvents: rightPanelOpen ? "auto" : "none"
         }}
-      />
+      >
+        {rightPanelOpen && props.onRightPanelWidthChange ? (
+          <ElasticSplitter
+            value={resolvedRightPanelWidth}
+            min={RIGHT_PANEL_MIN_WIDTH}
+            max={RIGHT_PANEL_MAX_WIDTH}
+            direction="grow-left"
+            ariaLabel="调整右侧面板宽度"
+            onChange={props.onRightPanelWidthChange}
+            onDragStart={props.onRightPanelResizeStart}
+            onDragEnd={props.onRightPanelResizeEnd}
+          />
+        ) : null}
+      </motion.div>
       <motion.section
         className="wb-panel"
         aria-hidden={!rightPanelOpen}

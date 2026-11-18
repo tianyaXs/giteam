@@ -98,10 +98,12 @@
 .wb-splitter {
   grid-area: split;
   position: relative;
+  z-index: 3;
   cursor: col-resize;
   background: transparent;
   user-select: none;
   -webkit-user-select: none;
+  overflow: visible;
 }
 
 /* 拖拽分栏时禁止整页文本选中（含 WebKit），避免左右栏被拖蓝 */
@@ -112,20 +114,23 @@ html.wb-split-resizing * {
   -webkit-user-select: none !important;
 }
 
+/* 弹性把手负责可见反馈；保留极淡的中线提示 */
 .wb-splitter::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: 50%;
   top: 0;
   bottom: 0;
   width: 1px;
+  transform: translateX(-50%);
   background: transparent;
   transition: background 140ms ease;
+  pointer-events: none;
 }
 
 .wb-splitter:hover::before,
 .wb-splitter.active::before {
-  background: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--line) 55%, transparent);
 }
 
 .wb-editor {

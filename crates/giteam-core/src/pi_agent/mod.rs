@@ -7,11 +7,18 @@ mod managed_bins;
 mod mcp;
 mod messages;
 mod os_controller;
+mod compaction;
+mod context_breakdown;
+mod path_guard;
+pub(crate) mod sandbox_policy;
+mod permission_presets;
 mod permissions;
 mod pi_runtime;
 mod project_memory;
 mod prompt;
+mod prompt_assembly;
 mod provider_sanitizer;
+pub(crate) mod runtime_context;
 mod providers;
 mod secrets;
 mod service;
@@ -57,6 +64,9 @@ pub use mcp::{
     repo_config_path as mcp_repo_config_path, McpError, McpMutationResult, McpRuntime,
     McpServiceError, McpServiceInput, McpServiceStatus, McpToolInfo, McpToolSpec, McpToolsSnapshot,
 };
+pub use context_breakdown::{
+    ContextBreakdown, ContextCategoryId, ContextCategoryUsage,
+};
 pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole, AgentTokenUsage};
 pub use os_controller::{OsActionResult, OsController, SharedOsController};
 pub use prompt::default_system_prompt;
@@ -87,7 +97,7 @@ pub use subagents::{
     ExtractionCompletionRequest, ExtractionCompletionResult, MemoryExtractionPublisher,
     SubagentDefinition, SubagentHost, SubagentSpawnRequest, SubagentSpawnResult, SubagentType,
     DEFAULT_CHILD_STALL_SECS, DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS,
-    EXTRACT_ROLE_RULES, MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
+    EXPLORE_ENABLED_TOOLS, EXTRACT_ROLE_RULES, MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
 };
 pub use types::{
     AgentInteraction, AgentInteractionReply, AgentQuestion, AgentQuestionOption,

@@ -32,6 +32,7 @@ use serde_json::Value;
 use wait_timeout::ChildExt;
 
 use super::shell_resolver::{is_bash_like, resolve_default_shell, shell_invoke_args};
+use crate::pi_agent::path_guard::reject_shell_command_escaping_workspace;
 
 /// 前台硬上限：超过一律引导走后台（Hermes FOREGROUND_MAX_TIMEOUT 同值）。
 pub const MAX_FOREGROUND_TIMEOUT_SECS: u64 = 600;
@@ -757,6 +758,7 @@ fn text_output(text: String, details: Option<Value>, is_error: bool) -> ToolOutp
 pub struct GiteamBashTool {
     registry: Arc<BackgroundTaskRegistry>,
     cwd: PathBuf,
+    hub: Arc<crate::pi_agent::interactions::InteractionHub>,
     shell_path: Option<String>,
     command_prefix: Option<String>,
 }
@@ -767,6 +769,7 @@ impl GiteamBashTool {
         cwd: &Path,
         config: &pi::sdk::Config,
         registry: Arc<BackgroundTaskRegistry>,
+        hub: Arc<crate::pi_agent::interactions::InteractionHub>,
     ) -> Self {
         // config.shell_path 通常为 None（pi 不设），用平台默认 shell 兜底：Windows 上
         // 探测 bash(Git Bash)/pwsh/cmd，避免回落 "sh" 报 program not found。前台 bash
@@ -777,6 +780,7 @@ impl GiteamBashTool {
         Self {
             registry,
             cwd: cwd.to_path_buf(),
+            hub,
             shell_path,
             command_prefix,
         }
@@ -853,6 +857,19 @@ impl Tool for GiteamBashTool {
                 return Ok(text_output(format!("bash 参数无效：{error}"), None, true));
             }
         };
+
+        let policy = self.hub.sandbox_policy_for(&self.cwd);
+        if let Err(reason) = reject_shell_command_escaping_workspace(
+            &policy.workspace_root,
+            &input.command,
+            policy.mode,
+        ) {
+            return Ok(text_output(
+                format!("bash 未执行：{reason}。"),
+                None,
+                true,
+            ));
+        }
 
         let notices = self.registry.take_completion_notices();
 

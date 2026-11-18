@@ -1,10 +1,25 @@
 import type { GeneralSettingsDraft } from "../components/settings/SettingsDialog";
+import {
+  autoAcceptFromPermissionPreset,
+  parseAgentPermissionPreset,
+  permissionPresetFromAutoAccept,
+  type AgentPermissionPreset
+} from "./agentPermissionPresets";
 import { loadLocalBool, saveLocalBool } from "./localPreferences";
 import { invoke } from "./platform";
+
+function normalizePermissionPreset(
+  value: unknown,
+  autoAccept: boolean
+): AgentPermissionPreset {
+  if (typeof value === "string" && value.trim()) return parseAgentPermissionPreset(value);
+  return permissionPresetFromAutoAccept(autoAccept);
+}
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   language: "system",
   autoAcceptPermissions: false,
+  permissionPreset: "default",
   showReasoningSummaries: false,
   shellToolPartsExpanded: false,
   editToolPartsExpanded: false,
@@ -195,15 +210,24 @@ export function loadGeneralSettings(
       autoAcceptPermissions: loadLocalBool(
         autoAcceptPermissionsKey,
         parsed.autoAcceptPermissions ?? DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions
+      ),
+      permissionPreset: normalizePermissionPreset(
+        parsed.permissionPreset,
+        loadLocalBool(
+          autoAcceptPermissionsKey,
+          parsed.autoAcceptPermissions ?? DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions
+        )
       )
     };
   } catch {
+    const autoAcceptPermissions = loadLocalBool(
+      autoAcceptPermissionsKey,
+      DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions
+    );
     return {
       ...DEFAULT_GENERAL_SETTINGS,
-      autoAcceptPermissions: loadLocalBool(
-        autoAcceptPermissionsKey,
-        DEFAULT_GENERAL_SETTINGS.autoAcceptPermissions
-      )
+      autoAcceptPermissions,
+      permissionPreset: permissionPresetFromAutoAccept(autoAcceptPermissions)
     };
   }
 }
@@ -214,8 +238,22 @@ export function saveGeneralSettings(
   settings: GeneralSettingsDraft
 ): void {
   try {
-    window.localStorage.setItem(generalSettingsKey, JSON.stringify(settings));
-    saveLocalBool(autoAcceptPermissionsKey, settings.autoAcceptPermissions);
+    const permissionPreset = normalizePermissionPreset(
+      settings.permissionPreset,
+      settings.autoAcceptPermissions
+    );
+    const next: GeneralSettingsDraft = {
+      ...settings,
+      permissionPreset,
+      autoAcceptPermissions: autoAcceptFromPermissionPreset(permissionPreset)
+    };
+    window.localStorage.setItem(generalSettingsKey, JSON.stringify(next));
+    saveLocalBool(autoAcceptPermissionsKey, next.autoAcceptPermissions);
+    try {
+      window.localStorage.setItem("giteam.agent.permission-preset.v1", permissionPreset);
+    } catch {
+      // ignore
+    }
   } catch {
     // ignore unavailable storage
   }

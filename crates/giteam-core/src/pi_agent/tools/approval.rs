@@ -58,6 +58,12 @@ impl Tool for ApprovalTool {
         on_update: Option<Box<dyn Fn(ToolUpdate) + Send + Sync>>,
     ) -> Result<ToolOutput> {
         let tool = self.inner.name().to_string();
+        if self.hub.is_denied(&tool, &input) {
+            return Ok(denied_output(
+                &tool,
+                "该操作被项目 deny 规则拒绝（.giteam/permissions.json）",
+            ));
+        }
         // 快路径：显式自动接受或命中 session 级 always 规则。审计事件照常发布。
         if self.hub.is_allowed(&tool, &input) {
             if let Some(context) = self.hub.run_context() {

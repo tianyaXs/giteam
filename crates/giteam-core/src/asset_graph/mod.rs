@@ -449,6 +449,8 @@ mod tests {
                     created_at_ms: sequence * 1000,
                     parts: vec![AgentPart::Text { text: text.into() }],
                     usage: None,
+                    session_usage: None,
+                    context_breakdown: None,
                 },
             },
         }
