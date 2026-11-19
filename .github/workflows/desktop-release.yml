@@ -181,6 +181,8 @@ jobs:
         env:
           # Packaged 「云端」default must be the public Gateway, not loopback.
           VITE_DEFAULT_CLOUD_BASE_URL: ${{ secrets.VITE_DEFAULT_CLOUD_BASE_URL || 'http://115.190.220.45:8787' }}
+          # macos-15 runner 默认 Node 堆偏小；大引擎 JS（glass/ascii 等）vite 打包会 OOM。
+          NODE_OPTIONS: --max-old-space-size=8192
         run: npm run build
 
       # macOS 本地网络隐私按稳定代码签名身份记录授权。
