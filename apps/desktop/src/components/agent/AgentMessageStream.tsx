@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, FlaskConicalIcon, LoaderCircleIcon, XCircleIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
@@ -6,7 +6,6 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
 import { buildHunks, diffLines } from "../../lib/turnDiff";
 import { DiffLineRows, StatsBadgeText, collectTurnModifiedFiles, compressEdits, deriveTurnStats, type TurnManifestEntry, type TurnModifiedFile } from "./TurnDiffViewer";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import Lenis from "lenis";
 import {
   buildAgentActivityRows,
@@ -46,6 +45,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/colla
 import { Skeleton } from "../ui/skeleton";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
+import { AgentSailingNavigator } from "./AgentSailingNavigator";
 import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { MatrixLoader } from "../transitions/MatrixLoader";
@@ -565,17 +565,16 @@ type AgentMessageStreamProps = {
   onPreviewImageGroup: (images: AgentPreviewImage[], index: number) => void;
   onCopyAttachmentUri: (uri: string) => void;
   onOpenAttachment: (uri: string, filename?: string, mime?: string) => void;
-  // react-virtuoso 接管滚动后的控制接口
+  // 普通列表 + Lenis：真实 scrollHeight，滚轮惯性由 Lenis 接管。
   activeSessionId: string;
   onStartReached: () => void;
   onAtBottomChange: (atBottom: boolean) => void;
   scrollerRef: (node: HTMLElement | Window | null) => void;
-  virtuosoRef: RefObject<VirtuosoHandle | null>;
   onRangeChanged: () => void;
   /** 外部请求滚动定位到的消息 id（搜索命中时由 App 写入，定位完成后清空）。 */
   pendingScrollMessageId?: string;
   onPendingScrollDone?: () => void;
-  /** 每次搜索点击递增；与 messageId 一起构成 Virtuoso remount key，使 initialTopMostItemIndex 生效。 */
+  /** 每次搜索点击递增；与 messageId 一起构成定位请求身份。 */
   locateNonce?: number;
   /** 定位命中后用于在正文里高亮关键词的搜索词（空则不高亮）。 */
   highlightKeyword?: string;
@@ -587,60 +586,17 @@ type AgentMessageStreamProps = {
   navigatorSide?: "left" | "right";
   /** 概览标尺范围：all=全部消息（默认）；sent=仅「我发送」。 */
   navigatorScope?: "sent" | "all";
+  /** 概览标尺样式：经典尺标或帆船航线。 */
+  navigatorStyle?: "rail" | "sailing";
   /** 外部强制恢复贴底跟随（发送/拉到最新时递增）；驱动内部 stick ref + 持续 rAF 钉底。 */
   stickResetSignal?: number;
 };
 
 type RenderMarkdown = (source: string, streaming?: boolean) => ReactNode;
 
-/** Lenis 官方 lerp 模式（帧率无关 damp）：连续 wheel 连续追踪目标，避免固定时长动画重排/跳变。 */
-const SMOOTH_WHEEL_LENIS_LERP = 0.1;
-
-// Virtuoso List：必须把官方传入的 style（含 paddingTop/height）原样挂上；不要用 flex/gap，
-// 也不要用会覆盖 paddingTop 语义的布局类抢测高。行间距放在 Item 内 padding。
-// 左缘由 AgentChatFrame 下发的 --chat-content-left 决定（未定义时回退 mx-auto 居中）。
-// 不加 margin 过渡：侧栏收起时 main 宽度逐帧变 → contentLeft 逐帧重算，
-// 有过渡会让 margin 滞后追赶、内容先左后右来回滑动；即时跟随则单调平滑。
-// @see https://virtuoso.dev/react-virtuoso/troubleshooting/
-const AgentMessageListContainer = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
-  ({ children, style, ...rest }, ref) => (
-    <div
-      ref={ref}
-      style={style}
-      {...rest}
-      className="ml-[var(--chat-content-left,auto)] mr-auto max-w-[860px] select-none px-10"
-    >
-      {children}
-    </div>
-  )
-);
-AgentMessageListContainer.displayName = "AgentMessageListContainer";
-
+// 普通列表列：左缘由 AgentChatFrame 下发的 --chat-content-left 决定。
 function AgentMessageRowFrame({ children }: { children: ReactNode }) {
-  return <div className="pb-3">{children}</div>;
-}
-
-// Virtuoso 官方 Item 协议：外壳透传 style/data-*，仅追加横向裁剪。
-// 流式 text/表格瞬时超宽时默认 item 不裁剪，会把 scroller 顶出横向滚动条；
-// overflow-x:clip 不生成滚动容器、不改变测高，滚动条恢复纵向专用。
-// @see https://virtuoso.dev/virtuoso-item/
-const AgentMessageListItem = forwardRef<HTMLDivElement, { children?: ReactNode; style?: CSSProperties }>(
-  ({ children, style, ...rest }, ref) => (
-    <div
-      ref={ref}
-      style={style}
-      {...rest}
-      className="min-w-0 overflow-x-clip"
-    >
-      {children}
-    </div>
-  )
-);
-AgentMessageListItem.displayName = "AgentMessageListItem";
-
-/** 首条消息与顶部分隔线之间的呼吸留白（参考 ChatGPT 首条消息的顶部间距）。 */
-function AgentMessageListHeader() {
-  return <div className="h-12" aria-hidden="true" />;
+  return <div className="min-w-0 overflow-x-clip pb-3">{children}</div>;
 }
 
 function StreamLoadingState() {
@@ -2506,7 +2462,6 @@ export function AgentMessageStream({
   onStartReached,
   onAtBottomChange,
   scrollerRef,
-  virtuosoRef,
   onRangeChanged,
   pendingScrollMessageId,
   onPendingScrollDone,
@@ -2516,61 +2471,89 @@ export function AgentMessageStream({
   navigatorHidden = false,
   navigatorSide = "right",
   navigatorScope = "all",
+  navigatorStyle = "rail",
   stickResetSignal = 0
 }: AgentMessageStreamProps) {
   const [timelineOpenState, setTimelineOpenState] = useState<Record<string, boolean>>({});
   const [messageOpenState, setMessageOpenState] = useState<Record<string, boolean>>({});
   const [highlightMessageId, setHighlightMessageId] = useState("");
-  /** 当前可视区中部对应的消息下标，由 Virtuoso rangeChanged 换算，用于把导航条对应 marker 变蓝。 */
+  /** 概览标尺高亮下标；由滚动进度推导，仅下标变化时 setState。 */
   const [navigatorActiveIndex, setNavigatorActiveIndex] = useState<number | null>(null);
-  /** 本会话已完成过搜索定位：禁止随后的「滚到底唤醒」抢走视口，也避免清掉关键词高亮。 */
+  /** 本会话已完成过搜索定位：禁止随后的「滚到底唤醒」抢走视口。 */
   const locatedThisSessionRef = useRef(false);
-  /**
-   * 定位成功后 sticky mount key，避免 pending 清空时 key 回退导致二次 remount（抖动）。
-   * @see https://virtuoso.dev/react-virtuoso/virtuoso/initial-index/
-   */
-  const locateStickyMountKeyRef = useRef<string | null>(null);
   const scrollerElRef = useRef<HTMLElement | null>(null);
+  const contentElRef = useRef<HTMLDivElement | null>(null);
+  const lenisRef = useRef<Lenis | null>(null);
   /**
-   * 用户「贴底跟随」意图：默认 true。
-   * 取消 stick 只认明确用户手势（wheel/touch 上滚、滚动条拖拽、键盘上滚）——
-   * 绝不能靠 scrollTop 下降推断：Virtuoso 在同 row 变高（工具事件）时会重测高度并
-   * 锚点补偿拉低 scrollTop，且常发生在 scrollHeight 已稳定的后续帧，会被误判成上滚。
-   * @see https://github.com/petyosi/react-virtuoso/issues/195 （followOutput 不管 item 变高）
-   * @see https://virtuoso.dev/react-virtuoso/api-reference/virtuoso/ （autoscrollToBottom）
+   * DSH 同款贴底意图：默认 true。
+   * 取消只认读者输入造成的 scrollTop 偏离（observedTop 账本），不认程序写滚动。
    */
   const stickToBottomRef = useRef(true);
-  /** 用户正在拖原生滚动条（pointer 落在 gutter/轨道上）；仅此时才允许因 scrollTop 下降取消 stick。 */
-  const scrollbarDraggingRef = useRef(false);
-  const scrollerListenersRef = useRef<{ el: HTMLElement; clean: () => void } | null>(null);
-  /** Virtuoso 官方 prepend 协议状态：基准索引 + 上一帧头部 keys。 */
-  const firstItemIndexSessionRef = useRef("");
-  const firstItemIndexRef = useRef(1_000_000);
-  const firstItemIndexRowsRef = useRef<{ prefixLength: number; keys: string[] }>({ prefixLength: 0, keys: [] });
+  /** 最近一次程序化写入的 scrollTop；与当前 scrollTop 偏差才算读者输入。 */
+  const observedTopRef = useRef(0);
+  /** 程序化写滚动期间忽略 scroll 事件，避免被误判成读者上滚而清 stick。 */
+  const writingScrollRef = useRef(false);
+  const atBottomRef = useRef(true);
+  /** 加载更早历史：保存可见行锚点，prepend 后校正。 */
+  const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
+  const firstRowKeyRef = useRef<string | null>(null);
+  const loadingOlderRef = useRef(false);
   /**
-   * 成熟平滑方案 Lenis：库内 wheel 劫持 + 帧率无关 damp 动画 + 滚动条同步回写。
-   * 只负责滚轮平滑与官方 scrollTo；touch/滚动条/键盘保持原生节奏。
+   * 概览标尺进度：scrollTop / maxScroll ∈ [0,1]，存在 ref 里。
+   * 帆船标尺每帧读 ref，父级只在高亮下标变化时 setState。
    */
-  const smoothWheelLenisRef = useRef<Lenis | null>(null);
-  // 搜索定位进行中/本会话已定位过：rAF 钉底须避让，否则会把定位滚动拉回底部、抢走视口。
+  const navigatorProgressRef = useRef(0);
+  const navigatorMaxIndexRef = useRef(0);
+  const syncNavigatorFromScrollRef = useRef<() => void>(() => {});
   const pendingLocateIdRef = useRef("");
-  /** Lenis 正在接管 wheel 动画：官方动画期间不得用其他滚动源争写 scrollTop。 */
-  const isSmoothWheelAnimating = () => smoothWheelLenisRef.current?.isScrolling === "smooth";
-  /** 是否允许钉底（与 rAF / followOutput / totalListHeightChanged 共用）。 */
+  const FOLLOW_THRESHOLD = 24;
+
   const canStickPin = () =>
     stickToBottomRef.current
     && !pendingLocateIdRef.current
     && !locatedThisSessionRef.current;
-  /**
-   * DOM 实测校正：Virtuoso 对变高 item 用 defaultItemHeight(160) 估算累计偏移，超长消息（数千字
-   * toolResult / 长 assistant 回复）估算严重偏小 → scrollToIndex 的 align:center 落到结尾、
-   * align:end 的 LAST 落点偏上看不到最新、initialTopMostItemIndex 同理锚偏。在 Virtuoso 滚动后
-   * 用真实 DOM 位置 scrollBy 校正，彻底绕过高度估算。
-   *   - center：消息中线对齐视口中线（真居中，标尺跳转用）
-   *   - end：消息底部对齐视口底部（真贴底，切会话唤醒 / 流式钉底用）
-   * 返回校正函数；调用方在多个 setTimeout/raf 上重试，覆盖 Virtuoso 异步渲染与测量收敛。
-   * 所有写入都经由 Lenis 官方 scrollTo(immediate)，保证 wheel 坐标系不被绕过。
-   */
+
+  const flowTop = (row: HTMLElement, scrollport: HTMLElement) =>
+    row.getBoundingClientRect().top - scrollport.getBoundingClientRect().top;
+
+  /** 程序化滚动：一律走 Lenis（有实例）或原生 scrollTop，并记账 observedTop。 */
+  const writeScrollTop = useCallback((top: number, immediate = true) => {
+    const sc = scrollerElRef.current;
+    if (!sc) return;
+    const max = Math.max(0, sc.scrollHeight - sc.clientHeight);
+    const clamped = Math.max(0, Math.min(top, max));
+    // 先记账目标，再写滚动：Lenis/原生 scroll 事件同步触发时不会误判成读者输入。
+    writingScrollRef.current = true;
+    observedTopRef.current = clamped;
+    try {
+      const lenis = lenisRef.current;
+      if (lenis) {
+        lenis.resize();
+        lenis.scrollTo(clamped, { immediate });
+        observedTopRef.current = lenis.actualScroll;
+      } else {
+        sc.scrollTop = clamped;
+        observedTopRef.current = sc.scrollTop;
+      }
+    } finally {
+      writingScrollRef.current = false;
+    }
+  }, []);
+
+  const pinToBottom = useCallback((immediate = true) => {
+    const sc = scrollerElRef.current;
+    if (!sc) return;
+    prependAnchorRef.current = null;
+    writeScrollTop(sc.scrollHeight, immediate);
+    stickToBottomRef.current = true;
+    atBottomRef.current = true;
+    // 程序化到底也必须刷新尺标：scroll 回调可能因 observedTop 对齐而跳过 sync。
+    navigatorProgressRef.current = 1;
+    const maxIdx = navigatorMaxIndexRef.current;
+    setNavigatorActiveIndex(maxIdx <= 0 ? 0 : maxIdx);
+    onAtBottomChange(true);
+  }, [writeScrollTop, onAtBottomChange]);
+
   const adjustToMessage = useCallback((stableKey: string, align: "start" | "center" | "end") => {
     const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
     return () => {
@@ -2586,22 +2569,11 @@ export function AgentMessageStream({
             ? e.bottom - s.bottom
             : e.top + e.height / 2 - (s.top + s.height / 2);
       if (Math.abs(delta) >= 8) {
-        // 官方 Lenis 提供的 API：程序化滚动绕过实例后，必须经由 scrollTo 重新进入它的坐标系；
-        // 这也天然处理了 Virtuoso 异步测量后的后续校正，不会把实例留在旧坐标系里。
-        smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, { immediate: true });
+        writeScrollTop(sc.scrollTop + delta, true);
       }
     };
-  }, []);
-  /**
-   * Lenis 坐标系重置：stop() 内部 reset() 会终止在途动画并把 animatedScroll/targetScroll
-   * 对齐实际 scrollTop，随后 start() 恢复官方 wheel 响应。这是 Lenis 对「程序化滚动绕过
-   * 实例」的规范处理：标尺跳转/搜索定位走 Virtuoso scrollToIndex，收尾必须同步一次，
-   * 否则滚轮目标滞留旧坐标系会被旧 limit 钳住。
-   */
-  const syncSmoothWheelToNative = useCallback(() => {
-    smoothWheelLenisRef.current?.stop();
-    smoothWheelLenisRef.current?.start();
-  }, []);
+  }, [writeScrollTop]);
+
   const latestAssistantId = [...messages].reverse().find((row) => row.role === "assistant")?.id || "";
   const openLocalFile = (absolutePath: string) => {
     onOpenAttachment(localPathToFileUrl(absolutePath), filenameFromPath(absolutePath));
@@ -2952,37 +2924,6 @@ export function AgentMessageStream({
     return result;
   }, [visibleRenderRows, turnManifest]);
 
-  /**
-   * Virtuoso 官方 inverse-scrolling 协议：`firstItemIndex` 只承载「头部新增 N 条」的信号。
-   * 协议要点：
-   * 1. 非头部新增（流式追加、末行变高、重测）绝不改变该值；
-   * 2. 头部新增 N 条时值必须精确减 N，Virtuoso 会据此在内部平移已量测尺寸表并保持视觉锚点；
-   * 3. 会话切换时重置基准，两个会话互不继承索引。
-   * 这样历史加载不再依赖 Virtuoso 的兜底锚定，也不会在加载后改写 scrollTop。
-   * @see https://virtuoso.dev/prepend-items/
-   */
-  {
-    const mountKey = locateStickyMountKeyRef.current || activeSessionId || "agent-thread";
-    if (firstItemIndexSessionRef.current !== mountKey) {
-      firstItemIndexSessionRef.current = mountKey;
-      firstItemIndexRef.current = 1_000_000;
-    }
-    const previous = firstItemIndexRowsRef.current;
-    const count = rowsWithTurnSummary.length;
-    const prepended = previous.prefixLength > 0
-      && count > previous.prefixLength
-      && rowsWithTurnSummary
-        .slice(0, count - previous.prefixLength)
-        .every((row, index) => row.stableKey === previous.keys[index]);
-    if (prepended) {
-      firstItemIndexRef.current -= count - previous.prefixLength;
-    }
-    firstItemIndexRowsRef.current = {
-      prefixLength: count,
-      keys: rowsWithTurnSummary.map((row) => row.stableKey)
-    };
-  }
-  const firstItemIndex = firstItemIndexRef.current;
   // 每段「连续 assistant 块」的末行（下一行是 user/列表尾）：只有这一行挂回复级操作行
   // （复制按钮）。中间过程行（工具轮拆出的 assistant）hover 不再浮出按钮；
   // system 行不打断回合判定。
@@ -2998,24 +2939,43 @@ export function AgentMessageStream({
   // scope=sent 只保留「我发送」的 user 消息；originalIndex 仍指向 visibleRenderRows 真实下标，跳转/active 匹配正确。
   const navigatorMarkers: NavigatorMarker[] =
     navigatorScope === "sent" ? allNavigatorMarkers.filter((m) => m.role === "user") : allNavigatorMarkers;
+  navigatorMaxIndexRef.current = Math.max(0, rowsWithTurnSummary.length - 1);
+
+  const syncNavigatorFromScroll = useCallback(() => {
+    const sc = scrollerElRef.current;
+    if (!sc) return;
+    const maxScroll = Math.max(0, sc.scrollHeight - sc.clientHeight);
+    let progress: number;
+    if (maxScroll <= 1) {
+      progress = 1;
+    } else {
+      const top = sc.scrollTop;
+      if (top <= 2) progress = 0;
+      else if (top >= maxScroll - 2) progress = 1;
+      else progress = top / maxScroll;
+    }
+    navigatorProgressRef.current = progress;
+    const maxIdx = navigatorMaxIndexRef.current;
+    const nextIndex = maxIdx <= 0 ? 0 : Math.round(progress * maxIdx);
+    setNavigatorActiveIndex((prev) => (prev === nextIndex ? prev : nextIndex));
+  }, []);
+  syncNavigatorFromScrollRef.current = syncNavigatorFromScroll;
+
   const handleNavigatorJump = useCallback(
     (index: number, behavior: "smooth" | "auto") => {
-      // 点标尺跳转 = 用户主动离开贴底跟随 → 必须先取消 stick，否则持续 rAF 钉底会立即把视口
-      // 拉回底部，导致「贴底时点标尺跳不过去」。跳到底部时 atBottom=true 会自动恢复 stick。
       stickToBottomRef.current = false;
-      const stableKey = visibleRenderRows[index]?.stableKey;
+      atBottomRef.current = false;
+      const stableKey = rowsWithTurnSummary[index]?.stableKey;
       if (!stableKey) return;
-      const total = visibleRenderRows.length;
-      // 列表首/尾消息无法真正居中（上方/下方无内容），用 start/end 贴顶/贴底是最接近「居中」的落点；
-      // 也避开 Virtuoso 对边界 item 的 center 估算落点偏（点最旧标尺却停在半路的根因）。中间消息才 center。
+      const total = rowsWithTurnSummary.length;
       const target: "start" | "center" | "end" =
         index <= 0 ? "start" : index >= total - 1 ? "end" : "center";
-      const sc = scrollerElRef.current;
+      const adjust = adjustToMessage(stableKey, target);
+      // 全部已挂 DOM：直接实测校正；smooth 走 Lenis 非 immediate。
       const el = document.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(stableKey)}"]`
       );
-      // 已在渲染范围内：用 DOM 实测位置构造官方 scrollTo 目标——绕过 Virtuoso defaultItemHeight
-      // 估算；behavior 透传（点击 smooth / 拖动 auto）。
+      const sc = scrollerElRef.current;
       if (el && sc) {
         const e = el.getBoundingClientRect();
         const s = sc.getBoundingClientRect();
@@ -3026,263 +2986,206 @@ export function AgentMessageStream({
               ? e.bottom - s.bottom
               : e.top + e.height / 2 - (s.top + s.height / 2);
         if (Math.abs(delta) >= 8) {
-          // 已渲染目标走官方 Lenis scrollTo；smooth 交给它的 damp 动画，auto 立即落位。
-          smoothWheelLenisRef.current?.scrollTo(sc.scrollTop + delta, {
-            immediate: behavior === "auto"
-          });
+          writeScrollTop(sc.scrollTop + delta, behavior === "auto");
         }
-        syncSmoothWheelToNative();
+        syncNavigatorFromScrollRef.current();
+        onAtBottomChange(false);
         return;
       }
-      // 不在渲染范围（远处跳转）：scrollToIndex 先把目标拉进视口，立即 + rAF 连续校正到目标对齐。
-      // scrollToIndex(auto) 与首帧校正同步执行、浏览器合并渲染 → 用户只见一次到位；后续 rAF
-      // 经官方 Lenis scrollTo 收敛，到位后 |delta|<8 不再写入，不反复偏移。
-      virtuosoRef.current?.scrollToIndex({ index, align: target, behavior: "auto" });
-      const adjust = adjustToMessage(stableKey, target);
-      const sel = `[data-message-id="${CSS.escape(stableKey)}"]`;
       adjust();
       let frames = 0;
       const step = () => {
         adjust();
-        if (++frames < 6) {
-          requestAnimationFrame(step);
-        } else {
-          if (target === "start") {
-            // start 仅用于 index=0（列表物理顶）。若末帧仍未渲染到首条（Virtuoso 高度估算错位把渲染窗口
-            // 拉偏、querySelector 找不到），直接把滚动容器拉到物理顶——scrollTop=0 永远对应 index=0。
-            if (sc && !document.querySelector<HTMLElement>(sel) && sc.scrollTop > 0) {
-              smoothWheelLenisRef.current?.scrollTo(0, { immediate: true });
-            }
-          }
-          syncSmoothWheelToNative();
-        }
+        if (++frames < 6) requestAnimationFrame(step);
+        else syncNavigatorFromScrollRef.current();
       };
       requestAnimationFrame(step);
+      onAtBottomChange(false);
     },
-    [visibleRenderRows, adjustToMessage, syncSmoothWheelToNative]
+    [rowsWithTurnSummary, adjustToMessage, writeScrollTop, onAtBottomChange]
   );
-  // 取消 stick 只认用户手势；Virtuoso 重测/锚点补偿造成的 scrollTop 变化一律忽略。
-  // @see https://github.com/petyosi/react-virtuoso/issues/195
-  const attachScrollerListeners = useCallback(
-    (el: HTMLElement) => {
-    if (scrollerListenersRef.current?.el === el) return; // Virtuoso 可能多次回传同一 el
-    scrollerListenersRef.current?.clean();
-    const content = el.firstElementChild instanceof HTMLElement ? el.firstElementChild : el;
-    smoothWheelLenisRef.current?.destroy();
-    // Lenis 官方姿势：只接管滚轮（smoothWheel）；touch/滚动条/键盘保持原生节奏。
-    // duration 与 lerp 官方互斥，这里用 lerp damp 模式，连续 wheel 是“改目标”而非“重启动画”。
-    // allowNestedScroll 是官方嵌套滚动方案，展开卡片/代码块等内层可滚动区优先消费 wheel。
-    const lenis = new Lenis({
-      wrapper: el,
-      content,
-      eventsTarget: el,
-      lerp: SMOOTH_WHEEL_LENIS_LERP,
-      smoothWheel: true,
-      syncTouch: false,
-      wheelMultiplier: 1,
-      allowNestedScroll: true,
-      autoRaf: true,
-      // Virtuoso 渲染窗口是连续位移（可视窗口外高度持续增减），不是静态文档。
-      // 官方缓存的 scrollHeight 会滞后于真实容器；开启官方提供的实时尺寸读取，
-      // 每次 wheel 计算目标都用当前 limit，避免上滑到顶后目标被旧 limit 钳住。
-      naiveDimensions: true
-    });
-    smoothWheelLenisRef.current = lenis;
-    // 用户滚轮向上离开底部时立即取消贴底意图；否则持续 rAF 钉底会和 Lenis 平滑动画互相写 scrollTop。
-    // 该回调也可能由原生 scroll 联动触发，必须只认官方 smooth wheel 动画里的 direction=-1。
-    const onLenisScroll = (instance: Lenis) => {
-      if (instance.isScrolling === "smooth" && instance.direction === -1) {
-        stickToBottomRef.current = false;
-      }
-    };
-    lenis.on("scroll", onLenisScroll);
-    const endSmoothWheel = () => {
-      const lenis = smoothWheelLenisRef.current;
-      if (!lenis) return;
-      lenis.stop();
-      lenis.start();
-    };
-    let lastTouchY: number | null = null;
-    const onTouchStart = (e: TouchEvent) => {
-      endSmoothWheel();
-      lastTouchY = e.touches[0]?.clientY ?? null;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const y = e.touches[0]?.clientY ?? null;
-      if (lastTouchY != null && y != null && y < lastTouchY) stickToBottomRef.current = false;
-      lastTouchY = y;
-    };
-    // 原生滚动条拖拽：落点在 clientWidth 右侧 gutter（scrollbar-gutter:stable）才算。
-    const onPointerDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      endSmoothWheel();
-      if (e.offsetX >= el.clientWidth - 1) {
-        scrollbarDraggingRef.current = true;
-      }
-    };
-    const endScrollbarDrag = () => {
-      scrollbarDraggingRef.current = false;
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
-        endSmoothWheel();
-        stickToBottomRef.current = false;
-      } else if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === "End") {
-        endSmoothWheel();
-      }
-    };
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("pointerdown", onPointerDown, { passive: true });
-    el.addEventListener("pointerup", endScrollbarDrag, { passive: true });
-    el.addEventListener("pointercancel", endScrollbarDrag, { passive: true });
-    window.addEventListener("pointerup", endScrollbarDrag, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    scrollerListenersRef.current = {
-      el,
-      clean: () => {
-        endSmoothWheel();
-        lenis.off("scroll", onLenisScroll);
-        smoothWheelLenisRef.current?.destroy();
-        smoothWheelLenisRef.current = null;
-        el.removeEventListener("touchstart", onTouchStart);
-        el.removeEventListener("touchmove", onTouchMove);
-        el.removeEventListener("pointerdown", onPointerDown);
-        el.removeEventListener("pointerup", endScrollbarDrag);
-        el.removeEventListener("pointercancel", endScrollbarDrag);
-        window.removeEventListener("pointerup", endScrollbarDrag);
-        el.removeEventListener("keydown", onKeyDown);
-      }
-    };
-    },
-    []
-  );
-  // Virtuoso scrollerRef 是 callback；包一层把 DOM 存到本地 ref（定位校正/钉底用）+ 挂手势。
-  const handleScrollerRef = useCallback(
-    (node: HTMLElement | Window | null) => {
-      const el = node instanceof HTMLElement ? node : null;
-      scrollerElRef.current = el;
-      if (el) attachScrollerListeners(el);
+
+  const handleScrollerNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollerElRef.current = node;
       scrollerRef(node);
     },
-    [attachScrollerListeners, scrollerRef]
+    [scrollerRef]
   );
 
-  // 持续 rAF 钉底：同 row 变高（工具事件）时 followOutput 无效（官方 issue #195），
-  // 由这里补一次官方 scrollTo(immediate)；smooth wheel 上滚时整段让路，不与官方动画争写。
-  useEffect(() => {
-    let raf = 0;
-    let lastTop = -1;
-    const tick = () => {
-      const sc = scrollerElRef.current;
-      if (sc) {
-        const max = sc.scrollHeight - sc.clientHeight;
-        const top = sc.scrollTop;
-        // Lenis 正在做平滑 wheel 动画时必须让路：官方动画已经负责写 scrollTop，
-        // 此处再物理钉底会形成快滚抖动；上滚时 onLenisScroll 已取消贴底意图。
-        if (isSmoothWheelAnimating()) {
-          lastTop = sc.scrollTop;
-          raf = requestAnimationFrame(tick);
-          return;
-        }
-        if (canStickPin() && max >= 0) {
-          // 仅当用户正在拖滚动条、且明确离开底部时取消——Virtuoso 重测造成的 top 下降不取消。
-          if (
-            scrollbarDraggingRef.current
-            && lastTop >= 0
-            && top < lastTop - 2
-            && top < max - 2
-          ) {
-            stickToBottomRef.current = false;
-          } else if (top < max) {
-            // 程序化贴底必须走官方 Lenis API：直接写 scrollTop 会让 wheel 实例与容器分叉。
-            smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
-          }
-        }
-        lastTop = sc.scrollTop;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+  // 侧栏同款：wrapper+content 都就绪后再挂 Lenis；layout 阶段装，避免微任务时序装不上。
+  useLayoutEffect(() => {
+    if (sessionLoading || messages.length === 0) return;
+    const wrapper = scrollerElRef.current;
+    const content = contentElRef.current;
+    if (!wrapper || !content) return;
 
-  // 外部（发送/拉到最新）强制恢复贴底跟随：signal 递增 → stick=true → 下一帧 rAF 钉底接管滚到底。
-  // “拉到最新”是明确的 live-edge 指令：即使本会话曾搜索定位过，也要释放定位保护，
-  // 否则 canStickPin 仍为 false，按钮看起来只是把视口往上送一段而到不了最新。
+    const reduceMotionQuery = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    let lenis: Lenis | null = null;
+
+    const setupLenis = () => {
+      lenis?.destroy();
+      lenis = null;
+      lenisRef.current = null;
+      if (reduceMotionQuery?.matches) return;
+      lenis = new Lenis({
+        wrapper,
+        content,
+        eventsTarget: wrapper,
+        smoothWheel: true,
+        syncTouch: false,
+        // lerp（不用 duration）：连续/快速 wheel 是改目标而非重启动画，否则快滑只挪一小段。
+        lerp: 0.075,
+        wheelMultiplier: 1.35,
+        orientation: "vertical",
+        gestureOrientation: "vertical",
+        allowNestedScroll: true,
+        autoRaf: true,
+        overscroll: false
+      });
+      lenisRef.current = lenis;
+      // 尺寸变化后让 Lenis 重新读真实 limit。
+      lenis.resize();
+    };
+
+    const onScroll = () => {
+      const sc = scrollerElRef.current;
+      if (!sc) return;
+      const floor = Math.max(0, sc.scrollHeight - sc.clientHeight);
+      if (writingScrollRef.current) {
+        observedTopRef.current = sc.scrollTop;
+        syncNavigatorFromScrollRef.current();
+        return;
+      }
+      const movedByReader = Math.abs(sc.scrollTop - Math.min(observedTopRef.current, floor)) > 0.5;
+      const isAtBottom = movedByReader
+        ? floor - sc.scrollTop <= FOLLOW_THRESHOLD + 1
+        : atBottomRef.current;
+      if (movedByReader) {
+        stickToBottomRef.current = isAtBottom;
+        atBottomRef.current = isAtBottom;
+        onAtBottomChange(isAtBottom);
+        if (!isAtBottom && sc.scrollTop <= 80 && !loadingOlderRef.current) {
+          loadingOlderRef.current = true;
+          const rows = contentElRef.current?.querySelectorAll<HTMLElement>("[data-message-id]");
+          if (rows && rows.length > 0) {
+            const viewport = sc.getBoundingClientRect();
+            let anchor: HTMLElement | null = null;
+            for (const row of rows) {
+              const rect = row.getBoundingClientRect();
+              if (rect.bottom > viewport.top + 8 && rect.top < viewport.bottom) {
+                anchor = row;
+                break;
+              }
+            }
+            if (anchor?.dataset.messageId) {
+              prependAnchorRef.current = {
+                key: anchor.dataset.messageId,
+                top: flowTop(anchor, sc)
+              };
+            }
+          }
+          onStartReached();
+        }
+      }
+      observedTopRef.current = sc.scrollTop;
+      syncNavigatorFromScrollRef.current();
+      onRangeChanged();
+    };
+
+    setupLenis();
+    wrapper.addEventListener("scroll", onScroll, { passive: true });
+    reduceMotionQuery?.addEventListener?.("change", setupLenis);
+    // 首帧同步尺标。
+    requestAnimationFrame(() => syncNavigatorFromScrollRef.current());
+
+    const onResize = () => {
+      lenisRef.current?.resize();
+      if (stickToBottomRef.current && !pendingLocateIdRef.current && !locatedThisSessionRef.current) {
+        pinToBottom(true);
+      } else {
+        syncNavigatorFromScrollRef.current();
+      }
+    };
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+    ro?.observe(content);
+
+    return () => {
+      reduceMotionQuery?.removeEventListener?.("change", setupLenis);
+      wrapper.removeEventListener("scroll", onScroll);
+      ro?.disconnect();
+      lenis?.destroy();
+      if (lenisRef.current === lenis) lenisRef.current = null;
+    };
+  }, [sessionLoading, messages.length, activeSessionId, onAtBottomChange, onStartReached, onRangeChanged, pinToBottom]);
+
+  // 发送 / 拉到最新：恢复贴底。
   const prevStickResetRef = useRef(stickResetSignal);
   useEffect(() => {
     if (stickResetSignal === prevStickResetRef.current) return;
     prevStickResetRef.current = stickResetSignal;
     stickToBottomRef.current = true;
     locatedThisSessionRef.current = false;
-    locateStickyMountKeyRef.current = null;
-  }, [stickResetSignal]);
+    pinToBottom(true);
+    const timers = [32, 80, 160].map((ms) => window.setTimeout(() => pinToBottom(true), ms));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, [stickResetSignal, pinToBottom]);
 
-  /** 列表总高度变化（含同 row 工具卡变高）：官方建议配合 followOutput 调 autoscrollToBottom。 */
-  const handleTotalListHeightChanged = useCallback((_height: number) => {
-    if (!canStickPin()) return;
-    virtuosoRef.current?.autoscrollToBottom();
+  // prepend 校正：头部 key 变化且长度增加时，把锚点行拉回原视口位置。
+  useLayoutEffect(() => {
+    const firstKey = rowsWithTurnSummary[0]?.stableKey ?? null;
+    const prevFirst = firstRowKeyRef.current;
+    firstRowKeyRef.current = firstKey;
+    loadingOlderRef.current = false;
+    const anchor = prependAnchorRef.current;
+    if (!anchor || !firstKey || firstKey === prevFirst) return;
     const sc = scrollerElRef.current;
-    if (sc) {
-      const max = sc.scrollHeight - sc.clientHeight;
-      if (max >= 0 && sc.scrollTop < max) smoothWheelLenisRef.current?.scrollTo(max, { immediate: true });
-    }
-  }, [virtuosoRef]);
-
-  /** followOutput：只对 item 数量变化生效；用 stick 意图覆盖 Virtuoso 自带的 isAtBottom 判断。 */
-  const handleFollowOutput = useCallback((_isAtBottom: boolean) => {
-    return canStickPin() ? ("auto" as const) : false;
-  }, []);
+    if (!sc) return;
+    const row = contentElRef.current?.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(anchor.key)}"]`
+    );
+    if (!row) return;
+    const delta = flowTop(row, sc) - anchor.top;
+    if (Math.abs(delta) >= 1) writeScrollTop(sc.scrollTop + delta, true);
+    prependAnchorRef.current = null;
+    syncNavigatorFromScrollRef.current();
+  }, [rowsWithTurnSummary, writeScrollTop]);
 
   const pendingLocateId = pendingScrollMessageId?.trim() || "";
   pendingLocateIdRef.current = pendingLocateId;
   const pendingLocateIndex = pendingLocateId
-    ? visibleRenderRows.findIndex((row) => rowMatchesMessageId(row, pendingLocateId))
+    ? rowsWithTurnSummary.findIndex((row) => rowMatchesMessageId(row, pendingLocateId))
     : -1;
 
-  // 首帧同步算出 locate mount key，避免「先 LAST 挂载 → effect 再 remount」的二次跳动。
-  // @see https://virtuoso.dev/react-virtuoso/virtuoso/initial-index/ （仅 mount 生效）
-  // @see https://github.com/TanStack/virtual/discussions/579 （深链跳转：remount + initialOffset）
-  const prevSessionIdForLocateRef = useRef(activeSessionId);
-  if (prevSessionIdForLocateRef.current !== activeSessionId) {
-    prevSessionIdForLocateRef.current = activeSessionId;
-    locateStickyMountKeyRef.current = null;
+  // 切会话：清高亮与贴底账本。
+  const prevSessionIdRef = useRef(activeSessionId);
+  if (prevSessionIdRef.current !== activeSessionId) {
+    prevSessionIdRef.current = activeSessionId;
     locatedThisSessionRef.current = false;
+    firstRowKeyRef.current = null;
+    prependAnchorRef.current = null;
+    stickToBottomRef.current = true;
+    atBottomRef.current = true;
   }
-  const activeLocateMountKey =
-    !sessionLoading && pendingLocateId && pendingLocateIndex >= 0
-      ? `${activeSessionId || "agent-thread"}:locate:${locateNonce}:${pendingLocateId}`
-      : null;
-  if (activeLocateMountKey) {
-    locateStickyMountKeyRef.current = activeLocateMountKey;
-    locatedThisSessionRef.current = true;
-  }
-  const virtuosoMountKey = locateStickyMountKeyRef.current || activeSessionId || "agent-thread";
-  const initialLocateIndex =
-    pendingLocateIndex >= 0
-      ? pendingLocateIndex
-      : virtuosoMountKey.includes(":locate:") && highlightMessageId
-        ? visibleRenderRows.findIndex((row) => rowMatchesMessageId(row, highlightMessageId))
-        : -1;
 
-  // 切会话：清空高亮（sticky key 已在 render 期同步清掉）。
   useEffect(() => {
     setHighlightMessageId("");
   }, [activeSessionId]);
 
-  // 搜索定位：展开折叠 + 标记高亮（滚动位置由 remount + initialTopMostItemIndex 负责）。
+  // 搜索定位：展开折叠 + 高亮。
   useEffect(() => {
     const id = pendingLocateId;
     if (!id || sessionLoading) return;
-    if (visibleRenderRows.length === 0) return;
+    if (rowsWithTurnSummary.length === 0) return;
     const idx = pendingLocateIndex;
     if (idx < 0) return;
-
+    locatedThisSessionRef.current = true;
+    stickToBottomRef.current = false;
+    atBottomRef.current = false;
     setHighlightMessageId(id);
     setMessageOpenState((prev) => {
       const next = { ...prev, [id]: true };
-      const row = visibleRenderRows[idx];
+      const row = rowsWithTurnSummary[idx];
       if (row?.msg.id) next[row.msg.id] = true;
       if (row?.stableKey) next[row.stableKey] = true;
       String(row?.msg.id || "")
@@ -3294,17 +3197,13 @@ export function AgentMessageStream({
         });
       return next;
     });
-  }, [pendingLocateId, pendingLocateIndex, sessionLoading, visibleRenderRows.length, activeSessionId, locateNonce]);
+  }, [pendingLocateId, pendingLocateIndex, sessionLoading, rowsWithTurnSummary.length, activeSessionId, locateNonce]);
 
-  // remount 后校正定位：与标尺跳转同一套路——Virtuoso initialTopMostItemIndex / scrollToIndex
-  // 都吃 defaultItemHeight(160) 估算，前置超长消息时落点会偏；必须用 DOM 实测多帧校正收敛。
-  // 流程：① 把命中消息拉进视口并对齐 start ② 等关键词 <mark> 出现后居中（对齐 highlight 重试节奏）。
+  // 定位滚动：DOM 实测多帧收敛。
   useEffect(() => {
     if (!pendingLocateId || sessionLoading) return;
     if (pendingLocateIndex < 0) return;
-    if (!virtuosoMountKey.includes(":locate:")) return;
-
-    const stableKey = visibleRenderRows[pendingLocateIndex]?.stableKey;
+    const stableKey = rowsWithTurnSummary[pendingLocateIndex]?.stableKey;
     if (!stableKey) return;
 
     let cancelled = false;
@@ -3316,7 +3215,7 @@ export function AgentMessageStream({
     const finish = () => {
       if (cancelled || finished) return;
       finished = true;
-      syncSmoothWheelToNative();
+      syncNavigatorFromScrollRef.current();
       onPendingScrollDone?.();
     };
 
@@ -3335,21 +3234,11 @@ export function AgentMessageStream({
       return null;
     };
 
-    /** ① 消息进视口 + DOM 校正到 start（标尺 distant-jump 同款）。 */
     const bringMessageIntoView = () => {
       if (cancelled || finished) return;
-      const el = document.querySelector<HTMLElement>(msgSel);
-      if (!el) {
-        virtuosoRef.current?.scrollToIndex({
-          index: pendingLocateIndex,
-          align: "start",
-          behavior: "auto"
-        });
-      }
       adjustMsg();
     };
 
-    /** ② 关键词居中；未高亮完返回 false 以便重试。无关键词时消息到位即视为成功。 */
     const centerKeyword = (): boolean => {
       if (cancelled || finished) return false;
       const root =
@@ -3369,25 +3258,22 @@ export function AgentMessageStream({
       if (fullyVisible) return true;
       const delta =
         markRect.top + markRect.height / 2 - (scrollerRect.top + scrollerRect.height / 2);
-      if (Math.abs(delta) >= 8) sc.scrollBy({ top: delta, behavior: "auto" });
+      if (Math.abs(delta) >= 8) writeScrollTop(sc.scrollTop + delta, true);
       return true;
     };
 
-    // 关键词一旦出现，就不再拉回消息 start——否则长消息里会 start↔center 互抢抖动。
     let keywordLocked = !(highlightKeyword || "").trim();
-
     const tick = () => {
       if (!keywordLocked) {
         bringMessageIntoView();
         keywordLocked = centerKeyword();
+      } else if (!(highlightKeyword || "").trim()) {
+        bringMessageIntoView();
       } else {
-        // 无关键词：持续消息 start 校正；有关键词：只 refinement 居中，覆盖 Virtuoso 测量收敛。
-        if (!(highlightKeyword || "").trim()) bringMessageIntoView();
-        else centerKeyword();
+        centerKeyword();
       }
     };
 
-    // 首帧立即校正；随后 rAF 连续收敛（覆盖 Virtuoso 异步测量），与标尺 jump 一致。
     tick();
     let frames = 0;
     const step = () => {
@@ -3396,15 +3282,12 @@ export function AgentMessageStream({
       if (++frames < 8) requestAnimationFrame(step);
     };
     const raf = requestAnimationFrame(step);
-
-    // 超时重试对齐 useHighlightKeyword（rAF / 280 / 700）：代码块 shiki 异步替换后才有 mark。
-    const delays = [80, 280, 480, 720, 1100];
-    delays.forEach((delay, i) => {
+    ;[80, 280, 480, 720, 1100].forEach((delay, i, arr) => {
       timers.push(
         window.setTimeout(() => {
           if (cancelled || finished) return;
           tick();
-          if (i === delays.length - 1) finish();
+          if (i === arr.length - 1) finish();
         }, delay)
       );
     });
@@ -3415,9 +3298,8 @@ export function AgentMessageStream({
       timers.forEach((t) => window.clearTimeout(t));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [virtuosoMountKey, pendingLocateId, pendingLocateIndex, sessionLoading, highlightKeyword]);
+  }, [pendingLocateId, pendingLocateIndex, sessionLoading, highlightKeyword, locateNonce, activeSessionId]);
 
-  // 目标消息始终找不到时（被过滤/id 不匹配）超时释放 pending，避免卡死。
   useEffect(() => {
     if (!pendingLocateId || sessionLoading) return;
     if (pendingLocateIndex >= 0) return;
@@ -3428,38 +3310,37 @@ export function AgentMessageStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocateId, pendingLocateIndex, sessionLoading]);
 
-  // loading→就绪且无定位：滚到末尾唤醒虚拟窗口。
-  // pendingLocateId 在 loading 期间也会下发（跨会话），故就绪首帧即可拦住 wake，避免先 LAST 再定位。
-  // 超长会话（含数千字 toolResult / 长 assistant）下 scrollToIndex(LAST,end) 因 defaultItemHeight 估算偏
-  // 会落点偏上、看不到最新；DOM 实测把最后一条底部对齐视口底部 = 真贴底，多帧覆盖 Virtuoso 测量收敛。
+  // 会话就绪且无定位：滚到底。
   useEffect(() => {
-    if (sessionLoading || visibleRenderRows.length === 0) return;
+    if (sessionLoading || rowsWithTurnSummary.length === 0) return;
     if (pendingLocateId || locatedThisSessionRef.current) return;
-    const lastKey = visibleRenderRows[visibleRenderRows.length - 1]?.stableKey;
-    const wake = () => {
-      virtuosoRef.current?.scrollToIndex({
-        index: visibleRenderRows.length - 1,
-        align: "end",
-        behavior: "auto"
-      });
-      const lenis = smoothWheelLenisRef.current;
-      if (lenis && lenis.targetScroll > lenis.actualScroll) lenis.scrollTo(lenis.actualScroll, { immediate: true });
-    };
-    wake();
-    const stickTimers: number[] = [];
-    if (lastKey) {
-      const stickEnd = adjustToMessage(lastKey, "end");
-      [80, 200, 420].forEach((t) => stickTimers.push(window.setTimeout(stickEnd, t)));
-    }
-    const raf = requestAnimationFrame(wake);
-    const timer = window.setTimeout(wake, 64);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
-      stickTimers.forEach((t) => window.clearTimeout(t));
-    };
+    pinToBottom(true);
+    const timers = [64, 200, 420].map((ms) => window.setTimeout(() => {
+      if (!pendingLocateIdRef.current && !locatedThisSessionRef.current) pinToBottom(true);
+    }, ms));
+    return () => timers.forEach((t) => window.clearTimeout(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, sessionLoading, visibleRenderRows.length]);
+  }, [activeSessionId, sessionLoading, rowsWithTurnSummary.length]);
+
+  // 末尾追加用户消息：强制贴底。
+  const lastRowKey = rowsWithTurnSummary[rowsWithTurnSummary.length - 1]?.stableKey ?? null;
+  const lastRow = rowsWithTurnSummary[rowsWithTurnSummary.length - 1];
+  // 流式同 key 变高：用正文长度 + timeline 组数驱动贴底，不只依赖 ResizeObserver。
+  const lastRowContentSig = lastRow
+    ? `${lastRowKey}:${lastRow.msg.content.length}:${lastRow.liveParts.length}:${lastRow.renderParts.length}:${lastRow.fallbackReply.length}:${lastRow.timelineGroups.length}`
+    : "";
+  const prevLastRowKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const prev = prevLastRowKeyRef.current;
+    prevLastRowKeyRef.current = lastRowKey;
+    if (!lastRowKey) return;
+    const row = rowsWithTurnSummary[rowsWithTurnSummary.length - 1];
+    if (row && !row.isAssistant && lastRowKey !== prev) {
+      pinToBottom(true);
+      return;
+    }
+    if (canStickPin()) pinToBottom(true);
+  }, [lastRowKey, lastRowContentSig, rowsWithTurnSummary, pinToBottom]);
 
   if (sessionLoading) {
     return (
@@ -3472,92 +3353,85 @@ export function AgentMessageStream({
 
   return (
     <>
-      <AgentMessageNavigator
-        markers={navigatorMarkers}
-        totalCount={visibleRenderRows.length}
-        activeIndex={navigatorActiveIndex}
-        onNavigate={handleNavigatorJump}
-        text={text}
-        hidden={navigatorHidden}
-        side={navigatorSide}
-      />
-      <Virtuoso
-        key={virtuosoMountKey}
-        ref={virtuosoRef}
-        data={rowsWithTurnSummary}
-        firstItemIndex={firstItemIndex}
-        computeItemKey={(_index, row) => row.stableKey}
-        scrollerRef={handleScrollerRef}
+      {navigatorStyle === "sailing" ? (
+        <AgentSailingNavigator
+          markers={navigatorMarkers}
+          totalCount={rowsWithTurnSummary.length}
+          activeIndex={navigatorActiveIndex}
+          progressRef={navigatorProgressRef}
+          onNavigate={handleNavigatorJump}
+          text={text}
+          hidden={navigatorHidden}
+          side={navigatorSide}
+        />
+      ) : (
+        <AgentMessageNavigator
+          markers={navigatorMarkers}
+          totalCount={rowsWithTurnSummary.length}
+          activeIndex={navigatorActiveIndex}
+          onNavigate={handleNavigatorJump}
+          text={text}
+          hidden={navigatorHidden}
+          side={navigatorSide}
+        />
+      )}
+      <div
+        ref={handleScrollerNode}
         className="gt-subtle-scrollbar h-full min-h-0 overflow-auto [scrollbar-gutter:stable]"
-        initialTopMostItemIndex={
-          initialLocateIndex >= 0
-            ? { index: initialLocateIndex, align: "start" }
-            : { index: "LAST", align: "end" }
-        }
-        followOutput={handleFollowOutput}
-        totalListHeightChanged={handleTotalListHeightChanged}
-        atBottomThreshold={80}
-        atBottomStateChange={(atBottom) => {
-          // 仅贴底时恢复 stick；离开底部不再从这里清 stick（Virtuoso 在工具变高时也会报 false）
-          if (atBottom) stickToBottomRef.current = true;
-          onAtBottomChange(atBottom);
-        }}
-        startReached={onStartReached}
-        rangeChanged={(range) => {
-          onRangeChanged();
-          const reach = range.endIndex - range.startIndex;
-          const mid = reach > 0 ? Math.round((range.startIndex + range.endIndex) / 2) : range.startIndex;
-          setNavigatorActiveIndex((prev) => (prev === mid ? prev : mid));
-        }}
-        increaseViewportBy={{ top: 600, bottom: 600 }}
-        defaultItemHeight={160}
-        components={{ List: AgentMessageListContainer, Item: AgentMessageListItem, Header: AgentMessageListHeader }}
-        itemContent={(_index, row) =>
-          row.isSystem ? (
-            <AgentMessageRowFrame>
-              <SystemMessageRow content={row.msg.content.trim()} />
-            </AgentMessageRowFrame>
-          ) : (
-            <AgentMessageRowFrame>
-              <MessageShell
-                isAssistant={row.isAssistant}
-                todoItems={row.todoItems}
-                userHasAttachments={!row.isAssistant && Boolean(row.msg.attachments?.length)}
-                highlight={Boolean(highlightMessageId) && rowMatchesMessageId(row, highlightMessageId)}
-                highlightKeyword={highlightKeyword}
-                locateMessageId={row.stableKey}
-              >
-                {row.isAssistant ? (
-                  <AssistantMessage
-                    row={row}
-                    isTurnLastRow={turnLastAssistantKeys.has(row.stableKey)}
-                    timelineOpenState={timelineOpenState}
-                    setTimelineOpenState={setTimelineOpenState}
-                    showReasoningSummaries={showReasoningSummaries}
-                    shellToolPartsExpanded={shellToolPartsExpanded}
-                    editToolPartsExpanded={editToolPartsExpanded}
-                    onOpenTaskSession={onOpenTaskSession}
-                    onOpenToolFile={onOpenToolFile}
-                    onOpenBrowserUrl={onOpenBrowserUrl}
-                    renderMarkdown={renderMarkdown}
-                    onOpenTurnDiff={onOpenTurnDiff}
-                  />
-                ) : (
-                  <UserMessage
-                    msg={row.msg}
-                    messageOpenState={messageOpenState}
-                    setMessageOpenState={setMessageOpenState}
-                    renderMarkdown={renderMarkdown}
-                    onPreviewImageGroup={onPreviewImageGroup}
-                    onCopyAttachmentUri={onCopyAttachmentUri}
-                    onOpenAttachment={onOpenAttachment}
-                  />
-                )}
-              </MessageShell>
-            </AgentMessageRowFrame>
-          )
-        }
-      />
+        data-agent-message-scroll=""
+      >
+        <div
+          ref={contentElRef}
+          className="ml-[var(--chat-content-left,auto)] mr-auto max-w-[860px] select-none px-10"
+        >
+          <div className="h-12" aria-hidden="true" />
+          {rowsWithTurnSummary.map((row) =>
+            row.isSystem ? (
+              <AgentMessageRowFrame key={row.stableKey}>
+                <SystemMessageRow content={row.msg.content.trim()} />
+              </AgentMessageRowFrame>
+            ) : (
+              <AgentMessageRowFrame key={row.stableKey}>
+                <MessageShell
+                  isAssistant={row.isAssistant}
+                  todoItems={row.todoItems}
+                  userHasAttachments={!row.isAssistant && Boolean(row.msg.attachments?.length)}
+                  highlight={Boolean(highlightMessageId) && rowMatchesMessageId(row, highlightMessageId)}
+                  highlightKeyword={highlightKeyword}
+                  locateMessageId={row.stableKey}
+                >
+                  {row.isAssistant ? (
+                    <AssistantMessage
+                      row={row}
+                      isTurnLastRow={turnLastAssistantKeys.has(row.stableKey)}
+                      timelineOpenState={timelineOpenState}
+                      setTimelineOpenState={setTimelineOpenState}
+                      showReasoningSummaries={showReasoningSummaries}
+                      shellToolPartsExpanded={shellToolPartsExpanded}
+                      editToolPartsExpanded={editToolPartsExpanded}
+                      onOpenTaskSession={onOpenTaskSession}
+                      onOpenToolFile={onOpenToolFile}
+                      onOpenBrowserUrl={onOpenBrowserUrl}
+                      renderMarkdown={renderMarkdown}
+                      onOpenTurnDiff={onOpenTurnDiff}
+                    />
+                  ) : (
+                    <UserMessage
+                      msg={row.msg}
+                      messageOpenState={messageOpenState}
+                      setMessageOpenState={setMessageOpenState}
+                      renderMarkdown={renderMarkdown}
+                      onPreviewImageGroup={onPreviewImageGroup}
+                      onCopyAttachmentUri={onCopyAttachmentUri}
+                      onOpenAttachment={onOpenAttachment}
+                    />
+                  )}
+                </MessageShell>
+              </AgentMessageRowFrame>
+            )
+          )}
+        </div>
+      </div>
     </>
   );
 }

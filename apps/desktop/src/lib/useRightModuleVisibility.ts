@@ -11,9 +11,7 @@ const RIGHT_PANE_TABS: RightPaneTab[] = ([
   "worktree",
   "terminal",
   "remoteRepos",
-  "skills",
   "browser",
-  "assetGraph",
 ] as RightPaneTab[]).filter((tab) =>
   tab === "remoteRepos" ? REMOTE_REPO_MODULE_ENABLED : true
 );
@@ -23,9 +21,10 @@ const DEFAULT_RIGHT_MODULE_VISIBILITY: Record<RightPaneTab, boolean> = {
   worktree: true,
   terminal: true,
   remoteRepos: true,
-  skills: true,
   browser: true,
-  assetGraph: true
+  // 技能/记忆已上移到总导航，右栏不再提供这些 tab。
+  skills: false,
+  assetGraph: false,
 };
 
 export function useRightModuleVisibility(
@@ -40,7 +39,9 @@ export function useRightModuleVisibility(
     return {
       ...DEFAULT_RIGHT_MODULE_VISIBILITY,
       ...stored,
-      ...(REMOTE_REPO_MODULE_ENABLED ? {} : { remoteRepos: false })
+      skills: false,
+      assetGraph: false,
+      ...(REMOTE_REPO_MODULE_ENABLED ? {} : { remoteRepos: false }),
     };
   });
 

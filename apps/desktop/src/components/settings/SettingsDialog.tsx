@@ -5,7 +5,7 @@ import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, R
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED, MCP_MODULE_ENABLED } from "../../lib/featureFlags";
 import { UI_ZOOM_RANGE, CODE_FONT_RANGE } from "../../lib/useAppearanceFontSize";
-import { AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, PluginsIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
+import { AboutIcon, BellIcon, ImageIcon, LinkIcon, PackageIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, SoundIcon, SyncIcon } from "../icons";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ButtonGroup } from "../ui/button-group";
@@ -13,7 +13,6 @@ import { Card, CardContent } from "../ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Input } from "../ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "../ui/item";
-import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Slider } from "../ui/slider";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
@@ -24,6 +23,7 @@ import { AgentMcpSection } from "../agent/AgentMcpPanel";
 import { FullAccessRiskDialog } from "../agent/FullAccessRiskDialog";
 import { NavigatorPreview } from "./NavigatorPreview";
 import { ServiceSettingsPanel } from "./ServiceSettingsPanel";
+import { SettingsNavRail } from "./SettingsNavRail";
 
 type ControlServerSettingsDraft = {
   enabled: boolean;
@@ -59,6 +59,14 @@ export type GeneralSettingsDraft = {
   navigatorSide: "left" | "right";
   /** 概览标尺范围：all=全部消息（默认）；sent=仅「我发送」的消息。 */
   navigatorScope: "sent" | "all";
+  /** 概览标尺样式：rail=经典尺标（默认）；sailing=帆船航线。 */
+  navigatorStyle: "rail" | "sailing";
+  /** 空闲内容保护（雾面水滴/云雾/冰霜屏保）：默认开启。 */
+  contentProtectEnabled: boolean;
+  /** 无操作多久后进入内容保护（秒）。 */
+  contentProtectIdleSec: number;
+  /** 内容保护视觉效果：水滴 / 云雾 / 冰霜。 */
+  contentProtectEffect: "droplets" | "clouds" | "frost";
 };
 
 type SettingsLocale = Exclude<GeneralSettingsDraft["language"], "system">;
@@ -79,7 +87,8 @@ const SETTINGS_TEXT = {
     permissionDefault: "请求批准", permissionAuto: "替我审批", permissionFull: "完全访问",
     permissionFullConfirmTitle: "确认启用完全访问？", permissionFullConfirmDesc: "启用后将放开工作区围栏，并自动通过工具授权。仅在你信任后续任务时使用。",
     permissionFullAck: "我已了解风险，并愿意继续", permissionFullCancel: "取消", permissionFullEnable: "启用完全访问",
-    reasoning: "推理摘要", reasoningDesc: "在对话中显示模型推理摘要。", shellParts: "Shell 工具详情", shellPartsDesc: "默认展开 Shell 工具调用详情。", editParts: "编辑工具详情", editPartsDesc: "默认展开编辑工具调用详情。", progressBar: "会话进度条", progressBarDesc: "在会话工作中显示进度条。", maxToolIterations: "单次任务最大工具调用次数", maxToolIterationsDesc: "限制单次任务的工具调用轮数；0 为不限制，对新建会话生效。", closeBehavior: "关闭按钮行为", closeBehaviorDesc: "点击窗口关闭按钮时的动作：最小化到系统托盘后台运行、直接退出，或每次询问。", closeBehaviorTray: "最小化到托盘", closeBehaviorQuit: "直接退出", closeBehaviorAsk: "每次询问", navigator: "概览标尺", navigatorDesc: "会话侧边的可拖动快速滚动标尺：点击跳转、长按拖动。", navigatorPreviewCaption: "实时预览", navigatorPosition: "标尺位置", navigatorPositionDesc: "贴内容列左缘或右缘。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "标尺范围", navigatorScopeDesc: "仅「我发送」的消息，或全部消息。", navigatorScopeSent: "仅我发送", navigatorScopeAll: "全部消息",
+    reasoning: "推理摘要", reasoningDesc: "在对话中显示模型推理摘要。", shellParts: "Shell 工具详情", shellPartsDesc: "默认展开 Shell 工具调用详情。", editParts: "编辑工具详情", editPartsDesc: "默认展开编辑工具调用详情。", progressBar: "会话进度条", progressBarDesc: "在会话工作中显示进度条。", maxToolIterations: "单次任务最大工具调用次数", maxToolIterationsDesc: "限制单次任务的工具调用轮数；0 为不限制，对新建会话生效。", closeBehavior: "关闭按钮行为", closeBehaviorDesc: "点击窗口关闭按钮时的动作：最小化到系统托盘后台运行、直接退出，或每次询问。", closeBehaviorTray: "最小化到托盘", closeBehaviorQuit: "直接退出", closeBehaviorAsk: "每次询问", navigator: "概览标尺", navigatorDesc: "会话侧边的可拖动快速滚动标尺：点击跳转、长按拖动。", navigatorPreviewCaption: "实时预览", navigatorPosition: "标尺位置", navigatorPositionDesc: "贴内容列左缘或右缘。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "标尺范围", navigatorScopeDesc: "仅「我发送」的消息，或全部消息。", navigatorScopeSent: "仅我发送", navigatorScopeAll: "全部消息", navigatorStyle: "标尺样式", navigatorStyleDesc: "经典尺标或帆船航线跟随。", navigatorStyleRail: "尺标", navigatorStyleSailing: "帆船",
+    contentProtect: "内容保护", contentProtectDesc: "空闲一段时间后遮盖界面，防止旁窥；关闭后不再自动进入。", contentProtectEffect: "保护效果", contentProtectEffectDesc: "选择空闲时的视觉保护样式。", contentProtectEffectDroplets: "雾面水滴", contentProtectEffectClouds: "云雾", contentProtectEffectFrost: "冰霜", contentProtectIdle: "保护等待时间", contentProtectIdleDesc: "无操作多久后进入内容保护。", contentProtectIdle5s: "5 秒", contentProtectIdle10s: "10 秒", contentProtectIdle30s: "30 秒", contentProtectIdle60s: "1 分钟", contentProtectIdle120s: "2 分钟", contentProtectIdle300s: "5 分钟",
     theme: "主题", themeDesc: "在浅色和深色主题之间切换。", light: "浅色", dark: "深色", uiFont: "界面缩放", uiFontDesc: "等比缩放整个界面，含字号、间距与图标。", codeFont: "代码字号", codeFontDesc: "调整代码、终端和等宽文本大小。", fontSizeSection: "显示大小", fontSizeSectionDesc: "调整界面缩放与代码字号，拖动即时预览。", presetCompact: "紧凑", presetStandard: "标准", presetRoomy: "宽松", resetDefault: "重置",
     changes: "审查", changesDesc: "显示当前仓库变更列表。", worktree: "分支", worktreeDesc: "显示当前分支与分支切换入口。", terminal: "终端", terminalDesc: "显示内置终端入口。", skillsModuleDesc: "显示技能市场。",
     mobileControl: "本机 Host 服务", mobileControlReady: "由桌面进程内嵌提供与 CLI 相同的手机服务；配置偏好端口、授权与扫码连接。", mobileControlMissing: "本机 Host 由桌面内嵌，无需安装 giteam CLI。", service: "服务开关", serviceDesc: "是否在桌面进程内启动 Host（Control）服务。", port: "偏好端口", portDesc: "优先绑定的端口；若被占用会自动顺延，二维码使用实际监听端口。", listeningPort: "实际监听", listeningPortDesc: "当前 Host 正在监听的端口；与偏好端口不同时说明已自动顺延。", listeningPortRemapped: "偏好端口被占用，已顺延到此端口（扫码与连接地址使用此端口）。", publicUrl: "公开地址", publicUrlDesc: "可选，公网或局域网可访问地址；留空时自动取本机可用地址。", authMode: "授权模式", authModeDesc: "选择免认证访问，或要求输入配对码进行授权。", pairCodeAuth: "配对码授权", validPeriod: "有效期", validPeriodDesc: "仅在“配对码授权”下生效，用来控制当前配对码的过期时间。", currentPairCode: "当前配对码", currentPairCodeDesc: "二维码与手机端手动输入都会使用这里展示的配对码。", connectionAddress: "连接地址", authCode: "授权码", qrConnect: "二维码连接", qrConnectDesc: "手机端可直接扫码带入服务地址和当前授权方式。", noAuth: "无需认证", hours24: "24 小时", days7: "7 天", forever: "长期有效", refreshCode: "刷新配对码", copyUrl: "复制地址", qrDisabled: "开启服务后即可生成二维码", qrWaiting: "等待生成可访问地址…", agentApi: "Host 接口", agentApiBusy: "正在保存并重启本机 Host 服务。", agentApiDesc: "配置本机 Host 偏好端口。",
@@ -117,7 +126,8 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     permissionDefault: "請求批准", permissionAuto: "替我審批", permissionFull: "完全訪問",
     permissionFullConfirmTitle: "確認啟用完全訪問？", permissionFullConfirmDesc: "啟用後將放開工作區圍欄，並自動通過工具授權。僅在你信任後續任務時使用。",
     permissionFullAck: "我已了解風險，並願意繼續", permissionFullCancel: "取消", permissionFullEnable: "啟用完全訪問",
-    reasoning: "推理摘要", reasoningDesc: "在對話中顯示模型推理摘要。", shellParts: "Shell 工具詳情", shellPartsDesc: "預設展開 Shell 工具呼叫詳情。", editParts: "編輯工具詳情", editPartsDesc: "預設展開編輯工具呼叫詳情。", progressBar: "會話進度列", progressBarDesc: "在會話工作中顯示進度列。", maxToolIterations: "單次任務最大工具呼叫次數", maxToolIterationsDesc: "限制單次任務的工具呼叫輪數；0 為不限制，對新建會話生效。", closeBehavior: "關閉按鈕行為", closeBehaviorDesc: "點擊視窗關閉按鈕時的動作：最小化到系統托盤背景執行、直接結束，或每次詢問。", closeBehaviorTray: "最小化到托盤", closeBehaviorQuit: "直接結束", closeBehaviorAsk: "每次詢問", navigator: "概覽標尺", navigatorDesc: "會話側邊的可拖動快速滾動標尺：點擊跳轉、長按拖動。", navigatorPreviewCaption: "即時預覽", navigatorPosition: "標尺位置", navigatorPositionDesc: "貼內容列左緣或右緣。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "標尺範圍", navigatorScopeDesc: "僅「我傳送」的訊息，或全部訊息。", navigatorScopeSent: "僅我傳送", navigatorScopeAll: "全部訊息",
+    reasoning: "推理摘要", reasoningDesc: "在對話中顯示模型推理摘要。", shellParts: "Shell 工具詳情", shellPartsDesc: "預設展開 Shell 工具呼叫詳情。", editParts: "編輯工具詳情", editPartsDesc: "預設展開編輯工具呼叫詳情。", progressBar: "會話進度列", progressBarDesc: "在會話工作中顯示進度列。", maxToolIterations: "單次任務最大工具呼叫次數", maxToolIterationsDesc: "限制單次任務的工具呼叫輪數；0 為不限制，對新建會話生效。", closeBehavior: "關閉按鈕行為", closeBehaviorDesc: "點擊視窗關閉按鈕時的動作：最小化到系統托盤背景執行、直接結束，或每次詢問。", closeBehaviorTray: "最小化到托盤", closeBehaviorQuit: "直接結束", closeBehaviorAsk: "每次詢問", navigator: "概覽標尺", navigatorDesc: "會話側邊的可拖動快速滾動標尺：點擊跳轉、長按拖動。", navigatorPreviewCaption: "即時預覽", navigatorPosition: "標尺位置", navigatorPositionDesc: "貼內容列左緣或右緣。", navigatorPosLeft: "左", navigatorPosRight: "右", navigatorScope: "標尺範圍", navigatorScopeDesc: "僅「我傳送」的訊息，或全部訊息。", navigatorScopeSent: "僅我傳送", navigatorScopeAll: "全部訊息", navigatorStyle: "標尺樣式", navigatorStyleDesc: "經典尺標或帆船航線跟隨。", navigatorStyleRail: "尺標", navigatorStyleSailing: "帆船",
+    contentProtect: "內容保護", contentProtectDesc: "閒置一段時間後遮蓋介面，防止旁窺；關閉後不再自動進入。", contentProtectEffect: "保護效果", contentProtectEffectDesc: "選擇閒置時的視覺保護樣式。", contentProtectEffectDroplets: "霧面水滴", contentProtectEffectClouds: "雲霧", contentProtectEffectFrost: "冰霜", contentProtectIdle: "保護等待時間", contentProtectIdleDesc: "無操作多久後進入內容保護。", contentProtectIdle5s: "5 秒", contentProtectIdle10s: "10 秒", contentProtectIdle30s: "30 秒", contentProtectIdle60s: "1 分鐘", contentProtectIdle120s: "2 分鐘", contentProtectIdle300s: "5 分鐘",
     theme: "主題", themeDesc: "在淺色和深色主題之間切換。", light: "淺色", dark: "深色", uiFont: "介面縮放", uiFontDesc: "等比縮放整個介面，含字號、間距與圖示。", codeFont: "程式碼字號", codeFontDesc: "調整程式碼、終端機和等寬文字大小。", fontSizeSection: "顯示大小", fontSizeSectionDesc: "調整介面縮放與程式碼字號，拖動即時預覽。", presetCompact: "緊湊", presetStandard: "標準", presetRoomy: "寬鬆", resetDefault: "重設",
     changes: "審查", changesDesc: "顯示目前倉庫變更列表。", worktree: "分支", worktreeDesc: "顯示目前分支與分支切換入口。", terminal: "終端機", terminalDesc: "顯示內建終端機入口。", skillsModuleDesc: "顯示技能市場。",
     mobileControl: "行動端控制", mobileControlReady: "設定行動端連線服務、連接埠、授權方式與掃碼連線。", mobileControlMissing: "需要先安裝 giteam 依賴，才可以啟用行動端控制服務。", service: "服務開關", serviceDesc: "控制行動端控制服務是否啟用。", port: "偏好連接埠", portDesc: "優先綁定的連接埠；若被占用會自動順延，QR Code 使用實際監聽連接埠。", listeningPort: "實際監聽", listeningPortDesc: "目前 Host 正在監聽的連接埠；與偏好連接埠不同時表示已自動順延。", listeningPortRemapped: "偏好連接埠被占用，已順延到此連接埠（掃碼與連線地址使用此連接埠）。", publicUrl: "公開地址", publicUrlDesc: "可選，公網或區域網路可存取地址；留空時自動取本機可用地址。", authMode: "授權模式", authModeDesc: "選擇免認證存取，或要求輸入配對碼進行授權。", pairCodeAuth: "配對碼授權", validPeriod: "有效期", validPeriodDesc: "僅在「配對碼授權」下生效，用來控制目前配對碼的過期時間。", currentPairCode: "目前配對碼", currentPairCodeDesc: "QR Code 與手機端手動輸入都會使用這裡顯示的配對碼。", connectionAddress: "連線地址", authCode: "授權碼", qrConnect: "QR Code 連線", qrConnectDesc: "手機端可直接掃碼帶入服務地址和目前授權方式。", noAuth: "無需認證", hours24: "24 小時", days7: "7 天", forever: "長期有效", refreshCode: "重新整理配對碼", copyUrl: "複製地址", qrDisabled: "啟用服務後即可產生 QR Code", qrWaiting: "等待產生可存取地址…", agentApi: "Giteam 介面", agentApiBusy: "正在儲存並重新啟動 Giteam 服務。", agentApiDesc: "設定 Giteam 服務連接埠。",
@@ -138,7 +148,7 @@ const SETTINGS_TEXT_OVERRIDES: Record<Exclude<SettingsLocale, "zh-CN">, Record<S
     followSystem: "Follow System", back: "← Settings", sidebarIntro: "Manage interface, sessions, notifications, and runtime by workflow.", general: "General", generalKicker: "Basics", generalDesc: "Adjust display, permissions, and session message behavior.", basics: "Basics", sessionDisplay: "Session Display", workspace: "Workspace", workspaceKicker: "Layout", workspaceDesc: "Choose which right-side workspace modules are visible.", models: "Models", modelsKicker: "Models", modelsDesc: "Manage providers, default models, and model visibility.", modelsEmpty: "No model information yet.", dependencies: "Plugins", dependenciesKicker: "Extensions", dependenciesDesc: "Manage plugins, skills, and MCP.", api: "Service", apiKicker: "Service", apiDesc: "Manage LAN control, cloud, and private gateway connections.", skills: "Skills", skillsKicker: "Extensions", skillsDesc: "Manage installed skills and Skills marketplace search.", updates: "About", updatesKicker: "App", updatesDesc: "View the current version and check or install desktop updates.", notifications: "Notifications", notificationsKicker: "Alerts", notificationsDesc: "Choose which events send system notifications.", sounds: "Sounds", soundsKicker: "Alerts", soundsDesc: "Control sounds for agent, permission, and error events.", language: "Language", languageDesc: "Choose the interface language; system follows your environment.", autoAccept: "Permission Mode", autoAcceptDesc: "Default permission tier for new sessions; syncs with the composer chip: Ask / Auto / Full access.",
     permissionDefault: "Ask", permissionAuto: "Auto approve", permissionFull: "Full access",
     permissionFullConfirmTitle: "Enable Full access?", permissionFullConfirmDesc: "Full access lifts workspace path confinement and auto-approves tool permissions. Only use it when you trust subsequent tasks.",
-    permissionFullAck: "I understand the risks and want to continue", permissionFullCancel: "Cancel", permissionFullEnable: "Enable Full access", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", update: "Update", uninstall: "Uninstall", installing: "Installing", updating: "Updating", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
+    permissionFullAck: "I understand the risks and want to continue", permissionFullCancel: "Cancel", permissionFullEnable: "Enable Full access", reasoning: "Reasoning Summaries", reasoningDesc: "Show model reasoning summaries in conversations.", shellParts: "Shell Tool Details", shellPartsDesc: "Expand Shell tool call details by default.", editParts: "Edit Tool Details", editPartsDesc: "Expand edit tool call details by default.", progressBar: "Session Progress Bar", progressBarDesc: "Show a progress bar while a session is working.", maxToolIterations: "Max Tool Iterations", maxToolIterationsDesc: "Limit tool-calling rounds per task; 0 means unlimited. Applies to newly created sessions.", closeBehavior: "Close Button", closeBehaviorDesc: "What the window close button does: minimize to system tray, quit, or ask each time.", closeBehaviorTray: "Minimize to Tray", closeBehaviorQuit: "Quit", closeBehaviorAsk: "Ask Each Time", navigator: "Overview Rail", navigatorDesc: "A draggable fast-scroll rail on the side of the conversation — click to jump, drag to scrub.", navigatorPreviewCaption: "Live preview", navigatorPosition: "Rail Position", navigatorPositionDesc: "Place the rail on the left or right edge of the content column.", navigatorPosLeft: "Left", navigatorPosRight: "Right", navigatorScope: "Rail Scope", navigatorScopeDesc: "Show only messages you sent, or all messages.", navigatorScopeSent: "Only Mine", navigatorScopeAll: "All Messages", navigatorStyle: "Rail Style", navigatorStyleDesc: "Classic ruler or a sailing ship along a dashed route.", navigatorStyleRail: "Ruler", navigatorStyleSailing: "Sailing", contentProtect: "Content Protect", contentProtectDesc: "After idle time, cover the UI to prevent shoulder surfing. Turn off to disable.", contentProtectEffect: "Protect Effect", contentProtectEffectDesc: "Choose the idle visual protect style.", contentProtectEffectDroplets: "Rain droplets", contentProtectEffectClouds: "Clouds", contentProtectEffectFrost: "Frost", contentProtectIdle: "Protect After", contentProtectIdleDesc: "How long without input before content protect starts.", contentProtectIdle5s: "5 seconds", contentProtectIdle10s: "10 seconds", contentProtectIdle30s: "30 seconds", contentProtectIdle60s: "1 minute", contentProtectIdle120s: "2 minutes", contentProtectIdle300s: "5 minutes", theme: "Theme", themeDesc: "Switch between light and dark themes.", light: "Light", dark: "Dark", uiFont: "Interface Zoom", uiFontDesc: "Scale the entire interface, including text, spacing, and icons.", codeFont: "Code Font Size", codeFontDesc: "Adjust code, terminal, and monospace text size.", fontSizeSection: "Display Size", fontSizeSectionDesc: "Adjust interface zoom and code font size with live preview.", presetCompact: "Compact", presetStandard: "Standard", presetRoomy: "Roomy", resetDefault: "Reset", changes: "Changes", changesDesc: "Show current repository changes.", worktree: "Branch", worktreeDesc: "Show the current branch and branch switcher.", terminal: "Terminal", terminalDesc: "Show the built-in terminal entry.", skillsModuleDesc: "Show the Skills marketplace.", mobileControl: "Local Host", mobileControlReady: "Desktop embeds the same mobile Host as the CLI; configure preferred port, auth, and QR pairing.", mobileControlMissing: "Local Host is embedded in desktop; giteam CLI is optional.", service: "Service", serviceDesc: "Start the Host (Control) service inside the desktop process.", port: "Preferred Port", portDesc: "Preferred bind port; if busy, Host remaps automatically and QR uses the listening port.", listeningPort: "Listening Port", listeningPortDesc: "Port the Host is actually listening on; differs from preferred when remapped.", listeningPortRemapped: "Preferred port was busy; remapped here (QR and connection URL use this port).", publicUrl: "Public URL", publicUrlDesc: "Optional public or LAN-accessible URL. Leave blank to auto-pick a reachable local address.", authMode: "Auth Mode", authModeDesc: "Choose between direct access and pair-code-based authorization.", pairCodeAuth: "Pair Code", validPeriod: "Validity", validPeriodDesc: "Only applies in pair-code mode and controls when the current pair code expires.", currentPairCode: "Current Pair Code", currentPairCodeDesc: "The QR code and manual mobile input both use the current pair code shown here.", connectionAddress: "Connection URL", authCode: "Auth Code", qrConnect: "QR Connection", qrConnectDesc: "Mobile can scan this QR code to fill the service URL and current auth mode.", noAuth: "No Auth", hours24: "24 hours", days7: "7 days", forever: "Never expires", refreshCode: "Refresh Pair Code", copyUrl: "Copy URL", qrDisabled: "Enable the service to generate a QR code", qrWaiting: "Waiting for a reachable address…", agentApi: "Giteam API", agentApiBusy: "Saving and restarting the Giteam service.", agentApiDesc: "Configure the Giteam service port.", apiKey: "API Key", apiKeyConfigured: "Configured; clear the input and save to remove it.", apiKeyDesc: "Optional; AI search falls back to keyword search when unset.", agentNotifications: "Agent Notifications", agentNotificationsDesc: "Notify when the agent finishes or needs attention.", permissionNotifications: "Permission Notifications", permissionNotificationsDesc: "Notify when a permission request appears.", errorNotifications: "Error Notifications", errorNotificationsDesc: "Notify when an error occurs.", agentSound: "Agent Sound", agentSoundDesc: "Play a sound when the agent finishes or changes state.", permissionSound: "Permission Sound", permissionSoundDesc: "Play a sound when permission is requested.", errorSound: "Error Sound", errorSoundDesc: "Play a sound when an error occurs.", startupCheck: "Check for Updates on Startup", startupCheckDesc: "Automatically check for a new app version after launch.", autoInstall: "Automatic Updates", autoInstallDesc: "When a new version is found, download, install, and restart without asking.", checkNow: "Check for Updates", checkNowDesc: "Query GitHub Releases for a newer version now.", currentVersion: "Current Version", currentVersionDesc: "The app version running on this machine.", updateAvailable: "Update Available", updateAvailableDesc: "Download and install, then restart the app.", installUpdate: "Download & Install", upToDate: "You are up to date", downloading: "Downloading", restartToUpdate: "Restart to finish update", updateUnsupported: "In-app updates are unavailable here", updateUnsupportedDesc: "Use the desktop installer build to enable automatic updates.", updateNotes: "What's New", updateNotesEmpty: "No release notes were provided for this version.", updateFromTo: "Version", reviewWhatsNew: "Review What's New", reviewWhatsNewDesc: "Reopen the release notes for the current version", review: "View", whatsNewLoadingLabel: "Loading…", save: "Save", saving: "Saving...", installFirst: "Install first", install: "Install", update: "Update", uninstall: "Uninstall", installing: "Installing", updating: "Updating", uninstalling: "Uninstalling", checking: "Checking...", check: "Check", refresh: "Refresh", installed: "Installed", missing: "Missing", saveMobileTitle: "Save mobile control settings", installDependencyTitle: "Install giteam dependency first", saveToApply: "Save to apply"
   }
 };
 
@@ -149,7 +159,7 @@ function normalizeSettingsLocale(value: string): SettingsLocale {
   return "en-US";
 }
 
-function getSettingsText(language: GeneralSettingsDraft["language"]): Record<SettingsTextKey, string> {
+export function getSettingsText(language: GeneralSettingsDraft["language"]): Record<SettingsTextKey, string> {
   const locale = language === "system" ? normalizeSettingsLocale(navigator.language || "zh-CN") : language;
   return locale === "zh-CN" ? { ...SETTINGS_TEXT["zh-CN"] } : { ...SETTINGS_TEXT["zh-CN"], ...SETTINGS_TEXT_OVERRIDES[locale] };
 }
@@ -188,6 +198,8 @@ function remoteRepoText(language: GeneralSettingsDraft["language"]) {
 
 type SettingsDialogProps = {
   theme: "dark" | "light";
+  /** 嵌入工作区主区时不使用全屏 portal，也不显示「返回应用」。 */
+  embedded?: boolean;
   /** 当前仓库路径（插件分区 MCP 标签页的仓库级配置作用域）。 */
   repoPath: string;
   runtimeStatus: RuntimeRequirementsStatus;
@@ -260,8 +272,8 @@ type SettingsDialogProps = {
   onResetRemoteRepoService: () => void;
 };
 
-type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "plugins" | "mobile" | "remoteRepos";
-type InitialSettingsSectionId = SettingsSectionId | "modules" | "skillsmp";
+type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "mobile" | "remoteRepos";
+type InitialSettingsSectionId = SettingsSectionId | "modules" | "skillsmp" | "plugins" | "appearance";
 
 type SettingsEntry = {
   title: string;
@@ -286,7 +298,6 @@ const SETTINGS_SECTION_ICONS: Record<SettingsSectionId, SettingsNavIcon> = {
   general: SettingsIcon,
   appearance: ImageIcon,
   models: PackageIcon,
-  plugins: PluginsIcon,
   mobile: LinkIcon,
   remoteRepos: SyncIcon,
   updates: AboutIcon,
@@ -482,7 +493,7 @@ function FontSlider(props: {
   // (pointer release / keyboard release) applies to the app, keeping the drag
   // smooth without re-rendering the whole sections tree.
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-border/70 bg-card/40 p-3">
+    <div className="flex flex-col gap-2.5 rounded-lg border border-black/[0.08] bg-card p-3 shadow-[var(--gt-elev-card)] dark:border-border/70 dark:bg-card/40 dark:shadow-none">
       <div className="flex items-center justify-between gap-3">
         <strong className="text-sm font-semibold text-foreground">{props.label}</strong>
         <ButtonGroup className="bg-muted/40 p-0.5 shadow-none">
@@ -662,7 +673,7 @@ function SettingsRows(props: { entries: Array<SettingsEntry> }) {
   // Official Item composition: title/description/actions with focus-visible
   // and hover states owned by the component (no per-row grid overrides).
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-border/80 bg-card">
+    <div className="flex flex-col overflow-hidden rounded-lg border border-black/[0.08] bg-card shadow-[var(--gt-elev-card)] dark:border-border/80 dark:shadow-none">
       {props.entries.map((entry, index) => (
         <Item
           key={entry.title}
@@ -692,9 +703,9 @@ function SettingsGroup(props: { title: string; entries: Array<SettingsEntry>; wi
   );
 }
 
-type PluginsTabId = "runtime" | "skills" | "mcp";
+export type PluginsTabId = "runtime" | "skills" | "mcp";
 
-type PluginsSettingsSectionProps = {
+export type PluginsSettingsSectionProps = {
   repoPath: string;
   initialTab?: PluginsTabId;
   dependenciesTitle: string;
@@ -741,7 +752,7 @@ function RuntimePluginsCard(props: PluginsSettingsSectionProps & { searchQuery: 
   }
 
   return (
-    <ul className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-border/80 bg-card">
+    <ul className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-black/[0.08] bg-card shadow-[var(--gt-elev-card)] dark:border-border/80 dark:shadow-none">
       {filtered.map((dep) => {
         const depName = dep.name as RuntimeDepName;
         const depJob = props.runtimeJob?.name === dep.name ? props.runtimeJob : null;
@@ -804,7 +815,7 @@ function RuntimePluginsCard(props: PluginsSettingsSectionProps & { searchQuery: 
   );
 }
 
-function PluginsSettingsSection(props: PluginsSettingsSectionProps) {
+export function PluginsSettingsSection(props: PluginsSettingsSectionProps) {
   const initialTab = props.initialTab ?? "runtime";
   const [tab, setTab] = useState<PluginsTabId>(initialTab);
   /** 各 tab 独立搜索，切换时不清空，避免列表闪一下 */
@@ -1038,19 +1049,16 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const remoteText = useMemo(() => remoteRepoText(props.generalSettings.language), [props.generalSettings.language]);
   const lastPairCodeTtlModeRef = useRef<Exclude<ControlServerSettingsDraft["pairCodeTtlMode"], "none">>("24h");
   const normalizeSection = (section?: InitialSettingsSectionId): SettingsSectionId => {
-    if (section === "modules") return "general";
-    if (section === "appearance") return "general";
-    if (section === "skillsmp") return "plugins";
+    if (section === "modules" || section === "appearance" || section === "skillsmp" || section === "plugins") {
+      return "general";
+    }
     return section || "general";
   };
-  const initialPluginsTab: PluginsTabId | undefined = props.initialSection === "skillsmp" ? "skills" : undefined;
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(normalizeSection(props.initialSection));
-  const [pluginsSubTab, setPluginsSubTab] = useState<PluginsTabId>(initialPluginsTab ?? "runtime");
 
   useEffect(() => {
     if (props.initialSection) {
       setActiveSection(normalizeSection(props.initialSection));
-      if (props.initialSection === "skillsmp") setPluginsSubTab("skills");
     }
   }, [props.initialSection]);
 
@@ -1061,11 +1069,11 @@ export function SettingsDialog(props: SettingsDialogProps) {
   }, [props.controlSettings.pairCodeTtlMode]);
 
   useEffect(() => {
-    if (activeSection === "plugins" && pluginsSubTab === "skills") props.onSkillsVisible?.();
     props.onMobileVisibilityChange?.(activeSection === "mobile");
-  }, [activeSection, pluginsSubTab]);
+  }, [activeSection]);
 
   useEffect(() => {
+    if (props.embedded) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
@@ -1078,7 +1086,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [props.onClose]);
+  }, [props.embedded, props.onClose]);
 
   const sections = useMemo(() => {
     const updateGeneral = (patch: Partial<GeneralSettingsDraft>) => props.onGeneralSettingsChange({ ...props.generalSettings, ...patch });
@@ -1172,7 +1180,75 @@ export function SettingsDialog(props: SettingsDialogProps) {
               </SelectContent>
             </Select>
           )
-        }
+        },
+        {
+          title: text.contentProtect,
+          description: text.contentProtectDesc,
+          action: (
+            <SwitchControl
+              checked={props.generalSettings.contentProtectEnabled}
+              onChange={(checked) => updateGeneral({ contentProtectEnabled: checked })}
+            />
+          )
+        },
+        ...(props.generalSettings.contentProtectEnabled
+          ? [
+              {
+                title: text.contentProtectEffect,
+                description: text.contentProtectEffectDesc,
+                action: (
+                  <Select
+                    value={props.generalSettings.contentProtectEffect || "droplets"}
+                    onValueChange={(value) => {
+                      if (value === "droplets" || value === "clouds" || value === "frost") {
+                        updateGeneral({ contentProtectEffect: value });
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-36 rounded-md bg-muted/30 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="droplets">{text.contentProtectEffectDroplets}</SelectItem>
+                        <SelectItem value="clouds">{text.contentProtectEffectClouds}</SelectItem>
+                        <SelectItem value="frost">{text.contentProtectEffectFrost}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                )
+              },
+              {
+                title: text.contentProtectIdle,
+                description: text.contentProtectIdleDesc,
+                action: (
+                  <Select
+                    value={String(props.generalSettings.contentProtectIdleSec)}
+                    onValueChange={(value) => {
+                      const sec = Number(value);
+                      if ([5, 10, 30, 60, 120, 300].includes(sec)) {
+                        updateGeneral({ contentProtectIdleSec: sec });
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-36 rounded-md bg-muted/30 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="5">{text.contentProtectIdle5s}</SelectItem>
+                        <SelectItem value="10">{text.contentProtectIdle10s}</SelectItem>
+                        <SelectItem value="30">{text.contentProtectIdle30s}</SelectItem>
+                        <SelectItem value="60">{text.contentProtectIdle60s}</SelectItem>
+                        <SelectItem value="120">{text.contentProtectIdle120s}</SelectItem>
+                        <SelectItem value="300">{text.contentProtectIdle300s}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                )
+              }
+            ]
+          : [])
       ],
       appearance: [
         {
@@ -1190,7 +1266,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
           )
         }
       ],
-      plugins: [],
       notifications: [],
       sounds: [],
       updates: [],
@@ -1468,14 +1543,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
     const desktopEntries = [...entriesBySection.general.slice(0, 2), ...entriesBySection.appearance];
     const openCodeEntries = entriesBySection.general.slice(2);
 
-    const pluginDeps = [props.runtimeStatus.git, props.runtimeStatus.entire, props.runtimeStatus.giteam]
-      .filter((dep): dep is RuntimeDependencyStatus => Boolean(dep));
-    const runtimeBusy = props.runtimeChecking || Boolean(props.installingDep);
-    const runtimeHeaderActionText =
-      props.runtimeJob?.status === "running" && props.runtimeJob.action === "update"
-        ? text.updating
-        : text.installing;
-
     return [
       {
         id: "general" as const,
@@ -1487,13 +1554,29 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <SettingsGroup title={text.basics} entries={desktopEntries} />
             <section className="flex flex-col gap-2.5">
               <div className="px-1 text-sm font-medium text-muted-foreground">{text.navigator}</div>
-              <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+              <Card className="overflow-hidden rounded-lg border-black/[0.08] bg-card shadow-[var(--gt-elev-card)] dark:border-border/80 dark:shadow-none">
                 <CardContent className="flex flex-col gap-4 p-4">
                   <NavigatorPreview
                     side={props.generalSettings.navigatorSide}
                     scope={props.generalSettings.navigatorScope}
+                    style={props.generalSettings.navigatorStyle === "sailing" ? "sailing" : "rail"}
                     caption={text.navigatorPreviewCaption}
                   />
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <strong className="block text-sm font-semibold leading-6 text-foreground">{text.navigatorStyle}</strong>
+                      <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">{text.navigatorStyleDesc}</p>
+                    </div>
+                    <SegmentedControl
+                      group="nav-style"
+                      value={props.generalSettings.navigatorStyle === "sailing" ? "sailing" : "rail"}
+                      onChange={(v) => updateGeneral({ navigatorStyle: v })}
+                      options={[
+                        { value: "rail", label: text.navigatorStyleRail },
+                        { value: "sailing", label: text.navigatorStyleSailing }
+                      ]}
+                    />
+                  </div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <strong className="block text-sm font-semibold leading-6 text-foreground">{text.navigatorPosition}</strong>
@@ -1553,37 +1636,6 @@ export function SettingsDialog(props: SettingsDialogProps) {
         )
       },
       {
-        id: "plugins" as const,
-        kicker: text.dependenciesKicker,
-        title: text.dependencies,
-        description: text.dependenciesDesc,
-        embedHeader: true,
-        content: (
-          <PluginsSettingsSection
-            repoPath={props.repoPath}
-            initialTab={initialPluginsTab}
-            dependenciesTitle={text.dependencies}
-            dependenciesDesc={text.dependenciesDesc}
-            installLabel={text.install}
-            runtimeHeaderActionText={runtimeHeaderActionText}
-            pluginDeps={pluginDeps}
-            runtimeBusy={runtimeBusy}
-            checkingDeps={props.checkingDeps}
-            installingDep={props.installingDep}
-            installingElapsed={props.installingElapsed}
-            runtimeJob={props.runtimeJob}
-            onOpenRuntimeSetup={props.onOpenRuntimeSetup}
-            onRunDependencyAction={props.onRunDependencyAction}
-            skillsContent={props.skillsContent}
-            skillsCount={props.skillsCount}
-            onSkillsVisible={props.onSkillsVisible}
-            onBrowseMarketplace={props.onOpenSkillsMarketplaceSettings}
-            onTabChange={setPluginsSubTab}
-            text={text}
-          />
-        )
-      },
-      {
         id: "mobile" as const,
         kicker: text.apiKicker,
         title: text.api,
@@ -1638,7 +1690,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         title: remoteText.title,
         description: remoteText.description,
         content: (
-          <Card className="overflow-hidden rounded-lg border-border/80 bg-card shadow-none">
+          <Card className="overflow-hidden rounded-lg border-black/[0.08] bg-card shadow-[var(--gt-elev-card)] dark:border-border/80 dark:shadow-none">
             <CardContent className="p-0">
               <div className="border-b border-border/70 bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] px-4 py-3">
                 <strong className="text-sm font-semibold text-foreground">{remoteText.serviceUrl}</strong>
@@ -1716,50 +1768,31 @@ export function SettingsDialog(props: SettingsDialogProps) {
 
   const active = sections.find((section) => section.id === activeSection) || sections[0];
 
-  return createPortal(
+  const root = (
     <div
-      aria-modal="true"
+      aria-modal={props.embedded ? undefined : true}
       aria-labelledby="settings-title"
-      className="fixed inset-0 z-[2600] grid h-svh min-h-0 grid-cols-[clamp(222px,18vw,268px)_minmax(0,1fr)] overflow-hidden bg-background text-foreground"
-      role="dialog"
+      className={cn(
+        // 画布底让设置导航圆角露出轨条色；内容区自行铺阅读面
+        "grid min-h-0 grid-cols-[clamp(236px,19vw,280px)_minmax(0,1fr)] overflow-hidden bg-[var(--activity-bg)] text-foreground",
+        props.embedded ? "h-full w-full" : "fixed inset-0 z-[2600] h-svh"
+      )}
+      role={props.embedded ? undefined : "dialog"}
     >
-      <div className="fixed inset-x-0 top-0 z-[2601] h-8" data-tauri-drag-region aria-hidden="true" />
-      <aside
-        className="grid min-h-0 grid-rows-[auto_1fr] border-r border-sidebar-border bg-sidebar px-4 pb-8 pt-[58px] text-sidebar-foreground"
-        style={{
-          "--sidebar": "color-mix(in srgb, var(--bg) 88%, #8f8270 12%)",
-          backgroundColor: "var(--sidebar)",
-        } as CSSProperties}
-      >
-        <div className="pb-5">
-          <Button variant="ghost" className="h-8 justify-start gap-2 px-2 font-normal text-sidebar-foreground/60 hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] hover:text-sidebar-foreground" onClick={() => void props.onClose()}>
-            <span className="text-[16px] leading-4" aria-hidden="true">←</span>
-            <span className="text-sm leading-5 font-medium">返回应用</span>
-          </Button>
-        </div>
-        <div className="gt-subtle-scrollbar min-h-0 overflow-y-auto">
-          <SidebarMenu className="gap-0.5">
-            {sections.map((section) => {
-              const Icon = SETTINGS_SECTION_ICONS[section.id];
-              return (
-                <SidebarMenuItem key={section.id}>
-                  <SidebarMenuButton
-                    isActive={activeSection === section.id}
-                    onClick={() => setActiveSection(section.id)}
-                    className={cn(
-                      "h-8 gap-2.5 rounded-lg px-3 font-medium text-sidebar-foreground/76 hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] hover:text-sidebar-foreground [&_svg]:size-4",
-                      activeSection === section.id && "bg-[color-mix(in_srgb,#8f8270_16%,var(--bg)_84%)] text-sidebar-foreground hover:bg-[color-mix(in_srgb,#8f8270_18%,var(--bg)_82%)]"
-                    )}
-                  >
-                    <Icon className="shrink-0" />
-                    <span className="truncate text-sm leading-5 font-medium">{section.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              );
-            })}
-          </SidebarMenu>
-        </div>
-      </aside>
+      {props.embedded ? null : (
+        <div className="fixed inset-x-0 top-0 z-[2601] h-8" data-tauri-drag-region aria-hidden="true" />
+      )}
+      <SettingsNavRail
+        embedded={props.embedded}
+        activeId={activeSection}
+        items={sections.map((section) => ({
+          id: section.id,
+          title: section.title,
+          icon: SETTINGS_SECTION_ICONS[section.id],
+        }))}
+        onSelect={(id) => setActiveSection(id as SettingsSectionId)}
+        onBack={() => void props.onClose()}
+      />
 
       <section className="gt-subtle-scrollbar min-h-0 overflow-y-auto bg-background">
         <div
@@ -1767,12 +1800,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
             "mx-auto flex w-full flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]",
             active.id === "models" || active.id === "mobile"
               ? "max-w-[1120px]"
-              : active.id === "plugins"
-                ? "max-w-[760px]"
-                : "max-w-[680px]"
+              : "max-w-[680px]"
           )}
         >
-          {active.title && !active.embedHeader ? (
+          {active.title ? (
             <header className="flex items-center justify-between gap-4">
               <div>
                 <h2 id="settings-title" className="text-xl font-semibold tracking-[-0.02em] text-foreground">{active.title}</h2>
@@ -1786,7 +1817,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </div>
         </div>
       </section>
-    </div>,
-    document.body
+    </div>
   );
+
+  if (props.embedded) return root;
+  return createPortal(root, document.body);
 }

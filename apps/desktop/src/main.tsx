@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "katex/dist/katex.min.css";
 import "streamdown/styles.css";
+import "lenis/dist/lenis.css";
 import { App } from "./App";
 import "./styles/shadcn.css";
 import "./styles/composer.css";
@@ -10,5 +11,5 @@ import "./styles/index.css";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

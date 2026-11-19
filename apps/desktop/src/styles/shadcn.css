@@ -80,13 +80,30 @@
   --border-color: color-mix(in srgb, var(--border) 76%, transparent);
   --input: color-mix(in srgb, var(--line) 64%, transparent);
   --ring: color-mix(in srgb, var(--accent) 42%, transparent);
-  --sidebar: color-mix(in srgb, var(--sidebar-bg) 92%, var(--bg));
+  --sidebar: var(--sidebar-bg);
   --sidebar-foreground: var(--text);
   --sidebar-primary: var(--accent);
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: var(--selection-sidebar-bg);
+  --sidebar-accent: var(--sidebar-active);
   --sidebar-accent-foreground: var(--text);
-  --sidebar-border: color-mix(in srgb, var(--line) 66%, transparent);
+  --sidebar-border: var(--chrome-line);
   --sidebar-ring: var(--selection-sidebar-border);
   --radius: 0.625rem;
+}
+
+/* 浅色：洁白卡片；壳层无硬线，卡片可用极淡描边 */
+:root[data-theme="light"] {
+  --card: #ffffff;
+  --popover: #ffffff;
+  --border-color: rgba(0, 0, 0, 0.07);
+  --input: rgba(0, 0, 0, 0.08);
+  --muted-foreground: color-mix(in srgb, var(--text) 52%, transparent);
+  --secondary: #ebebef;
+  --muted-surface: #ebebef;
+  --sidebar-border: transparent;
+}
+
+/* 深色壳层同样去掉 sidebar 硬边，靠 elev 分层 */
+:root:not([data-theme="light"]) {
+  --sidebar-border: transparent;
 }

@@ -8,7 +8,7 @@ import type { AppText } from "../../lib/generalSettings";
  * （由 AgentChatFrame 下发的 --chat-nav-left 定位，与进度卡片并排：消息区｜导航条｜进度卡）。
  *
  * - 每根横杠代表一条消息（采样后 ≤ MAX_MARKERS 根）。
- * - 当前可视窗口里那条消息对应的横杠变蓝（activeIndex 由 Virtuoso rangeChanged 换算）。
+ * - 当前滚动进度最近的消息横杠变蓝（activeIndex 由 scrollTop 比例推导）。
  * - 鱼眼聚焦：hover 某 marker 时它放大、附近 marker 随距离线性衰减，远处不变。
  * - hover 预览：经 hover-intent 延迟后向左弹出该消息的角色 + 首行文本。
  * - 点击：平滑跳转到所点位置；按住拖动超过阈值：进入 scrub，实时跟随滚动。
@@ -30,7 +30,7 @@ export type NavigatorMarker = {
 type AgentMessageNavigatorProps = {
   markers: NavigatorMarker[];
   totalCount: number;
-  /** 当前可视区中部对应的消息下标（来自 Virtuoso rangeChanged），其最近 marker 变蓝。 */
+  /** 当前滚动进度对应的消息下标，其最近 marker 变蓝。 */
   activeIndex: number | null;
   onNavigate: (index: number, behavior: "smooth" | "auto") => void;
   text: AppText;
@@ -251,7 +251,7 @@ export function AgentMessageNavigator({
           isDragging ? "cursor-grabbing" : "cursor-pointer"
         )}
         style={{
-          left: side === "left" ? "var(--chat-nav-left-mirror, 4px)" : "var(--chat-nav-left, 0px)",
+          left: side === "left" ? "var(--chat-nav-left-mirror, 28px)" : "var(--chat-nav-left, 0px)",
           height: "min(56%, 320px)",
           touchAction: "none"
         }}

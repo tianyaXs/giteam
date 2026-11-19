@@ -2,24 +2,33 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode
 } from "react";
+import { AsciiSharks } from "../ascii-sharks/AsciiSharks";
 import { Card, CardContent, CardFooter } from "../ui/card";
 import { cn } from "../../lib/utils";
+import type { DesktopTheme } from "../../lib/desktopPreferences";
 
 type AgentSideRailRender = (state: { collapsed: boolean }) => ReactNode;
 
 type AgentChatFrameProps = {
   empty: boolean;
+  /** 新会话空态 ASCII 海洋背景主题；未传时按浅色。 */
+  theme?: DesktopTheme;
   stream: ReactNode;
   sideRail?: ReactNode | AgentSideRailRender;
   sideRailHidden?: boolean;
   composer: ReactNode;
   /** 悬浮在输入区上方的「拉到最新」按钮，不占用消息列表行高。 */
   jumpLatest?: ReactNode;
+  /** 概览标尺样式：帆船更宽，需同步占位。 */
+  navigatorStyle?: "rail" | "sailing";
+  /** 标尺贴哪一侧；左侧时抬高 contentLeft 下限，避免窄边把船体压进正文。 */
+  navigatorSide?: "left" | "right";
 };
 
 type SideRailMode = "expanded" | "hidden";
@@ -40,29 +49,60 @@ const SIDE_RAIL_EXPANDED_WIDTH = 276;
 const SIDE_RAIL_OUTER_PADDING = 20;
 /** 内容列左缘的最小留白：极窄屏（available < 860）居中位会贴 0，钉到 8 保持呼吸感。 */
 const MIN_LEFT_GAP = 8;
-/** 右侧快速导航条宽度（与 AgentMessageNavigator 的 w-7 对齐）。 */
-const NAVIGATOR_WIDTH = 28;
-/** 导航条左缘距消息区右缘的间距。 */
+/** 经典尺标 / 帆船细轨占位宽（帆船略宽：航线绕船）。 */
+const NAVIGATOR_WIDTH_RAIL = 56;
+const NAVIGATOR_WIDTH_SAILING = 64;
+/** 导航条与内容列间距；帆船再多留一点，避免船体/弯弧贴正文。 */
 const NAVIGATOR_GAP_FROM_CONTENT = 6;
-/** 消息区右缘 → 导航条左缘（导航条贴消息区右缘外侧）。 */
-const NAVIGATOR_OFFSET_FROM_CONTENT =
-  THREAD_MAX_WIDTH - THREAD_CONTENT_PADDING_X + NAVIGATOR_GAP_FROM_CONTENT;
-/** 860 外框左缘 → 进度轨左缘的距离（导航条右侧 + 间距，为导航条让位）。 */
-const SIDE_RAIL_OFFSET_FROM_CONTENT =
-  NAVIGATOR_OFFSET_FROM_CONTENT + NAVIGATOR_WIDTH + SIDE_RAIL_GAP;
+const NAVIGATOR_GAP_SAILING = 16;
+/** 左侧标尺相对容器左缘的最小外边距，避免贴会话列表/窗口边。 */
+const NAVIGATOR_LEFT_EDGE_PAD = 28;
 /** 相对内容区中心：内容右缘 + 小间距（居中场景的进度轨位置）。 */
 const SIDE_RAIL_LEFT_FROM_CENTER =
   THREAD_MAX_WIDTH / 2 - THREAD_CONTENT_PADDING_X + SIDE_RAIL_GAP;
 
-/** 内容列左缘的纯 CSS calc（基于容器 inline-size 的 100cqw）：宽屏居中/收窄左漂/极窄钉 8，连续无跳变。
+function navigatorGap(navWidth: number) {
+  return navWidth >= NAVIGATOR_WIDTH_SAILING ? NAVIGATOR_GAP_SAILING : NAVIGATOR_GAP_FROM_CONTENT;
+}
+
+/** 消息区右缘 → 导航条左缘。 */
+function navigatorOffsetFromContent(navWidth: number) {
+  return THREAD_MAX_WIDTH - THREAD_CONTENT_PADDING_X + navigatorGap(navWidth);
+}
+
+function sideRailOffsetFromContent(navWidth: number) {
+  return navigatorOffsetFromContent(navWidth) + navWidth + SIDE_RAIL_GAP;
+}
+
+/**
+ * 左侧标尺时内容列至少要让出「左边距 + 轨宽 + 与内容间距」，
+ * 否则 contentLeft 钉在 8、mirror clamp 贴边，帆船会盖住正文或贴会话列表。
+ */
+export function navigatorMinLeftGap(
+  navWidth: number = NAVIGATOR_WIDTH_RAIL,
+  side: "left" | "right" = "right"
+) {
+  if (side !== "left") return MIN_LEFT_GAP;
+  return NAVIGATOR_LEFT_EDGE_PAD + navWidth + navigatorGap(navWidth);
+}
+
+/** 内容列左缘的纯 CSS calc（基于容器 inline-size 的 100cqw）：宽屏居中/收窄左漂/极窄钉下限，连续无跳变。
  * 两处复用、基准一致：① Card 上挂 container-type:inline-size + 此 calc 作 --chat-content-left
  *   （Card 无 padding，100cqw = Card 宽 = available）；② App.tsx 的 editor 列（wb-editor-inner，无 padding）
  *   同样挂 container-type + 此 calc 作 --chat-content-left 供**标题**消费——标题是 Card 的兄弟（非后代），
  *   拿不到 Card 上的变量，故 editor 列自建一份。标题 div 自身**不**挂 container-type（其 paddingLeft 就是
  *   该 calc，若挂在标题自身会形成 100cqw=available-paddingLeft 的循环依赖、解不出值），靠 editor 列解析。 */
-export const CHAT_CONTENT_LEFT_CSS = `max(min((100cqw - ${THREAD_MAX_WIDTH}px) / 2, 100cqw - ${
-  SIDE_RAIL_OFFSET_FROM_CONTENT + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING
-}px), ${MIN_LEFT_GAP}px)`;
+export function chatContentLeftCss(
+  navWidth: number = NAVIGATOR_WIDTH_RAIL,
+  minLeftGap: number = MIN_LEFT_GAP
+) {
+  const railOffset = sideRailOffsetFromContent(navWidth);
+  return `max(min((100cqw - ${THREAD_MAX_WIDTH}px) / 2, 100cqw - ${
+    railOffset + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING
+  }px), ${minLeftGap}px)`;
+}
+
+export const CHAT_CONTENT_LEFT_CSS = chatContentLeftCss(NAVIGATOR_WIDTH_RAIL);
 
 /**
  * 响应式布局（codex 风格左漂）：宽屏内容居中，收窄时左侧留白优先收起（内容连续左漂），
@@ -76,29 +116,51 @@ export const CHAT_CONTENT_LEFT_CSS = `max(min((100cqw - ${THREAD_MAX_WIDTH}px) /
  * 反复跨越 1170 → rail 在 276↔40 间频繁切换、宽度突变 236px = 抖动。去 collapsed 后 expanded↔hidden
  * 只动 opacity，contentLeft 在切换点（available≈1170）保持 8→8 连续，故不抖。
  */
-export function computeChatLayout(width: number): ChatLayout {
+export function computeChatLayout(
+  width: number,
+  navWidth: number = NAVIGATOR_WIDTH_RAIL,
+  minLeftGap: number = MIN_LEFT_GAP
+): ChatLayout {
   const available = Math.max(0, width);
   const centeredLeft = Math.max((available - THREAD_MAX_WIDTH) / 2, 0);
-  // 进度轨右缘不溢出所需的内容左缘上限：offset(866) + 展开宽(276) + 外边距(20) = 1162。
   const railReserve =
-    SIDE_RAIL_OFFSET_FROM_CONTENT + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING;
-  // 宽屏取居中；收窄时取 available - railReserve（左漂让位给进度轨）；极窄钉 MIN_LEFT_GAP。
-  const contentLeft = Math.max(Math.min(centeredLeft, available - railReserve), MIN_LEFT_GAP);
+    sideRailOffsetFromContent(navWidth) + SIDE_RAIL_EXPANDED_WIDTH + SIDE_RAIL_OUTER_PADDING;
+  // 宽屏取居中；收窄时取 available - railReserve（左漂让位给进度轨）；极窄钉 minLeftGap。
+  const contentLeft = Math.max(Math.min(centeredLeft, available - railReserve), minLeftGap);
   const railMode: SideRailMode = contentLeft + railReserve <= available ? "expanded" : "hidden";
   return { contentLeft, railMode };
 }
 
 export function AgentChatFrame({
   empty,
+  theme = "light",
   stream,
   sideRail,
   sideRailHidden = false,
   composer,
-  jumpLatest
+  jumpLatest,
+  navigatorStyle = "rail",
+  navigatorSide = "right"
 }: AgentChatFrameProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const emptyHostRef = useRef<HTMLDivElement | null>(null);
+  const [emptyOceanHeight, setEmptyOceanHeight] = useState(880);
   const [chatLayout, setChatLayout] = useState<ChatLayout>({ contentLeft: 0, railMode: "hidden" });
   const sideRailMode = chatLayout.railMode;
+  const navWidth = navigatorStyle === "sailing" ? NAVIGATOR_WIDTH_SAILING : NAVIGATOR_WIDTH_RAIL;
+  const minLeftGap = navigatorMinLeftGap(navWidth, navigatorSide);
+  const navOffset = navigatorOffsetFromContent(navWidth);
+  const railOffset = sideRailOffsetFromContent(navWidth);
+  // 左侧：标尺宽 + 与内容间距；帆船多留缝，船体不压消息。
+  const mirrorInset = navWidth + navigatorGap(navWidth);
+  const emptyOceanOptions = useMemo(
+    () => ({
+      showComposer: false as const,
+      theme: theme === "dark" ? ("dark" as const) : ("light" as const),
+      height: emptyOceanHeight,
+    }),
+    [emptyOceanHeight, theme]
+  );
   // 进度卡 left 即时跟随 --chat-rail-left（= contentLeft + 偏移），不参与过渡：侧栏
   // 收放时 contentLeft 逐帧重算，若 left 也加 transition 会形成 200ms 追尾巴、与消息
   // 流错峰来回（“范围更大”的元凶）。只保留 opacity/transform 过渡用于 railMode 进出场。
@@ -113,20 +175,20 @@ export function AgentChatFrame({
    * 包含块，composer/消息流/navigator/aside 四处基准完全一致（连续函数，无跳变）。 */
   const contentStyle = {
     containerType: "inline-size",
-    "--chat-content-left": CHAT_CONTENT_LEFT_CSS,
-    "--chat-rail-left": `calc(var(--chat-content-left) + ${SIDE_RAIL_OFFSET_FROM_CONTENT}px)`,
-    "--chat-nav-left": `calc(var(--chat-content-left) + ${NAVIGATOR_OFFSET_FROM_CONTENT}px)`,
-    // 标尺左侧模式：贴内容列左缘外侧（28 宽 + 8 间距）；窄屏 contentLeft≈8 时 clamp 到 4px 不溢出左缘。
-    "--chat-nav-left-mirror": `max(calc(var(--chat-content-left) - 36px), 4px)`
+    "--chat-content-left": chatContentLeftCss(navWidth, minLeftGap),
+    "--chat-rail-left": `calc(var(--chat-content-left) + ${railOffset}px)`,
+    "--chat-nav-left": `calc(var(--chat-content-left) + ${navOffset}px)`,
+    // 标尺左侧模式：贴内容列左缘外侧；下限留出左边距，不贴会话列表。
+    "--chat-nav-left-mirror": `max(calc(var(--chat-content-left) - ${mirrorInset}px), ${NAVIGATOR_LEFT_EDGE_PAD}px)`
   } as CSSProperties;
   const updateChatLayout = useCallback(() => {
     const node = contentRef.current;
     if (!node) return;
-    const next = computeChatLayout(node.clientWidth);
+    const next = computeChatLayout(node.clientWidth, navWidth, minLeftGap);
     // contentLeft 已改纯 CSS calc（零重渲染）；这里只在 railMode 变化时 setState，
     // 避免 RO 逐帧 contentLeft 变化拖累消息流重渲染（railMode 仅在阈值处低频切换）。
     setChatLayout((prev) => (prev.railMode === next.railMode ? prev : next));
-  }, []);
+  }, [navWidth, minLeftGap]);
 
   useLayoutEffect(() => {
     const node = contentRef.current;
@@ -153,9 +215,30 @@ export function AgentChatFrame({
     };
   }, [empty, sideRailHidden, updateChatLayout]);
 
+  useLayoutEffect(() => {
+    if (!empty) return;
+    const node = emptyHostRef.current;
+    if (!node) return;
+    const sync = () => setEmptyOceanHeight(Math.max(480, Math.round(node.clientHeight)));
+    sync();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", sync);
+      return () => window.removeEventListener("resize", sync);
+    }
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [empty]);
+
   if (empty) {
     return (
-      <Card className="flex h-full min-h-0 w-full flex-col justify-center overflow-visible border-0 bg-transparent px-4 pb-[14vh] pt-6 shadow-none">
+      <Card className="relative flex h-full min-h-0 w-full flex-col justify-center overflow-visible border-0 bg-transparent px-4 pb-[14vh] pt-6 shadow-none">
+        <div ref={emptyHostRef} className="absolute inset-0 z-0 overflow-hidden">
+          <AsciiSharks
+            className="h-full w-full [&_[data-motion-surface]]:h-full [&_[data-motion-surface]]:min-h-full"
+            options={emptyOceanOptions}
+          />
+        </div>
         <CardContent className="relative z-40 mx-auto w-full max-w-[620px] overflow-visible p-0">
           {composer}
         </CardContent>
@@ -202,7 +285,7 @@ export function AgentChatFrame({
         {jumpLatest ? (
           // 按钮水平定位与输入框 composer 同源（left=--chat-content-left + max-w-860 + px-8），
           // 侧栏收放 contentLeft 变化时同帧对齐，不再钉在全宽中心而偏离输入框。
-          <div className="pointer-events-none absolute top-0 left-[var(--chat-content-left,0px)] z-20 flex w-full max-w-[860px] -translate-y-[calc(100%+8px)] justify-center px-8">
+          <div className="pointer-events-none absolute top-0 left-[var(--chat-content-left,0px)] z-50 flex w-full max-w-[860px] -translate-y-[calc(100%+8px)] justify-center px-8">
             <div className="pointer-events-auto">{jumpLatest}</div>
           </div>
         ) : null}

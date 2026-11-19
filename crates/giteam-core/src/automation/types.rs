@@ -141,6 +141,18 @@ impl RunTrigger {
     }
 }
 
+/// 单次日程例外（不改源 schedule_expr）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleOverride {
+    /// 被覆盖的那一次，本地日期 `YYYY-MM-DD`。
+    pub origin_date: String,
+    /// 相对原日的偏移（同日改时刻为 0）。
+    pub day_offset: i32,
+    pub hour: u32,
+    pub minute: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutomationTask {
@@ -158,6 +170,9 @@ pub struct AutomationTask {
     pub thinking_level: Option<String>,
     pub schedule_kind: ScheduleKind,
     pub schedule_expr: String,
+    /// 日历拖拽产生的单次例外：源 cron 不变，按 originDate 抑制并落到目标时刻。
+    #[serde(default)]
+    pub schedule_overrides: Vec<ScheduleOverride>,
     pub timezone: String,
     pub notify_on_success: bool,
     pub notify_on_failure: bool,
@@ -263,6 +278,8 @@ pub struct UpdateTaskInput {
     pub thinking_level: Option<Option<String>>,
     pub schedule_kind: Option<ScheduleKind>,
     pub schedule_expr: Option<String>,
+    /// 显式写入例外；若同时改了 schedule_kind/expr 且未传本字段，则清空例外。
+    pub schedule_overrides: Option<Vec<ScheduleOverride>>,
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,

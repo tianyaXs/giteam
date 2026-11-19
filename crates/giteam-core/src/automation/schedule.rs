@@ -5,9 +5,9 @@
 //! - `once_at`：RFC3339 / 本地 `YYYY-MM-DDTHH:MM` / 纯毫秒时间戳
 //! - `cron`：5 段 `分 时 日 月 周`；周支持 `*` / `1-5` / 单值 / 逗号列表（0=周日）
 
-use chrono::{Datelike, Local, NaiveDateTime, TimeZone, Timelike, Utc, Weekday};
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday};
 
-use super::types::ScheduleKind;
+use super::types::{ScheduleKind, ScheduleOverride};
 use super::AutomationError;
 
 /// 计算 `after_ms` 之后的下一次触发时间（毫秒 epoch）。
@@ -15,6 +15,16 @@ pub fn compute_next_run_at(
     kind: ScheduleKind,
     expr: &str,
     after_ms: i64,
+) -> Result<Option<i64>, AutomationError> {
+    compute_next_run_at_with_overrides(kind, expr, after_ms, &[])
+}
+
+/// 带日历例外：跳过被挪走的 origin 日源触发，并纳入目标时刻。
+pub fn compute_next_run_at_with_overrides(
+    kind: ScheduleKind,
+    expr: &str,
+    after_ms: i64,
+    overrides: &[ScheduleOverride],
 ) -> Result<Option<i64>, AutomationError> {
     let expr = expr.trim();
     if expr.is_empty() {
@@ -25,7 +35,7 @@ pub fn compute_next_run_at(
     match kind {
         ScheduleKind::Interval => next_interval(expr, after_ms),
         ScheduleKind::OnceAt => next_once_at(expr, after_ms),
-        ScheduleKind::Cron => next_cron(expr, after_ms),
+        ScheduleKind::Cron => next_cron_with_overrides(expr, after_ms, overrides),
     }
 }
 
@@ -170,7 +180,36 @@ fn weekday_num(wd: Weekday) -> u32 {
     }
 }
 
-fn next_cron(expr: &str, after_ms: i64) -> Result<Option<i64>, AutomationError> {
+fn format_local_date(date: NaiveDate) -> String {
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        date.month(),
+        date.day()
+    )
+}
+
+fn parse_origin_date(raw: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").ok()
+}
+
+fn override_target_ms(ovr: &ScheduleOverride) -> Option<i64> {
+    let origin = parse_origin_date(&ovr.origin_date)?;
+    let target_date = origin + chrono::Duration::days(i64::from(ovr.day_offset));
+    let hour = ovr.hour.min(23);
+    let minute = ovr.minute.min(59);
+    let naive = target_date.and_hms_opt(hour, minute, 0)?;
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+}
+
+fn next_cron_with_overrides(
+    expr: &str,
+    after_ms: i64,
+    overrides: &[ScheduleOverride],
+) -> Result<Option<i64>, AutomationError> {
     let cron = parse_cron(expr)?;
     let after = Utc
         .timestamp_millis_opt(after_ms)
@@ -184,6 +223,7 @@ fn next_cron(expr: &str, after_ms: i64) -> Result<Option<i64>, AutomationError> 
         .unwrap_or(after_local)
         + chrono::Duration::minutes(1);
 
+    let mut next_base: Option<i64> = None;
     for _ in 0..(366 * 24 * 60) {
         let minute = cursor.minute();
         let hour = cursor.hour();
@@ -196,11 +236,36 @@ fn next_cron(expr: &str, after_ms: i64) -> Result<Option<i64>, AutomationError> 
             && cron.month.matches(month)
             && cron.weekday.matches(wd)
         {
-            return Ok(Some(cursor.timestamp_millis()));
+            let date_key = format_local_date(cursor.date_naive());
+            let overridden = overrides.iter().any(|o| o.origin_date == date_key);
+            if !overridden {
+                next_base = Some(cursor.timestamp_millis());
+                break;
+            }
         }
         cursor += chrono::Duration::minutes(1);
     }
-    Ok(None)
+
+    let mut next_override: Option<i64> = None;
+    for ovr in overrides {
+        let Some(ms) = override_target_ms(ovr) else {
+            continue;
+        };
+        if ms <= after_ms {
+            continue;
+        }
+        next_override = Some(match next_override {
+            Some(cur) => cur.min(ms),
+            None => ms,
+        });
+    }
+
+    Ok(match (next_base, next_override) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    })
 }
 
 /// UI 预设 → (kind, expr)
@@ -242,5 +307,37 @@ mod tests {
     #[test]
     fn rejects_bad_cron() {
         assert!(compute_next_run_at(ScheduleKind::Cron, "0 9", 0).is_err());
+    }
+
+    #[test]
+    fn cron_override_skips_origin_and_uses_target() {
+        // 固定本地「今天」之后的下一次：构造一个明确的 origin。
+        let after = Local
+            .with_ymd_and_hms(2026, 11, 18, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        // 源：每天 9:00；把 11-18 挪到 14:00
+        let overrides = vec![ScheduleOverride {
+            origin_date: "2026-11-18".into(),
+            day_offset: 0,
+            hour: 14,
+            minute: 0,
+        }];
+        let next = compute_next_run_at_with_overrides(
+            ScheduleKind::Cron,
+            "0 9 * * *",
+            after,
+            &overrides,
+        )
+        .unwrap()
+        .unwrap();
+        let local = Utc
+            .timestamp_millis_opt(next)
+            .single()
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!(local.hour(), 14);
+        assert_eq!(format_local_date(local.date_naive()), "2026-11-18");
     }
 }

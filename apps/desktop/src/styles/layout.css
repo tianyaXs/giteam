@@ -2,7 +2,7 @@
 .wb {
   height: 100vh;
   display: grid;
-  grid-template-columns: 56px var(--wb-sidebar-width, 320px) 1px 1fr;
+  grid-template-columns: 84px var(--wb-sidebar-width, 320px) 1px 1fr;
   transition: grid-template-columns var(--gt-sidebar-motion-duration) var(--gt-sidebar-motion-ease);
   will-change: grid-template-columns;
   /* Give editor more height; panel is a smaller dock like VSCode. */
@@ -10,11 +10,12 @@
   grid-template-areas:
     "activity sidebar split editor"
     "activity sidebar split panel";
-  background: var(--bg);
+  /* 轨条画布铺底，侧栏左圆角露出，形成无分割线浮层（深浅色共用） */
+  background: var(--activity-bg);
 }
 
 .wb-panel-right {
-  grid-template-columns: 56px var(--wb-sidebar-width, 320px) 1px minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
+  grid-template-columns: 84px var(--wb-sidebar-width, 320px) 1px minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
   grid-template-rows: 1fr;
   grid-template-areas:
     "activity sidebar split editor panel";
@@ -47,15 +48,15 @@
 }
 
 .wb-sidebar-collapsed {
-  grid-template-columns: 56px 0 0 1fr;
+  grid-template-columns: 84px 0 0 1fr;
 }
 
 .wb-sidebar-collapsed.wb-panel-right {
-  grid-template-columns: 56px 0 0 minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
+  grid-template-columns: 84px 0 0 minmax(0, 1fr) minmax(340px, var(--wb-right-width, 420px));
 }
 
 .wb-sidebar-collapsed.wb-panel-hidden {
-  grid-template-columns: 56px 0 0 minmax(0, 1fr);
+  grid-template-columns: 84px 0 0 minmax(0, 1fr);
 }
 
 .wb-no-activity.wb-sidebar-collapsed {
@@ -72,8 +73,13 @@
 
 .wb-activity {
   grid-area: activity;
-  background: var(--bg-elev);
-  border-right: 1px solid var(--line);
+  background: var(--activity-bg);
+  border-right: none;
+  /* 导航作画布，承接会话栏左向投影；自身不投影 */
+  box-shadow: none;
+  overflow: visible;
+  position: relative;
+  z-index: 2;
 }
 
 .wb-no-activity .wb-activity {
@@ -82,12 +88,17 @@
 
 .wb-sidebar {
   grid-area: sidebar;
-  background: var(--bg-elev);
-  border-right: 1px solid var(--line);
-  overflow: hidden;
+  background: var(--sidebar-bg);
+  border-right: none;
+  border-radius: 14px 0 0 14px;
+  /* 会话栏突出：左落导航、右落内容 */
+  box-shadow: var(--gt-elev-sidebar);
+  overflow: visible;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
+  z-index: 3;
 }
 
 .wb-sidebar-collapsed .wb-sidebar,
@@ -114,7 +125,7 @@ html.wb-split-resizing * {
   -webkit-user-select: none !important;
 }
 
-/* 弹性把手负责可见反馈；保留极淡的中线提示 */
+/* 弹性把手负责可见反馈；壳层不画中线，避免分割线感 */
 .wb-splitter::before {
   content: "";
   position: absolute;
@@ -124,26 +135,24 @@ html.wb-split-resizing * {
   width: 1px;
   transform: translateX(-50%);
   background: transparent;
-  transition: background 140ms ease;
   pointer-events: none;
 }
 
 .wb-splitter:hover::before,
 .wb-splitter.active::before {
-  background: color-mix(in srgb, var(--line) 55%, transparent);
+  background: transparent;
 }
 
 .wb-editor {
   grid-area: editor;
-  background: var(--bg);
-  overflow: auto;
-}
-
-.wb-editor {
+  /* 画布色铺底，圆角面板露出；阅读面由内部 shell / 设置导航承担 */
+  background: var(--activity-bg);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .wb-panel {
@@ -174,7 +183,7 @@ html.wb-split-resizing * {
 
 .wb-graph-popover {
   position: fixed;
-  left: 58px;
+  left: 74px;
   /* right of activity bar */
   bottom: 34px;
   /* above status bar */

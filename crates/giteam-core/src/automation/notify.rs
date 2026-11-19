@@ -338,6 +338,7 @@ mod tests {
             thinking_level: None,
             schedule_kind: ScheduleKind::Interval,
             schedule_expr: "3600".into(),
+            schedule_overrides: Vec::new(),
             timezone: "local".into(),
             notify_on_success: true,
             notify_on_failure: true,

@@ -502,6 +502,7 @@ fn main() {
             commands::ui::set_window_theme,
             commands::ui::reposition_macos_traffic_lights,
             commands::ui::open_external_url,
+            commands::viewport_capture::capture_main_viewport,
             commands::browser_panel::open_browser_embedded,
             commands::browser_panel::select_browser_tab,
             commands::browser_panel::navigate_browser,

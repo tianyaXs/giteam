@@ -157,7 +157,6 @@ function mountOriginalDeepAgent(target, initial, variant, css, tokens, dictionar
         permission = normalizePermissionPreset(value);
         options.onPermissionChange?.(permission);
         dispatch("permission-change", { value: permission });
-        notify();
       },
       async getPermissionPresetVisibility() {
         return { default_enabled: true, auto_review_enabled: true, full_access_enabled: true };
@@ -201,19 +200,72 @@ function mountOriginalDeepAgent(target, initial, variant, css, tokens, dictionar
     syncMedia();
   }
   render();
+  const sameModels = (a, b) => {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+  const sameContextUsage = (a, b) => {
+    if (a === b) return true;
+    if (!a || !b) return !a && !b;
+    return a.context_window === b.context_window
+      && a.projected_request_tokens === b.projected_request_tokens
+      && a.measured_prompt_tokens === b.measured_prompt_tokens
+      && a.estimated_prompt_tokens === b.estimated_prompt_tokens
+      && a.last_request_prompt_tokens === b.last_request_prompt_tokens
+      && a.compaction_threshold === b.compaction_threshold
+      && a.cache_hit_tokens === b.cache_hit_tokens
+      && a.cache_miss_tokens === b.cache_miss_tokens
+      && a.cache_hit_ratio === b.cache_hit_ratio;
+  };
   return {
     element,
     root,
     update(next) {
       if (destroyed) return;
+      const prev = options;
       options = { ...options, ...next };
-      if (next.models) settings.available_models = next.models;
-      if (next.selectedModel !== void 0) settings.chat_model = next.selectedModel;
-      if (next.value !== void 0) settings.thinking_depth = next.value;
-      if (next.permission !== void 0) permission = normalizePermissionPreset(next.permission);
+      let settingsDirty = false;
+      if (next.models && !sameModels(settings.available_models, next.models)) {
+        settings.available_models = next.models;
+        settingsDirty = true;
+      }
+      if (next.selectedModel !== void 0 && settings.chat_model !== next.selectedModel) {
+        settings.chat_model = next.selectedModel;
+        settingsDirty = true;
+      }
+      if (next.value !== void 0 && settings.thinking_depth !== next.value) {
+        settings.thinking_depth = next.value;
+        settingsDirty = true;
+      }
+      if (next.permission !== void 0) {
+        const nextPermission = normalizePermissionPreset(next.permission);
+        if (permission !== nextPermission) {
+          permission = nextPermission;
+          settingsDirty = true;
+        }
+      }
       if (next.themeTokens) applyTokens({ ...tokens, ...next.themeTokens });
-      notify();
-      render();
+      // Host-owned visuals only. Echoing selectedModel after setChatModel must not
+      // notify+render — that remounts Composer mid MorphingMenuShell close (official
+      // demo never controlled-updates, so it never hits this path).
+      const draftDirty = prev.draftTextKey !== options.draftTextKey
+        || options.draftTextKey != null && prev.draftText !== options.draftText;
+      const needsRender = Boolean(prev.busy) !== Boolean(options.busy)
+        || Boolean(prev.stopping) !== Boolean(options.stopping)
+        || Boolean(prev.disabled) !== Boolean(options.disabled)
+        || prev.height !== options.height
+        || prev.reducedMotion !== options.reducedMotion
+        || prev.placeholder !== options.placeholder
+        || prev.contextUsageFallbackTokens !== options.contextUsageFallbackTokens
+        || Boolean(next.themeTokens)
+        || !sameContextUsage(prev.contextUsage, options.contextUsage)
+        || prev.requestFullAccessConfirm !== options.requestFullAccessConfirm;
+      // draft is applied through bridge.subscribe, not props — notify without remounting.
+      if (settingsDirty || draftDirty) notify();
+      if (needsRender) render();
+      else element.inert = Boolean(options.disabled);
     },
     destroy() {
       if (destroyed) return;
@@ -1298,13 +1350,15 @@ function mountDeepAgentComposer(target, options = {}) {
         hoverSelector: `[${MENU_ITEM_ATTR}]`,
         activeSelector: `[${MENU_ITEM_ATTR}="${activeId}"]`
       });
+      // When activeId clears (menu closing), hide pill even if hover is still over a row.
+      const pillStyle = activeId ? indicatorStyle : { ...indicatorStyle, opacity: 0 };
       return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { ref: containerRef, ...containerProps, className: cn("relative w-full overflow-hidden", className), ...rest, children: [
         children,
         /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
           SlidingPill,
           {
             className: cn("rounded-lg", MENU_LIST.pillInset, pillClassName),
-            style: indicatorStyle
+            style: pillStyle
           }
         )
       ] });
@@ -2139,8 +2193,8 @@ function mountDeepAgentComposer(target, options = {}) {
     function modelLabel(id) {
       if (!id) return "";
       const raw = String(id).trim();
-      const slash = raw.indexOf("/");
       // provider/model refs → show model id only (keeps pill single-line)
+      const slash = raw.indexOf("/");
       if (slash > 0 && slash < raw.length - 1) return raw.slice(slash + 1);
       return raw;
     }
@@ -2168,7 +2222,7 @@ function mountDeepAgentComposer(target, options = {}) {
       const morphLayoutId = (0, import_react13.useId)().replace(/:/g, "");
       const selectedThinkingOption = thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[1];
       const pillModel = selectedModel ? modelLabel(selectedModel) : selectModelLabel;
-      const trigger = /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(HoverInfo, { content: modelLabel(selectedModel) || selectModelLabel, children: /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(
+      const trigger = /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(HoverInfo, { content: `${selectModelLabel} / ${selectedThinkingOption.label}`, children: /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(
         TintButton,
         {
           type: "button",
@@ -2193,12 +2247,13 @@ function mountDeepAgentComposer(target, options = {}) {
           className: "flex h-8 min-w-0 max-w-full items-center",
           panelClassName: "w-[264px]",
           panelAlign: "right",
-          zIndex: 80,
+          zIndex: 50,
           children: /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "py-2", children: [
             /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: cn(MODEL_MENU.padX, "pb-1"), children: [
               /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: MODEL_MENU.section, children: /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("span", { className: "font-medium text-text-base", children: "\u6A21\u578B" }) }),
-              /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "max-h-[96px] overflow-y-auto", children: models.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "rounded-lg px-2.5 py-2 text-[12px] text-text-secondary", children: noModelsLabel }) : /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(SlidingMenuList, { activeId: selectedModel, pillClassName: MODEL_MENU.pill, className: "w-full py-0.5", children: models.map((id) => {
-                const selected = id === selectedModel;
+              /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "max-h-[96px] overflow-y-auto", children: models.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "rounded-lg px-2.5 py-2 text-[12px] text-text-secondary", children: noModelsLabel }) : /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(SlidingMenuList, { activeId: open ? selectedModel : "", pillClassName: MODEL_MENU.pill, className: "w-full py-0.5", children: models.map((id) => {
+                // Drop selected chrome as soon as close starts — don't wait for exit unmount.
+                const selected = open && id === selectedModel;
                 return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(
                   ListItem,
                   {
@@ -4386,14 +4441,14 @@ function mountDeepAgentComposer(target, options = {}) {
                       children: /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("div", { className: "p-1.5", children: /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
                         SlidingMenuList,
                         {
-                          activeId: selectedApproval?.id ?? "",
+                          activeId: isApprovalDropdownOpen ? selectedApproval?.id ?? "" : "",
                           pillClassName: cn(
                             "left-0 right-0 rounded-xl bg-ui-tint-strong",
                             selectedApproval?.id === "full" && "bg-[#e25507]/10"
                           ),
                           className: "flex w-full flex-col gap-0.5",
                           children: visibleOptions.map((opt) => {
-                            const selected = selectedApproval?.id === opt.id;
+                            const selected = isApprovalDropdownOpen && selectedApproval?.id === opt.id;
                             const isFull = opt.id === "full";
                             return /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)(
                               "div",

@@ -8,6 +8,14 @@ export type RunTrigger = "schedule" | "manual" | "event";
 
 export type NotifyChannel = "desktop" | "dingtalk";
 
+/** 日历拖拽单次例外：不改源 scheduleExpr。 */
+export type ScheduleOverride = {
+  originDate: string;
+  dayOffset: number;
+  hour: number;
+  minute: number;
+};
+
 export type AutomationTask = {
   id: string;
   title: string;
@@ -20,6 +28,7 @@ export type AutomationTask = {
   thinkingLevel?: string | null;
   scheduleKind: ScheduleKind;
   scheduleExpr: string;
+  scheduleOverrides?: ScheduleOverride[];
   timezone: string;
   notifyOnSuccess: boolean;
   notifyOnFailure: boolean;
@@ -84,6 +93,7 @@ export type UpdateTaskInput = {
   thinkingLevel?: string | null;
   scheduleKind?: ScheduleKind;
   scheduleExpr?: string;
+  scheduleOverrides?: ScheduleOverride[];
   timezone?: string;
   notifyOnSuccess?: boolean;
   notifyOnFailure?: boolean;

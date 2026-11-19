@@ -45,18 +45,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.2.56）
+            const body = `## 本版重点（0.2.58）
 
-            - 修复 macOS 正式包本地网络授权不能跨版本保持的问题
-            - macOS 正式包改用稳定的 Giteam Desktop 代码签名身份，不再使用每次构建漂移的 ad-hoc 签名
-            - 安装新版本后首次访问局域网模型服务时授权一次，后续升级通常保持授权
-            - Windows 本版仅同步版本更新；如安装器上传中断，请用上方旧安装器或重新触发发布
+            - 消息流取消虚拟列表，改用真实 DOM + Lenis 惯性滚动；修复快滑回弹、到底下不去、流式输出不跟进
+            - 新增帆船航线概览标尺（设置可切换），进度与原生滚动条对齐
+            - 工具授权请求卡片改为紧凑单行，去掉冗长目标详情
+            - 本地仓库流体导航、空闲水滴氛围、自动化日历等桌面体验更新
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.2.56.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.2.58.md\``;
 
             let release;
             try {

@@ -16,6 +16,7 @@ pub mod pi_agent_mcp;
 pub mod release_notes;
 pub mod share;
 pub mod ui;
+pub mod viewport_capture;
 pub mod watch;
 
 pub use giteam_core::command_runner;

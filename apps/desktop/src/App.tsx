@@ -2,7 +2,6 @@ import { motion } from "motion/react";
 import QRCode from "qrcode";
 import type { CSSProperties, ReactNode } from "react";
 import { Component, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { VirtuosoHandle } from "react-virtuoso";
 import { flushSync } from "react-dom";
 import { REMOTE_REPO_MODULE_ENABLED } from "./lib/featureFlags";
 import {
@@ -25,7 +24,11 @@ import { AgentModulePanel, type AgentModuleTab } from "./components/agent/AgentM
 import { AgentProviderPickerDialog } from "./components/agent/AgentProviderPickerDialog";
 import { AgentProviderSettingsPanel } from "./components/agent/AgentProviderSettingsPanel";
 import { EditorSessionHeader } from "./components/agent/EditorSessionHeader";
-import { AgentChatFrame, CHAT_CONTENT_LEFT_CSS } from "./components/agent/AgentChatFrame";
+import {
+  AgentChatFrame,
+  chatContentLeftCss,
+  navigatorMinLeftGap
+} from "./components/agent/AgentChatFrame";
 import { AutomationView } from "./components/automation/AutomationView";
 import { AgentComposerPanel } from "./components/agent/AgentComposerPanel";
 import { AgentMessageStream } from "./components/agent/AgentMessageStream";
@@ -52,8 +55,17 @@ import { MobileControlDialog } from "./components/settings/MobileControlDialog";
 import { MobilePairQrDialog } from "./components/settings/MobilePairQrDialog";
 import { listCloudMobileClients } from "./lib/cloudLink";
 import { RuntimeSetupDialog } from "./components/settings/RuntimeSetupDialog";
-import { SettingsDialog, type GeneralSettingsDraft } from "./components/settings/SettingsDialog";
+import {
+  SettingsDialog,
+  PluginsSettingsSection,
+  getSettingsText,
+  type GeneralSettingsDraft,
+  type PluginsTabId,
+} from "./components/settings/SettingsDialog";
+import { IdleDroplets } from "./components/IdleDroplets";
 import { DesktopSidebar } from "./components/sidebar/DesktopSidebar";
+import { GiteamFluidNav, type GiteamNavId } from "./components/nav/GiteamFluidNav";
+import { LocalReposOverview } from "./components/nav/LocalReposOverview";
 import { RightSidebar, RightSidebarPanel } from "./components/sidebar/RightSidebar";
 import { RemoteRepoCatalog } from "./components/remote-repo/RemoteRepoCatalog";
 import { RemoteRepoCodeResourcePanel } from "./components/remote-repo/RemoteRepoCodeResourcePanel";
@@ -530,8 +542,8 @@ const AGENT_SIDEBAR_SESSION_POLL_MS = 45000;
 const AGENT_BOOTSTRAP_RETRY_DELAYS_MS = [400, 1200, 2500, 4500, 8000];
 const AGENT_INITIAL_MESSAGE_FETCH_LIMIT = 80;
 const AGENT_OLDER_MESSAGE_FETCH_LIMIT = 8;
-// 与 macOS traffic light 视觉中心对齐：x=14 起算三色宽约 54，折叠钮紧跟其后。
-const TITLEBAR_LEFT_TOGGLE_X = 80;
+// 与 macOS traffic light 视觉中心对齐：x=16 起算三色宽约 54（落在 84px activity 内），折叠钮紧跟侧栏标题区。
+const TITLEBAR_LEFT_TOGGLE_X = 108;
 const DRAG_REGION_INTERACTIVE_SELECTOR = [
   "a",
   "button",
@@ -973,8 +985,8 @@ export function App() {
   const [pinnedRepoIds, togglePinnedRepo] = usePinnedRepoIds();
   const { uiZoom, codeFontSize, setUiZoom, setCodeFontSize } = useAppearanceFontSize();
   const [agentPreviewImage, setAgentPreviewImage] = useState<{ images: Array<{ uri: string; filename?: string }>; index: number } | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<"general" | "appearance" | "modules" | "plugins" | "mobile" | "models" | "skillsmp">("general");
+  const [pluginsInitialTab, setPluginsInitialTab] = useState<PluginsTabId>("runtime");
   const [settingsMobileVisible, setSettingsMobileVisible] = useState(false);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettingsDraft>(() => (
     loadGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY)
@@ -1004,7 +1016,6 @@ export function App() {
     () => typeof window === "undefined" || window.innerWidth >= 1280
   );
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
-  const panelPlacement: PanelPlacement = rightDrawerOpen ? "right" : "hidden";
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
   const [draggingSplit, setDraggingSplit] = useState<null | {
     kind: "sidebar" | "right" | "changes";
@@ -1107,11 +1118,34 @@ export function App() {
 
   const [detailTab, setDetailTab] = useState<DetailTab>("diff");
   const [rightPaneTab, setRightPaneTab] = useState<RightPaneTab>(PINNED_RIGHT_PANE_TAB);
-  const [mainMode, setMainMode] = useState<"agent" | "automation">("agent");
+  const [mainMode, setMainMode] = useState<"home" | "agent" | "automation" | "memory" | "plugins" | "settings">("home");
+  const [navView, setNavView] = useState<GiteamNavId | null>(null);
+  /** 首页→对话：侧栏一次展开，避免与内容显隐叠出二次闪动。 */
+  const [sidebarInstant, setSidebarInstant] = useState(false);
+  const mainModeRef = useRef(mainMode);
+  /** 总导航下：仅「对话」页保留会话侧栏与右栏工具壳。 */
+  const conversationChrome = mainMode === "agent";
+  const showSettings = mainMode === "settings";
+  const panelPlacement: PanelPlacement =
+    conversationChrome && rightDrawerOpen ? "right" : "hidden";
+
+  useLayoutEffect(() => {
+    const prev = mainModeRef.current;
+    mainModeRef.current = mainMode;
+    if (prev === "home" && mainMode === "agent") {
+      setSidebarInstant(true);
+      const timer = window.setTimeout(() => setSidebarInstant(false), 120);
+      return () => window.clearTimeout(timer);
+    }
+    if (mainMode === "home") setSidebarInstant(false);
+  }, [mainMode]);
   const [browserPaneUrl, setBrowserPaneUrl] = useState("");
   const [rightOptionalTabs, setRightOptionalTabs] = useState<OptionalRightPaneTab[]>([]);
   const rightOpenTabs = useMemo(
-    (): RightPaneTab[] => [PINNED_RIGHT_PANE_TAB, ...rightOptionalTabs],
+    (): RightPaneTab[] => [
+      PINNED_RIGHT_PANE_TAB,
+      ...rightOptionalTabs.filter((tab) => tab !== "assetGraph" && tab !== "skills"),
+    ],
     [rightOptionalTabs]
   );
   const { rightModuleVisibility, setRightModuleVisibility, toggleRightModuleVisibility } = useRightModuleVisibility(rightPaneTab, setRightPaneTab);
@@ -1174,7 +1208,10 @@ export function App() {
     // 1) 离线缓存优先：真实更新后即时、有完整说明，下次发版后仍能看本次内容。
     const last = readLastWhatsNew();
     if (last && String(last.notes || "").trim()) {
-      setShowSettings(false);
+      if (mainMode === "settings") {
+        setNavView("home");
+        setMainMode("agent");
+      }
       setUpdateCelebration(last);
       return;
     }
@@ -1194,9 +1231,11 @@ export function App() {
         // 网络/解析失败：退化为空骨架。
       }
     }
-    // WhatsNew 弹窗与设置同为 Radix Dialog、同 z-index，且在 JSX 中先于设置渲染会被遮挡，
-    // 故拉取完成后再关闭设置，让更新内容弹窗独占显示。
-    setShowSettings(false);
+    // 更新内容弹窗展示前先离开设置页，避免与设置主区抢焦点。
+    if (mainMode === "settings") {
+      setNavView("home");
+      setMainMode("agent");
+    }
     const sameVersion = toVersion === appVersion;
     const celebration: UpdateCelebration = {
       // 拿不到真实旧版本（dev / 同版本 / 无启动记录）时回退当前版本，避免左栏显示「—」；
@@ -1208,7 +1247,7 @@ export function App() {
     };
     if (String(notes || "").trim()) writeLastWhatsNew(celebration);
     setUpdateCelebration(celebration);
-  }, [appVersion]);
+  }, [appVersion, mainMode]);
   const installInFlightGuard = useRef(false);
   const installAppUpdateNow = useCallback(
     async (available: { currentVersion: string; version: string; notes: string }) => {
@@ -1338,7 +1377,7 @@ export function App() {
   const [agentPermissionLoading, setAgentPermissionLoading] = useState(false);
   const [showAgentModulePanel, setShowAgentModulePanel] = useState(false);
   const [agentModuleTab, setAgentModuleTab] = useState<AgentModuleTab>("permissions");
-  const agentSkillsVisible = rightPaneTab === "skills" || (showAgentModulePanel && agentModuleTab === "skills");
+  const agentSkillsVisible = mainMode === "plugins" || (showAgentModulePanel && agentModuleTab === "skills");
   const [skillsmpApiKey, setSkillsmpApiKey] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [skillsmpApiKeyDraft, setSkillsmpApiKeyDraft] = useState(() => loadLocalString(SKILLSMP_API_KEY_STORAGE_KEY, ""));
   const [showSkillsmpSettings, setShowSkillsmpSettings] = useState(false);
@@ -1423,7 +1462,6 @@ export function App() {
   // PR6：审批/提问交互的单一真相源（事件驱动 + listInteractions 兜底）。
   const [agentInteractions, setAgentInteractions] = useState<AgentInteraction[]>([]);
   const agentThreadRef = useRef<HTMLDivElement | null>(null);
-  const agentVirtuosoRef = useRef<VirtuosoHandle>(null);
   // 会话搜索面板：open/范围/定位请求。定位用两段式——pendingScrollMessageId 触发消息流滚动，
   // pendingScrollTarget 在跨会话切换时等待目标会话加载完成后再下发给消息流。
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
@@ -1440,6 +1478,8 @@ export function App() {
   const [highlightKeyword, setHighlightKeyword] = useState("");
   const agentInputRef = useRef<HTMLTextAreaElement | null>(null);
   const handleCiteGraphNode = useCallback((ref: GraphContextRef) => {
+    setNavView("home");
+    setMainMode("agent");
     setAgentGraphContextRefs((prev) => {
       if (prev.some((item) => item.nodeId === ref.nodeId)) return prev;
       return [...prev, ref];
@@ -2560,6 +2600,7 @@ export function App() {
   }
 
   function startDraftSessionForRepo(repo: RepositoryEntry) {
+    setNavView("home");
     setMainMode("agent");
     setNewSessionTargetRepoId(repo.id);
     setExpandedProjectIds((prev) => (prev.includes(repo.id) ? prev : [...prev, repo.id]));
@@ -2635,6 +2676,35 @@ export function App() {
     agentProviders,
     agentProviderNames,
     agentProviderPickerSearch,
+    agentConnectedProviders,
+    agentGlobalConfigProviderMap,
+    agentDisabledProviders
+  ]);
+
+  /** 设置页外层：仅已连接（已配置）供应商 */
+  const agentSettingsConfiguredProviders = useMemo(() => {
+    return [...agentConnectedProviders].sort((a, b) => {
+      const nameA = resolveProviderDisplayName(a);
+      const nameB = resolveProviderDisplayName(b);
+      return nameA.localeCompare(nameB, "zh") || a.localeCompare(b);
+    });
+  }, [agentConnectedProviders, agentProviderNames]);
+
+  /** 新增下拉：未连接的可选供应商（OpenAI Completions 模板始终保留） */
+  const agentSettingsAddProviderCandidates = useMemo(() => {
+    const connected = new Set(agentConnectedProviders.filter(Boolean));
+    return buildAgentProviderPickerCandidates({
+      search: "",
+      presetProviderIds: PROVIDER_PRESETS.map((p) => p.id).filter(Boolean),
+      providers: agentProviders,
+      connectedProviders: agentConnectedProviders,
+      providerNames: agentProviderNames,
+      configProviderMap: agentGlobalConfigProviderMap,
+      disabledProviders: agentDisabledProviders
+    }).filter((id) => id === OPENAI_COMPATIBLE_PROVIDER_ID || !connected.has(id));
+  }, [
+    agentProviders,
+    agentProviderNames,
     agentConnectedProviders,
     agentGlobalConfigProviderMap,
     agentDisabledProviders
@@ -2933,6 +3003,110 @@ export function App() {
     if (tab === "agents") void refreshAgentDefinitions();
     if (tab === "permissions") void refreshPendingPermissions();
     if (tab === "skills") void refreshAgentSkills();
+  }
+
+  function leaveSettingsPage() {
+    if (settingsMobileVisible && controlSettingsDirty && !controlServerSettingsBusy) {
+      void saveControlServerSettingsIfNeeded();
+    }
+    setShowMobileControlDialog(false);
+    setShowAgentApiDialog(false);
+    setSettingsMobileVisible(false);
+  }
+
+  function openSettingsPage(section: typeof settingsInitialSection = "general") {
+    if (section === "skillsmp" || section === "plugins") {
+      openPluginsPage(section === "skillsmp" ? "skills" : "runtime");
+      return;
+    }
+    if (mainMode === "settings") {
+      leaveSettingsPage();
+    }
+    setSettingsInitialSection(section);
+    setNavView("settings");
+    setMainMode("settings");
+    setRightDrawerOpen(false);
+  }
+
+  function openPluginsPage(tab: PluginsTabId = "runtime") {
+    if (mainMode === "settings") leaveSettingsPage();
+    setPluginsInitialTab(tab);
+    setNavView("plugins");
+    setMainMode("plugins");
+    setRightDrawerOpen(false);
+    if (IS_TAURI) {
+      void invoke("hide_all_browser").catch(() => {});
+    }
+  }
+
+  function openReposHome() {
+    if (mainMode === "home") return;
+    if (mainMode === "settings") leaveSettingsPage();
+    setNavView(null);
+    setMainMode("home");
+    setRightDrawerOpen(false);
+    if (IS_TAURI) {
+      void invoke("hide_all_browser").catch(() => {});
+    }
+  }
+
+  function handleNavSelect(id: GiteamNavId) {
+    // 设置页内点击不得误切回「对话」：仅显式点轨条项才切换
+    if (mainMode === "settings" && id !== "settings") leaveSettingsPage();
+    setNavView(id);
+    if (id === "home") {
+      setMainMode("agent");
+    } else if (id === "tasks") {
+      setMainMode("automation");
+      setRightDrawerOpen(false);
+      if (IS_TAURI) {
+        void invoke("hide_all_browser").catch(() => {});
+      }
+    } else if (id === "memory") {
+      setMainMode("memory");
+      setRightDrawerOpen(false);
+      if (IS_TAURI) {
+        void invoke("hide_all_browser").catch(() => {});
+      }
+    } else if (id === "plugins") {
+      openPluginsPage(pluginsInitialTab);
+    } else if (id === "settings") {
+      // 已在设置内再点设置：只保持设置，不经 leave/重进，避免闪回对话选中态
+      if (mainMode === "settings") {
+        setNavView("settings");
+        return;
+      }
+      openSettingsPage("general");
+    }
+  }
+
+  function openRepoFromHome(repo: RepositoryEntry) {
+    const latest = getVisibleRepoSessions(repo.id)[0];
+    if (latest) {
+      openSidebarAgentSession(repo, latest);
+      return;
+    }
+    // 会话尚未加载：先进入仓库对话，侧栏刷新后由 bootstrap 选中/草稿。
+    startDraftSessionForRepo(repo);
+    if (!hasLoadedSidebarRepoSessions(repo.id) && !isRepoSessionsLoading(repo.id)) {
+      void refreshSidebarRepoSessions(repo)
+        .then(() => {
+          const ready = getVisibleRepoSessions(repo.id)[0];
+          if (ready && (draftAgentSessionRef.current || !activeAgentSessionIdRef.current)) {
+            openSidebarAgentSession(repo, ready);
+          }
+        })
+        .catch((e) => setError(String(e)));
+    }
+  }
+
+  function openSessionFromHome(repo: RepositoryEntry, session: ChatSessionSummary) {
+    openSidebarAgentSession(repo, session);
+  }
+
+  function ensureHomeRepoSessions(repo: RepositoryEntry) {
+    if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
+    void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
   }
 
   /**
@@ -3615,6 +3789,7 @@ export function App() {
   }
 
   function openSidebarAgentSession(repo: RepositoryEntry, session: ChatSessionSummary) {
+    setNavView("home");
     setMainMode("agent");
     pendingSidebarSessionSelectionRef.current = { repoId: repo.id, sessionId: session.id };
     const cachedSession = agentSessions.find((item) => item.id === session.id) ?? null;
@@ -4319,6 +4494,7 @@ export function App() {
   }
 
   async function createAndSwitchAgentSessionForSidebar(seedPrompt?: string) {
+    setNavView("home");
     setMainMode("agent");
     const targetRepo = repos.find((repo) => repo.id === newSessionTargetRepoId) || selectedRepo;
     if (!targetRepo) {
@@ -5011,9 +5187,7 @@ export function App() {
 
   // 启动屏隐藏判定：首批仓库列表 + 运行时检测 + agent 会话首轮加载均就绪后，
   // 补足最小展示时长再淡出——避免界面先露出"会话未加载完"的中间态。
-  // 启动屏本体是 index.html 的内联 CSS 节点——transform/opacity 动画由合成器线程
-  // 驱动，启动期 JS 主线程繁忙（bundle 执行 + 首屏渲染）时动画依然流畅，因此
-  // 不迁移为 React 组件；这里只负责打淡出类并在过渡结束后移除节点。
+  // 启动屏本体是 index.html 的雾面 + logo 旋转；这里只负责淡出并移除。
   // 另有兜底超时，防止启动链路挂起导致启动屏永久遮挡界面。
   useEffect(() => {
     const splash = document.getElementById("app-splash");
@@ -5028,7 +5202,6 @@ export function App() {
       : Math.max(SPLASH_MAX_DISPLAY_MS - elapsed, 0);
     const timer = window.setTimeout(() => {
       splash.classList.add("app-splash-exit");
-      // 等 CSS 淡出过渡（320ms）结束后再移除节点
       window.setTimeout(() => splash.remove(), 400);
     }, delay);
     return () => window.clearTimeout(timer);
@@ -5889,13 +6062,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   async function closeSettingsModal() {
-    if (settingsMobileVisible && controlSettingsDirty && !controlServerSettingsBusy) {
-      void saveControlServerSettingsIfNeeded();
-    }
-    setShowMobileControlDialog(false);
-    setShowAgentApiDialog(false);
-    setSettingsMobileVisible(false);
-    setShowSettings(false);
+    leaveSettingsPage();
+    setNavView("home");
+    setMainMode("agent");
   }
 
   async function closeMobileControlDialog() {
@@ -6172,8 +6341,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       releaseSubmitLock();
       setError("请先配置并选择模型后再发送。");
       setMessage("请先选择模型");
-      setSettingsInitialSection("models");
-      setShowSettings(true);
+      openSettingsPage("models");
       return;
     }
 
@@ -8199,8 +8367,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         return;
       }
       if (trigger === "model") {
-        setSettingsInitialSection("models");
-        setShowSettings(true);
+        openSettingsPage("models");
         return;
       }
       if (trigger === "agent") {
@@ -8867,12 +9034,22 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   }
 
   function openRightPane(tab: RightPaneTab) {
+    // 记忆/技能已是总导航主区，旧入口统一改走对应页面。
+    if (tab === "assetGraph") {
+      setNavView("memory");
+      setMainMode("memory");
+      setRightDrawerOpen(false);
+      return;
+    }
+    if (tab === "skills") {
+      openPluginsPage("skills");
+      return;
+    }
     if (tab !== PINNED_RIGHT_PANE_TAB) {
       setRightOptionalTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
     }
     setRightPaneTab(tab);
     setRightDrawerOpen(true);
-    if (tab === "skills") void warmSkillsMarketplace();
   }
 
   // 分支选择浮层打开时的轻量刷新：只拉分支列表，不触碰提交图与状态栏消息。
@@ -10383,7 +10560,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     setAgentShowJumpLatest(false);
     const frame = window.requestAnimationFrame(() => {
       if (locateInFlightRef.current) return;
-      agentVirtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+      // 贴底由 AgentMessageStream stickReset / 就绪 wake 负责；这里只保证切会话意图。
+      setAgentStickResetSignal((value) => value + 1);
     });
     return () => window.cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -10562,7 +10740,28 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     })),
   })), [remoteRepos, remoteRepoActivities, remoteRepoBranches, remoteRepoFileTreeStatuses, remoteRepoGitNexusStatuses, remoteRepoSelectedRefs, remoteRepoWorkspaces]);
 
-  const activityBar = null;
+  const activityBar = (
+    <GiteamFluidNav
+      active={
+        mainMode === "home"
+          ? null
+          : mainMode === "settings"
+            ? "settings"
+            : mainMode === "plugins"
+              ? "plugins"
+              : mainMode === "automation"
+                ? "tasks"
+                : mainMode === "memory"
+                  ? "memory"
+                  : "home"
+      }
+      onSelect={handleNavSelect}
+      onOpenHome={openReposHome}
+      profileLabel="对话"
+      mobileConnected={mobileClientConnected}
+      onOpenMobile={() => setShowMobilePairQr(true)}
+    />
+  );
   const noRepos = repos.length === 0;
   const selectedRemoteRepo = remoteReposWithServerState.find((repo) => repo.id === selectedRemoteRepoId) || null;
   const selectedRemoteRepoBranches = selectedRemoteRepo ? remoteRepoBranches[selectedRemoteRepo.id] || [] : [];
@@ -10866,7 +11065,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       activeSessionId={activeAgentSessionId}
       draftRepoId={draftAgentSession ? (selectedRepo?.id || "") : ""}
       sessionBusyById={agentRunBusyBySession}
-      gitUserIdentity={gitUserIdentity}
       getVisibleRepoSessions={getVisibleRepoSessions}
       hasMoreRepoSessions={hasMoreRepoSessions}
       isRepoSessionsLoading={isRepoSessionsLoading}
@@ -10903,22 +11101,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         onRefreshBranches: () => void refreshBranchListForPicker(),
       } : null}
       onOpenRightPane={openRightPane}
-      onOpenSettings={() => {
-        setSettingsInitialSection("general");
-        setShowSettings(true);
-      }}
-      onOpenMobilePairQr={() => setShowMobilePairQr(true)}
-      mobileClientConnected={mobileClientConnected}
       remoteRepoActive={rightDrawerOpen && rightPaneTab === "remoteRepos"}
       onOpenRemoteRepos={openRemoteRepoInspector}
-      automationActive={mainMode === "automation"}
-      onOpenAutomation={() => {
-        setMainMode("automation");
-        // 内嵌浏览器子 webview 可能盖在主区域上，进自动化前先全部隐藏。
-        if (IS_TAURI) {
-          void invoke("hide_all_browser").catch(() => {});
-        }
-      }}
     />
   );
 
@@ -10927,6 +11111,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       <div className={agentShowEmptyState ? "flex min-h-0 flex-1 flex-col items-center justify-center" : "flex min-h-0 flex-1 flex-col overflow-hidden"}>
         <AgentChatFrame
           empty={agentShowEmptyState}
+          theme={theme}
+          navigatorStyle={generalSettings.navigatorStyle}
+          navigatorSide={generalSettings.navigatorSide}
           jumpLatest={
             !agentShowEmptyState && agentShowJumpLatest ? (
               <Button
@@ -10945,7 +11132,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             <AgentMessageStream
               sessionLoading={agentSessionLoading}
               activeSessionId={activeAgentSessionId}
-              virtuosoRef={agentVirtuosoRef}
               scrollerRef={(node) => { agentThreadRef.current = node instanceof HTMLDivElement ? node : null; }}
               onStartReached={loadOlderAgentHistory}
               onAtBottomChange={handleAgentAtBottomChange}
@@ -10960,6 +11146,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               navigatorHidden={rightDrawerOpen}
               navigatorSide={generalSettings.navigatorSide}
               navigatorScope={generalSettings.navigatorScope}
+              navigatorStyle={generalSettings.navigatorStyle}
               stickResetSignal={agentStickResetSignal}
               messages={agentMessages}
               renderedMessages={agentRenderedMessages}
@@ -11125,8 +11312,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   if (!(activeAgentModel || "").trim()) {
                     setError("请先配置并选择模型后再发送。");
                     setMessage("请先选择模型");
-                    setSettingsInitialSection("models");
-                    setShowSettings(true);
+                    openSettingsPage("models");
                     return;
                   }
                   // busy + 空草稿：不发送也不停止（停止用方钮）。
@@ -11211,8 +11397,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 void applyAgentModel(modelRef);
               }}
               onOpenModelSettings={() => {
-                setSettingsInitialSection("models");
-                setShowSettings(true);
+                openSettingsPage("models");
                 setAgentProviderPickerSearch("");
                 setAgentProviderPickerProvider(agentModelProvider);
                 setAgentProviderPickerModelSearch("");
@@ -11284,7 +11469,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
   const rightPane = (
     <RightSidebarPanel
       ref={agentRightPaneRef}
-      variant={rightPaneTab === "changes" || rightPaneTab === "worktree" || rightPaneTab === "assetGraph"
+      variant={rightPaneTab === "changes" || rightPaneTab === "worktree"
         ? "workspace"
         : rightPaneTab === "terminal"
           ? "terminal"
@@ -11292,14 +11477,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     >
       {rightPaneTab === "browser" ? (
         <BrowserPanel url={browserPaneUrl} />
-      ) : null}
-      {rightPaneTab === "assetGraph" ? (
-        <AssetGraphPanel
-          repoPath={repoPath}
-          deferForContent={agentSessionLoading}
-          currentSessionId={activeAgentSessionId}
-          onCiteNode={handleCiteGraphNode}
-        />
       ) : null}
       {rightPaneTab === "remoteRepos" ? (
         selectedRemoteRepo ? (
@@ -11483,46 +11660,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         />
       ) : null}
 
-      {rightPaneTab === "skills" ? (
-        <AgentSkillsMarketPanel
-          groups={groupedAgentSkills}
-          skills={agentSkills}
-          skillsLoading={agentSkillsLoading}
-          skillsError={agentSkillsError}
-          removingKey={agentSkillRemovingKey}
-          skillBusy={agentSkillBusy}
-          skillInstallingSpec={agentSkillInstallingSpec}
-          skillInstallNotice={agentSkillInstallNotice}
-          skillInstallLog={agentSkillInstallLog}
-          marketListRef={agentSkillMarketListRef}
-          searchQuery={agentSkillSearchQuery}
-          searchResults={agentSkillSearchResults}
-          catalogView={agentSkillCatalogView}
-          searchMeta={agentSkillSearchMeta}
-          selectedMarketplaceSkill={selectedMarketplaceSkill}
-          marketplaceRows={agentMarketplaceRows}
-          visibleMarketplaceRows={visibleAgentMarketplaceRows}
-          initialLoading={agentSkillsInitialLoading}
-          searching={agentSkillsSearching}
-          paging={agentSkillsPaging}
-          onSearchQueryChange={setAgentSkillSearchQuery}
-          onSearch={() => void searchAgentSkillRegistry()}
-          onSwitchCatalogView={switchAgentSkillCatalogView}
-          onRefreshSkills={() => void refreshAgentSkills()}
-          onScrollMarket={handleAgentSkillMarketScroll}
-          onSelectMarketplaceSkill={selectMarketplaceSkill}
-          onInstallMarketplaceSkill={(spec) => void installAgentSkillFromRegistry(spec, "project")}
-          onInstallSelectedMarketplaceSkill={(scope) => {
-            if (!selectedMarketplaceSkill) return;
-            setShowSkillInstallMenu(false);
-            void installAgentSkillFromRegistry(selectedMarketplaceSkill.installSpec || selectedMarketplaceSkill.spec, scope);
-          }}
-          onReferenceSkill={referenceAgentSkill}
-          onRemoveSkill={removeAgentSkill}
-          onRemoveSkillGroup={removeAgentSkillGroup}
-        />
-      ) : null}
-
       {rightPaneTab === "terminal" ? (
         <TerminalPanel
           tabs={terminalTabs}
@@ -11607,58 +11744,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     "wb-col wb-col-center min-h-0 min-w-0 flex-1 overflow-hidden"
   );
   const editorShellClass = cn(
-    "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden"
-  );
-
-  const editor = mainMode === "automation" ? (
-    <motion.div
-      key="automation-editor"
-      className={editorShellClass}
-      initial={{ opacity: 0, x: 24 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ type: "spring", stiffness: 380, damping: 36 }}
-    >
-      <AutomationView
-        repos={repos}
-        getRepoSessions={getVisibleRepoSessions}
-        ensureRepoSessions={(repo) => {
-          if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
-          void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
-        }}
-        onOpenImportProject={() => openAddProjectDialog()}
-        modelOptions={agentConfiguredModelCandidates.map((ref) => {
-          const slash = ref.indexOf("/");
-          const provider = slash >= 0 ? ref.slice(0, slash) : "";
-          const modelId = slash >= 0 ? ref.slice(slash + 1) : ref;
-          const display = getAgentModelDisplay(ref);
-          return {
-            ref,
-            label: display.label || ref,
-            provider,
-            modelId,
-          };
-        })}
-        modelInfoByRef={agentModelInfoByRef}
-      />
-    </motion.div>
-  ) : (
-    <div
-      className={editorShellClass}
-      style={{ containerType: "inline-size", "--chat-content-left": CHAT_CONTENT_LEFT_CSS } as CSSProperties}
-    >
-      {/* 标题消费 editor 列上的 --chat-content-left（与消息流同源），侧栏收放时即时跟随、与内容列同步。
-          关键：container-type 必须挂在无 padding 的 editor 列——cqw 基于 query container 的 content-box，
-          若挂在标题自身（其 paddingLeft 正是该 calc）会形成循环依赖、解不出值，标题就追不上内容区
-          （「侧栏收起后标题没跟过去」）。editor 列无 padding，100cqw = available，无循环。 */}
-      <div className="shrink-0" style={{ paddingLeft: "var(--chat-content-left)" }}>
-        <EditorSessionHeader
-          title={activeAgentSession?.title || (draftAgentSession ? appText.newSession : "会话摘要")}
-        />
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className={centerColClass}>{centerPane}</div>
-      </div>
-    </div>
+    "wb-editor-inner flex min-h-0 flex-1 flex-col overflow-hidden",
+    conversationChrome
+      ? // 对话：阅读面；会话栏 elev 由 wb-sidebar 承担
+        "bg-background"
+      : mainMode === "settings" || mainMode === "home"
+        ? // 设置 / 首页：与导航空布同色，不抬起独立面板
+          "bg-transparent"
+        : // 插件/自动化/记忆等：整页面板突出，阴影落在导航与内容侧
+          "relative z-[3] rounded-l-[14px] bg-background shadow-[var(--gt-elev-sidebar)]"
   );
 
   const controlBaseUrl = (() => {
@@ -11712,6 +11806,481 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
     return out;
   }, [agentProviderPickerCandidates, agentModelsByProvider]);
+
+  const settingsText = getSettingsText(generalSettings.language);
+  const pluginDeps = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.giteam]
+    .filter((dep): dep is RuntimeDependencyStatus => Boolean(dep));
+  const runtimeBusy = runtimeChecking || Boolean(installingDep);
+  const runtimeHeaderActionText =
+    runtimeJob?.status === "running" && runtimeJob.action === "update"
+      ? settingsText.updating
+      : settingsText.installing;
+
+  const pluginsPage = (
+    <motion.div
+      key="plugins-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+      <div className="gt-subtle-scrollbar h-full min-h-0 overflow-y-auto bg-background">
+        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6 px-[clamp(24px,3vw,32px)] py-[clamp(28px,5vh,44px)]">
+          <PluginsSettingsSection
+            repoPath={repoPath}
+            initialTab={pluginsInitialTab}
+            dependenciesTitle={settingsText.dependencies}
+            dependenciesDesc={settingsText.dependenciesDesc}
+            installLabel={settingsText.install}
+            runtimeHeaderActionText={runtimeHeaderActionText}
+            pluginDeps={pluginDeps}
+            runtimeBusy={runtimeBusy}
+            checkingDeps={checkingDeps}
+            installingDep={installingDep}
+            installingElapsed={installingElapsed}
+            runtimeJob={runtimeJob}
+            onOpenRuntimeSetup={() => {
+              setShowEnvSetup(true);
+              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.giteam].some((d) => !d.checked);
+              if (unchecked) void refreshRuntimeRequirements();
+            }}
+            onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
+            skillsContent={settingsSkillsContent}
+            skillsCount={groupedAgentSkills.length}
+            onSkillsVisible={() => {
+              if (agentSkillsRepoPathRef.current !== repoPath) {
+                agentSkillsRepoPathRef.current = repoPath;
+                const cached = restoreCachedSkillsForRepo(repoPath);
+                if (!cached) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
+                return;
+              }
+              if (!agentSkillsLoading && !agentSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
+            }}
+            onBrowseMarketplace={() => {
+              void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" });
+            }}
+            text={settingsText}
+          />
+        </div>
+      </div>
+    </motion.div>
+  );
+
+  const settingsPage = (
+    <motion.div
+      key="settings-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+          <SettingsDialog
+            embedded
+            theme={theme}
+            repoPath={repoPath}
+            initialSection={settingsInitialSection}
+            runtimeStatus={runtimeStatus}
+            onClose={() => void closeSettingsModal()}
+            onToggleTheme={toggleTheme}
+            onOpenRuntimeSetup={() => {
+              setShowEnvSetup(true);
+              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.giteam].some(
+                (d) => !d.checked
+              );
+              if (unchecked) void refreshRuntimeRequirements();
+            }}
+            onOpenMobileControl={openMobileControlDialog}
+            onOpenAgentApi={() => setShowAgentApiDialog(true)}
+            onOpenModelManager={() => {
+              setAgentProviderPickerProvider(
+                parseModelRef(activeAgentModel || "")?.provider || agentModelProvider || ""
+              );
+              openSettingsPage("models");
+            }}
+            onOpenSkillsMarketplaceSettings={() => {
+              void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" });
+            }}
+            generalSettings={generalSettings}
+            onGeneralSettingsChange={(next) => {
+              const nextPreset = parseAgentPermissionPreset(
+                next.permissionPreset || permissionPresetFromAutoAccept(next.autoAcceptPermissions)
+              );
+              const normalized = {
+                ...next,
+                permissionPreset: nextPreset,
+                autoAcceptPermissions: autoAcceptFromPermissionPreset(nextPreset)
+              };
+              setGeneralSettings(normalized);
+              saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, normalized);
+              if (nextPreset !== agentPermissionPreset) {
+                setAgentPermissionPreset(nextPreset);
+                if (activeAgentSessionId) {
+                  void ensureSessionPermissionPreset(activeAgentSessionId, nextPreset);
+                }
+              }
+            }}
+            onCheckAppUpdate={() => {
+              void (async () => {
+                setAppUpdateState({ status: "checking" });
+                const next = await checkAppUpdate();
+                setAppUpdateState(next);
+                if (next.status !== "available") return;
+                if (generalSettings.updatesAutoInstall) {
+                  await installAppUpdateNow({
+                    currentVersion: next.currentVersion,
+                    version: next.version,
+                    notes: next.notes
+                  });
+                  return;
+                }
+                // 已在设置「关于」页时不叠弹窗，直接在页内下载安装，避免要点两次。
+                if (!showSettings) {
+                  setUpdateAvailablePrompt({
+                    currentVersion: next.currentVersion,
+                    version: next.version,
+                    notes: next.notes
+                  });
+                  if (generalSettings.notificationsAgent) {
+                    void showSettingsNotification(
+                      "Update available",
+                      `Giteam ${next.version} is ready to install`
+                    );
+                  }
+                }
+              })();
+            }}
+            onInstallAppUpdate={() => {
+              void (async () => {
+                const available =
+                  appUpdateState.status === "available" || appUpdateState.status === "ready"
+                    ? {
+                        currentVersion: appUpdateState.currentVersion,
+                        version: appUpdateState.version,
+                        notes: appUpdateState.notes
+                      }
+                    : updateAvailablePrompt;
+                if (!available) return;
+                await installAppUpdateNow(available);
+              })();
+            }}
+            appVersion={appVersion}
+            appUpdateState={appUpdateState}
+            onReopenUpdateCelebration={reopenUpdateCelebration}
+            agentPort={agentServiceSettings.port}
+            agentBusy={agentServiceSettingsBusy}
+            onAgentPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}
+            onSaveAgentApi={() => void saveAgentServiceSettingsIfNeeded()}
+            skillsmpApiKey={skillsmpApiKey}
+            skillsmpApiKeyDraft={skillsmpApiKeyDraft}
+            onSkillsmpApiKeyDraftChange={setSkillsmpApiKeyDraft}
+            onSaveSkillsmpApiKey={() => {
+              const next = skillsmpApiKeyDraft.trim();
+              setSkillsmpApiKey(next);
+              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
+              setMessage(next ? "SkillsMP API Key saved" : "SkillsMP API Key cleared");
+            }}
+            onClearSkillsmpApiKey={() => {
+              setSkillsmpApiKey("");
+              setSkillsmpApiKeyDraft("");
+              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
+              setMessage("SkillsMP API Key cleared");
+            }}
+            uiZoom={uiZoom}
+            codeFontSize={codeFontSize}
+            onUiZoomChange={setUiZoom}
+            onCodeFontSizeChange={setCodeFontSize}
+            controlSettings={controlServerSettings}
+            controlBusy={controlServerSettingsBusy}
+            controlInstalled={true}
+            onControlSettingsChange={(next) => setControlServerSettings((prev) => ({ ...prev, ...next }))}
+            onSaveControlSettings={() => void saveControlServerSettingsIfNeeded()}
+            controlConnectionUrl={controlBaseUrl}
+            controlPairCode={controlPairCode}
+            controlPairQrUrl={controlPairQrUrl}
+            controlListeningPort={
+              mobileServiceStatus?.listeningPort
+              || controlAccessInfo?.port
+              || 0
+            }
+            controlPortRemapped={Boolean(
+              mobileServiceStatus?.portRemapped
+              || (
+                controlAccessInfo?.preferredPort
+                && controlAccessInfo.port
+                && controlAccessInfo.preferredPort !== controlAccessInfo.port
+              )
+            )}
+            controlSettingsDirty={controlSettingsDirty}
+            onRefreshControlPairCode={() => {
+              void forceRefreshControlPairCode();
+              void loadControlAccessInfo();
+            }}
+            onCopyControlUrl={() => {
+              void navigator.clipboard.writeText(controlBaseUrl);
+              setMessage("Control server URL copied");
+            }}
+            onMobileVisibilityChange={setSettingsMobileVisible}
+            onToggleControlService={(enabled) => void toggleControlServiceEnabled(enabled)}
+            remoteRepoServiceUrl={remoteRepoServiceSetting.effectiveUrl}
+            remoteRepoServiceDraft={remoteRepoServiceDraft}
+            remoteRepoServiceApiKeyDraft={remoteRepoServiceApiKeyDraft}
+            remoteRepoServiceBusy={remoteRepoServiceBusy}
+            remoteRepoServiceNotice={remoteRepoServiceNotice}
+            onRemoteRepoServiceDraftChange={setRemoteRepoServiceDraft}
+            onRemoteRepoServiceApiKeyDraftChange={setRemoteRepoServiceApiKeyDraft}
+            onTestRemoteRepoService={() => void testConfiguredRemoteRepoService()}
+            onSaveRemoteRepoService={() => void saveConfiguredRemoteRepoService()}
+            onResetRemoteRepoService={() => {
+              setRemoteRepoServiceDraft("");
+              setRemoteRepoServiceApiKeyDraft("");
+              void saveConfiguredRemoteRepoService("", "");
+            }}
+            runtimeChecking={runtimeChecking}
+            checkingDeps={checkingDeps}
+            installingDep={installingDep}
+            installingElapsed={installingElapsed}
+            runtimeJob={runtimeJob}
+            onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
+            onRefreshRuntime={() => void refreshRuntimeRequirements()}
+            skillsContent={settingsSkillsContent}
+            skillsCount={groupedAgentSkills.length}
+            skillsLoading={agentSkillsLoading}
+            onRefreshSkills={() => void refreshAgentSkills()}
+            onSkillsVisible={() => {
+              if (agentSkillsRepoPathRef.current !== repoPath) {
+                agentSkillsRepoPathRef.current = repoPath;
+                const cached = restoreCachedSkillsForRepo(repoPath);
+                if (!cached) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
+                return;
+              }
+              if (!agentSkillsLoading && !agentSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
+            }}
+            modelsContent={(
+              <AgentProviderSettingsPanel
+                providerSearch={agentProviderPickerSearch}
+                modelSearch={agentProviderPickerModelSearch}
+                providers={agentSettingsConfiguredProviders}
+                availableProviders={agentSettingsAddProviderCandidates}
+                selectedProvider={agentProviderPickerProvider}
+                connectedProviders={agentConnectedProviders}
+                providerNames={agentProviderNames}
+                modelCountsByProvider={agentProviderPickerModelCounts}
+                modelsByProvider={agentModelsByProvider}
+                configuredModelsByProvider={agentConfiguredModelsByProvider}
+                configuredModelNamesByProvider={agentConfiguredModelNamesByProvider}
+                modelNamesByProvider={agentModelNamesByProvider}
+                activeModel={activeAgentModel}
+                hiddenModels={agentHiddenModels}
+                enabledModels={agentEnabledModels}
+                connectBusy={agentConnectBusy}
+                connectProviderId={agentConnectProviderId}
+                connectApiKey={agentConnectApiKey}
+                connectBaseUrl={agentConnectBaseUrl}
+                connectName={agentConnectCustomName}
+                inlineAuthOpenFor={agentInlineAuthOpenFor}
+                onProviderSearchChange={setAgentProviderPickerSearch}
+                onModelSearchChange={setAgentProviderPickerModelSearch}
+                onSelectProvider={(provider, connected) => {
+                  setAgentProviderPickerProvider(provider);
+                  const pretty = resolveProviderDisplayName(provider);
+                  setAgentConnectProviderId(provider);
+                  setAgentConnectProviderName(pretty);
+                  setAgentInlineAuthOpenFor(connected ? "" : provider);
+                  // agentConnectApiKey 是全局单一 state：切换查看的 provider 时必须清空，
+                  // 否则上一个 provider（如 zai）输入的 key 会残留并显示到当前 provider
+                  // （如 kimi-coding）的编辑框，点保存即把 key 错写到别的 provider。
+                  setAgentConnectApiKey("");
+                  setAgentConnectBaseUrl(
+                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                      ? resolveProviderBaseUrlHint(provider)
+                      : ""
+                  );
+                  setAgentConnectCustomName(
+                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
+                      ? (agentProviderNames[provider] || pretty)
+                      : ""
+                  );
+                }}
+                onConnectApiKeyChange={(providerId, providerName, value) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectApiKey(value);
+                }}
+                onConnectBaseUrlChange={(providerId, providerName, value) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectBaseUrl(value);
+                }}
+                onConnectNameChange={(providerId, providerName, value) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentConnectCustomName(value);
+                }}
+                resolveProviderBaseUrlHint={resolveProviderBaseUrlHint}
+                onToggleInlineAuth={(providerId, providerName) => {
+                  setAgentConnectProviderId(providerId);
+                  setAgentConnectProviderName(providerName);
+                  setAgentInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
+                  // 展开/收起密钥编辑时清空输入，杜绝上一个 provider 的 key 残留串到当前 provider。
+                  setAgentConnectApiKey("");
+                  setAgentConnectBaseUrl(
+                    isOpenAICompatibleProviderId(providerId) ? resolveProviderBaseUrlHint(providerId) : ""
+                  );
+                  setAgentConnectCustomName(
+                    isOpenAICompatibleProviderId(providerId)
+                      ? (agentProviderNames[providerId] || providerName)
+                      : ""
+                  );
+                }}
+                onConnectProvider={(providerId, connected) =>
+                  void submitAgentProviderAuthKey(providerId, connected, {
+                    // 首次连接成功后收起密钥区，露出模型列表；更新密钥时同样收起。
+                    closeInlineAuth: true
+                  })
+                }
+                onRemoveCustomProvider={(providerId) => {
+                  void removeAgentCustomProvider(providerId);
+                }}
+                removingProvider={agentDisconnectingProvider}
+                onSelectModel={(ref) => void applyAgentModel(ref)}
+                onHideModel={hideAgentModel}
+                onEnableModel={enableAgentModel}
+                getProviderTag={getAgentProviderTag}
+                canRemoveCustomProvider={(providerId) =>
+                  canRemoveAgentCustomProvider(providerId, agentProviderSourceById)
+                }
+                getProviderDisplayName={resolveProviderDisplayName}
+              />
+            )}
+          />
+    </motion.div>
+  );
+
+  const homeSessionsByRepoId = useMemo(() => {
+    const next: Record<string, ChatSessionSummary[]> = {};
+    for (const repo of repos) {
+      next[repo.id] = getVisibleRepoSessions(repo.id);
+    }
+    return next;
+  }, [repos, sidebarAgentSessionsByRepo, sidebarAgentSessionFetchLimitByRepo]);
+
+  // 首页与对话双向保活：只切换显隐，不卸载。
+  // 根因级优化——避免每次点导航空白都重挂 GlassFolder、重绘纹理、重跑进场动画。
+  const agentEditor = (
+    <div
+      className={cn(
+        "wb-editor-inner absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-background",
+        mainMode === "agent" ? "z-[1]" : "pointer-events-none invisible z-0"
+      )}
+      style={{
+        containerType: "inline-size",
+        "--chat-content-left": chatContentLeftCss(
+          generalSettings.navigatorStyle === "sailing" ? 64 : 56,
+          navigatorMinLeftGap(
+            generalSettings.navigatorStyle === "sailing" ? 64 : 56,
+            generalSettings.navigatorSide
+          )
+        )
+      } as CSSProperties}
+      aria-hidden={mainMode !== "agent"}
+      inert={mainMode !== "agent" ? true : undefined}
+    >
+      <div className="shrink-0" style={{ paddingLeft: "var(--chat-content-left)" }}>
+        <EditorSessionHeader
+          title={activeAgentSession?.title || (draftAgentSession ? appText.newSession : "会话摘要")}
+        />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className={centerColClass}>{centerPane}</div>
+      </div>
+    </div>
+  );
+
+  const homeEditor = (
+    <div
+      className={cn(
+        "absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-transparent",
+        mainMode === "home" ? "z-[2]" : "pointer-events-none invisible z-0"
+      )}
+      aria-hidden={mainMode !== "home"}
+      inert={mainMode !== "home" ? true : undefined}
+    >
+      <LocalReposOverview
+        repos={repos}
+        selectedRepoId={selectedRepo?.id || null}
+        sessionsByRepoId={homeSessionsByRepoId}
+        ensureRepoSessions={ensureHomeRepoSessions}
+        onSelectRepo={(repo) => {
+          if (selectedRepo?.id !== repo.id) setSelectedRepo(repo);
+        }}
+        onOpenRepo={openRepoFromHome}
+        onOpenSession={openSessionFromHome}
+        onCloseProject={(repo) => {
+          void closeRepository(repo);
+        }}
+        onAddProject={() => openAddProjectDialog()}
+        animateEnter={false}
+      />
+    </div>
+  );
+
+  const editor = mainMode === "home" || mainMode === "agent" ? (
+    <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+      {agentEditor}
+      {homeEditor}
+    </div>
+  ) : mainMode === "automation" ? (
+    <motion.div
+      key="automation-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+      <AutomationView
+        repos={repos}
+        getRepoSessions={getVisibleRepoSessions}
+        ensureRepoSessions={(repo) => {
+          if (hasLoadedSidebarRepoSessions(repo.id) || isRepoSessionsLoading(repo.id)) return;
+          void refreshSidebarRepoSessions(repo).catch((e) => setError(String(e)));
+        }}
+        onOpenImportProject={() => openAddProjectDialog()}
+        modelOptions={agentConfiguredModelCandidates.map((ref) => {
+          const slash = ref.indexOf("/");
+          const provider = slash >= 0 ? ref.slice(0, slash) : "";
+          const modelId = slash >= 0 ? ref.slice(slash + 1) : ref;
+          const display = getAgentModelDisplay(ref);
+          return {
+            ref,
+            label: display.label || ref,
+            provider,
+            modelId,
+          };
+        })}
+        modelInfoByRef={agentModelInfoByRef}
+      />
+    </motion.div>
+  ) : mainMode === "memory" ? (
+    <motion.div
+      key="memory-editor"
+      className={editorShellClass}
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ type: "spring", stiffness: 380, damping: 36 }}
+    >
+      <AssetGraphPanel
+        repoPath={repoPath}
+        deferForContent={false}
+        currentSessionId={activeAgentSessionId}
+        onCiteNode={handleCiteGraphNode}
+      />
+    </motion.div>
+  ) : mainMode === "plugins" ? (
+    pluginsPage
+  ) : mainMode === "settings" ? (
+    settingsPage
+  ) : null;
+
 
   async function saveAgentCustomProvider() {
     try {
@@ -11910,7 +12479,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
 
   const panel = rightSidebarPanel;
 
-  const shellToggles = (
+  const shellToggles = conversationChrome ? (
     <div className="pointer-events-none fixed inset-0 z-[1001]" aria-label="布局显隐控制">
       <ShellPanelToggle
         side="left"
@@ -11926,10 +12495,21 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         onClick={toggleRightDrawer}
       />
     </div>
-  );
+  ) : null;
 
   return (
     <AppErrorBoundary>
+      <IdleDroplets
+        enabled={generalSettings.contentProtectEnabled !== false}
+        idleMs={Math.max(1000, (generalSettings.contentProtectIdleSec || 5) * 1000)}
+        effect={
+          generalSettings.contentProtectEffect === "clouds"
+            ? "clouds"
+            : generalSettings.contentProtectEffect === "frost"
+              ? "frost"
+              : "droplets"
+        }
+      >
       <>
         {shellToggles}
         <SidebarProvider
@@ -11944,7 +12524,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             panel={panel}
             sidebarWidth={sidebarWidth}
             rightPanelWidth={rightPaneWidth}
-            sidebarCollapsed={!leftDrawerOpen}
+            sidebarCollapsed={!conversationChrome || !leftDrawerOpen}
+            sidebarInstant={sidebarInstant}
             sidebarResizing={draggingSplit?.kind === "sidebar"}
             rightPanelResizing={draggingSplit?.kind === "right"}
             onSidebarWidthChange={setSidebarWidth}
@@ -12371,287 +12952,6 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }}
         />
 
-        {showSettings ? (
-          <SettingsDialog
-            theme={theme}
-            repoPath={repoPath}
-            initialSection={settingsInitialSection}
-            runtimeStatus={runtimeStatus}
-            onClose={() => void closeSettingsModal()}
-            onToggleTheme={toggleTheme}
-            onOpenRuntimeSetup={() => {
-              setShowEnvSetup(true);
-              const unchecked = [runtimeStatus.git, runtimeStatus.entire, runtimeStatus.giteam].some(
-                (d) => !d.checked
-              );
-              if (unchecked) void refreshRuntimeRequirements();
-            }}
-            onOpenMobileControl={openMobileControlDialog}
-            onOpenAgentApi={() => setShowAgentApiDialog(true)}
-            onOpenModelManager={() => {
-              setAgentProviderPickerProvider(
-                parseModelRef(activeAgentModel || "")?.provider || agentModelProvider || ""
-              );
-              setSettingsInitialSection("models");
-              setShowSettings(true);
-            }}
-            onOpenSkillsMarketplaceSettings={() => {
-              void invoke("open_external_url", { url: "https://skillsmp.com/zh/docs/api#authentication" });
-            }}
-            generalSettings={generalSettings}
-            onGeneralSettingsChange={(next) => {
-              const nextPreset = parseAgentPermissionPreset(
-                next.permissionPreset || permissionPresetFromAutoAccept(next.autoAcceptPermissions)
-              );
-              const normalized = {
-                ...next,
-                permissionPreset: nextPreset,
-                autoAcceptPermissions: autoAcceptFromPermissionPreset(nextPreset)
-              };
-              setGeneralSettings(normalized);
-              saveGeneralSettings(GENERAL_SETTINGS_KEY, AGENT_AUTO_ACCEPT_PERMISSIONS_KEY, normalized);
-              if (nextPreset !== agentPermissionPreset) {
-                setAgentPermissionPreset(nextPreset);
-                if (activeAgentSessionId) {
-                  void ensureSessionPermissionPreset(activeAgentSessionId, nextPreset);
-                }
-              }
-            }}
-            onCheckAppUpdate={() => {
-              void (async () => {
-                setAppUpdateState({ status: "checking" });
-                const next = await checkAppUpdate();
-                setAppUpdateState(next);
-                if (next.status !== "available") return;
-                if (generalSettings.updatesAutoInstall) {
-                  await installAppUpdateNow({
-                    currentVersion: next.currentVersion,
-                    version: next.version,
-                    notes: next.notes
-                  });
-                  return;
-                }
-                // 已在设置「关于」页时不叠弹窗，直接在页内下载安装，避免要点两次。
-                if (!showSettings) {
-                  setUpdateAvailablePrompt({
-                    currentVersion: next.currentVersion,
-                    version: next.version,
-                    notes: next.notes
-                  });
-                  if (generalSettings.notificationsAgent) {
-                    void showSettingsNotification(
-                      "Update available",
-                      `Giteam ${next.version} is ready to install`
-                    );
-                  }
-                }
-              })();
-            }}
-            onInstallAppUpdate={() => {
-              void (async () => {
-                const available =
-                  appUpdateState.status === "available" || appUpdateState.status === "ready"
-                    ? {
-                        currentVersion: appUpdateState.currentVersion,
-                        version: appUpdateState.version,
-                        notes: appUpdateState.notes
-                      }
-                    : updateAvailablePrompt;
-                if (!available) return;
-                await installAppUpdateNow(available);
-              })();
-            }}
-            appVersion={appVersion}
-            appUpdateState={appUpdateState}
-            onReopenUpdateCelebration={reopenUpdateCelebration}
-            agentPort={agentServiceSettings.port}
-            agentBusy={agentServiceSettingsBusy}
-            onAgentPortChange={(port) => setAgentServiceSettings((prev) => ({ ...prev, port }))}
-            onSaveAgentApi={() => void saveAgentServiceSettingsIfNeeded()}
-            skillsmpApiKey={skillsmpApiKey}
-            skillsmpApiKeyDraft={skillsmpApiKeyDraft}
-            onSkillsmpApiKeyDraftChange={setSkillsmpApiKeyDraft}
-            onSaveSkillsmpApiKey={() => {
-              const next = skillsmpApiKeyDraft.trim();
-              setSkillsmpApiKey(next);
-              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, next);
-              setMessage(next ? "SkillsMP API Key saved" : "SkillsMP API Key cleared");
-            }}
-            onClearSkillsmpApiKey={() => {
-              setSkillsmpApiKey("");
-              setSkillsmpApiKeyDraft("");
-              saveLocalString(SKILLSMP_API_KEY_STORAGE_KEY, "");
-              setMessage("SkillsMP API Key cleared");
-            }}
-            uiZoom={uiZoom}
-            codeFontSize={codeFontSize}
-            onUiZoomChange={setUiZoom}
-            onCodeFontSizeChange={setCodeFontSize}
-            controlSettings={controlServerSettings}
-            controlBusy={controlServerSettingsBusy}
-            controlInstalled={true}
-            onControlSettingsChange={(next) => setControlServerSettings((prev) => ({ ...prev, ...next }))}
-            onSaveControlSettings={() => void saveControlServerSettingsIfNeeded()}
-            controlConnectionUrl={controlBaseUrl}
-            controlPairCode={controlPairCode}
-            controlPairQrUrl={controlPairQrUrl}
-            controlListeningPort={
-              mobileServiceStatus?.listeningPort
-              || controlAccessInfo?.port
-              || 0
-            }
-            controlPortRemapped={Boolean(
-              mobileServiceStatus?.portRemapped
-              || (
-                controlAccessInfo?.preferredPort
-                && controlAccessInfo.port
-                && controlAccessInfo.preferredPort !== controlAccessInfo.port
-              )
-            )}
-            controlSettingsDirty={controlSettingsDirty}
-            onRefreshControlPairCode={() => {
-              void forceRefreshControlPairCode();
-              void loadControlAccessInfo();
-            }}
-            onCopyControlUrl={() => {
-              void navigator.clipboard.writeText(controlBaseUrl);
-              setMessage("Control server URL copied");
-            }}
-            onMobileVisibilityChange={setSettingsMobileVisible}
-            onToggleControlService={(enabled) => void toggleControlServiceEnabled(enabled)}
-            remoteRepoServiceUrl={remoteRepoServiceSetting.effectiveUrl}
-            remoteRepoServiceDraft={remoteRepoServiceDraft}
-            remoteRepoServiceApiKeyDraft={remoteRepoServiceApiKeyDraft}
-            remoteRepoServiceBusy={remoteRepoServiceBusy}
-            remoteRepoServiceNotice={remoteRepoServiceNotice}
-            onRemoteRepoServiceDraftChange={setRemoteRepoServiceDraft}
-            onRemoteRepoServiceApiKeyDraftChange={setRemoteRepoServiceApiKeyDraft}
-            onTestRemoteRepoService={() => void testConfiguredRemoteRepoService()}
-            onSaveRemoteRepoService={() => void saveConfiguredRemoteRepoService()}
-            onResetRemoteRepoService={() => {
-              setRemoteRepoServiceDraft("");
-              setRemoteRepoServiceApiKeyDraft("");
-              void saveConfiguredRemoteRepoService("", "");
-            }}
-            runtimeChecking={runtimeChecking}
-            checkingDeps={checkingDeps}
-            installingDep={installingDep}
-            installingElapsed={installingElapsed}
-            runtimeJob={runtimeJob}
-            onRunDependencyAction={(name, action) => void runDependencyAction(name, action, { showRuntimePanel: false })}
-            onRefreshRuntime={() => void refreshRuntimeRequirements()}
-            skillsContent={settingsSkillsContent}
-            skillsCount={groupedAgentSkills.length}
-            skillsLoading={agentSkillsLoading}
-            onRefreshSkills={() => void refreshAgentSkills()}
-            onSkillsVisible={() => {
-              if (agentSkillsRepoPathRef.current !== repoPath) {
-                agentSkillsRepoPathRef.current = repoPath;
-                const cached = restoreCachedSkillsForRepo(repoPath);
-                if (!cached) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
-                return;
-              }
-              if (!agentSkillsLoading && !agentSkillsLoadedOnce) scheduleAfterInteraction(() => void refreshAgentSkills(), 220);
-            }}
-            modelsContent={(
-              <AgentProviderSettingsPanel
-                providerSearch={agentProviderPickerSearch}
-                modelSearch={agentProviderPickerModelSearch}
-                providers={agentProviderPickerCandidates}
-                selectedProvider={agentProviderPickerProvider}
-                connectedProviders={agentConnectedProviders}
-                providerNames={agentProviderNames}
-                modelCountsByProvider={agentProviderPickerModelCounts}
-                modelsByProvider={agentModelsByProvider}
-                configuredModelsByProvider={agentConfiguredModelsByProvider}
-                configuredModelNamesByProvider={agentConfiguredModelNamesByProvider}
-                modelNamesByProvider={agentModelNamesByProvider}
-                activeModel={activeAgentModel}
-                hiddenModels={agentHiddenModels}
-                enabledModels={agentEnabledModels}
-                connectBusy={agentConnectBusy}
-                connectProviderId={agentConnectProviderId}
-                connectApiKey={agentConnectApiKey}
-                connectBaseUrl={agentConnectBaseUrl}
-                connectName={agentConnectCustomName}
-                inlineAuthOpenFor={agentInlineAuthOpenFor}
-                onProviderSearchChange={setAgentProviderPickerSearch}
-                onModelSearchChange={setAgentProviderPickerModelSearch}
-                onSelectProvider={(provider, connected) => {
-                  setAgentProviderPickerProvider(provider);
-                  const pretty = resolveProviderDisplayName(provider);
-                  setAgentConnectProviderId(provider);
-                  setAgentConnectProviderName(pretty);
-                  setAgentInlineAuthOpenFor(connected ? "" : provider);
-                  // agentConnectApiKey 是全局单一 state：切换查看的 provider 时必须清空，
-                  // 否则上一个 provider（如 zai）输入的 key 会残留并显示到当前 provider
-                  // （如 kimi-coding）的编辑框，点保存即把 key 错写到别的 provider。
-                  setAgentConnectApiKey("");
-                  setAgentConnectBaseUrl(
-                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
-                      ? resolveProviderBaseUrlHint(provider)
-                      : ""
-                  );
-                  setAgentConnectCustomName(
-                    isOpenAICompatibleProviderId(provider) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID
-                      ? (agentProviderNames[provider] || pretty)
-                      : ""
-                  );
-                }}
-                onConnectApiKeyChange={(providerId, providerName, value) => {
-                  setAgentConnectProviderId(providerId);
-                  setAgentConnectProviderName(providerName);
-                  setAgentConnectApiKey(value);
-                }}
-                onConnectBaseUrlChange={(providerId, providerName, value) => {
-                  setAgentConnectProviderId(providerId);
-                  setAgentConnectProviderName(providerName);
-                  setAgentConnectBaseUrl(value);
-                }}
-                onConnectNameChange={(providerId, providerName, value) => {
-                  setAgentConnectProviderId(providerId);
-                  setAgentConnectProviderName(providerName);
-                  setAgentConnectCustomName(value);
-                }}
-                resolveProviderBaseUrlHint={resolveProviderBaseUrlHint}
-                onToggleInlineAuth={(providerId, providerName) => {
-                  setAgentConnectProviderId(providerId);
-                  setAgentConnectProviderName(providerName);
-                  setAgentInlineAuthOpenFor((prev) => prev === providerId ? "" : providerId);
-                  // 展开/收起密钥编辑时清空输入，杜绝上一个 provider 的 key 残留串到当前 provider。
-                  setAgentConnectApiKey("");
-                  setAgentConnectBaseUrl(
-                    isOpenAICompatibleProviderId(providerId) ? resolveProviderBaseUrlHint(providerId) : ""
-                  );
-                  setAgentConnectCustomName(
-                    isOpenAICompatibleProviderId(providerId)
-                      ? (agentProviderNames[providerId] || providerName)
-                      : ""
-                  );
-                }}
-                onConnectProvider={(providerId, connected) =>
-                  void submitAgentProviderAuthKey(providerId, connected, {
-                    // 首次连接成功后收起密钥区，露出模型列表；更新密钥时同样收起。
-                    closeInlineAuth: true
-                  })
-                }
-                onRemoveCustomProvider={(providerId) => {
-                  void removeAgentCustomProvider(providerId);
-                }}
-                removingProvider={agentDisconnectingProvider}
-                onSelectModel={(ref) => void applyAgentModel(ref)}
-                onHideModel={hideAgentModel}
-                onEnableModel={enableAgentModel}
-                getProviderTag={getAgentProviderTag}
-                canRemoveCustomProvider={(providerId) =>
-                  canRemoveAgentCustomProvider(providerId, agentProviderSourceById)
-                }
-                getProviderDisplayName={resolveProviderDisplayName}
-              />
-            )}
-          />
-        ) : null}
-
         {showMobileControlDialog ? (
           <MobileControlDialog
             settings={controlServerSettings}
@@ -12689,8 +12989,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           localEnabled={controlServiceEnabled}
           localNoAuth={controlAuthNoAuth}
           onOpenServiceSettings={() => {
-            setSettingsInitialSection("mobile");
-            setShowSettings(true);
+            openSettingsPage("mobile");
           }}
         />
 
@@ -13405,6 +13704,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         })() : null}
 
       </>
+      </IdleDroplets>
     </AppErrorBoundary>
   );
 }

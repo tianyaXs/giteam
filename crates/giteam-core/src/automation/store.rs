@@ -5,11 +5,11 @@ use std::sync::{Mutex, OnceLock};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::schedule::compute_next_run_at;
+use super::schedule::compute_next_run_at_with_overrides;
 use super::types::{
     new_run_id, new_task_id, now_ms, should_notify_run, AutomationRun, AutomationTask,
-    CreateTaskInput, NotifyChannel, RunStatus, RunTrigger, ScheduleKind, SessionMode, TaskFilter,
-    UpdateTaskInput,
+    CreateTaskInput, NotifyChannel, RunStatus, RunTrigger, ScheduleKind, ScheduleOverride,
+    SessionMode, TaskFilter, UpdateTaskInput,
 };
 use super::{AutomationError, AutomationResult};
 
@@ -91,6 +91,11 @@ impl AutomationStore {
         )?;
         self.ensure_column("automation_tasks", "dingtalk_webhook_url", "TEXT")?;
         self.ensure_column("automation_tasks", "dingtalk_sign_secret", "TEXT")?;
+        self.ensure_column(
+            "automation_tasks",
+            "schedule_overrides",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
         Ok(())
     }
 
@@ -121,14 +126,8 @@ impl AutomationStore {
         filter: TaskFilter,
         repo_path: Option<&str>,
     ) -> AutomationResult<Vec<AutomationTask>> {
-        let mut sql = String::from(
-            "SELECT id, title, goal_prompt, repo_path, session_mode, session_id,
-                    provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
-                    notify_on_success, notify_on_failure, notify_channel,
-                    dingtalk_webhook_url, dingtalk_sign_secret,
-                    enabled, next_run_at_ms, last_run_at_ms, last_viewed_run_at_ms, last_status, created_at_ms, updated_at_ms
-             FROM automation_tasks WHERE 1=1",
-        );
+        let mut sql = String::from(TASK_SELECT);
+        sql.push_str(" FROM automation_tasks WHERE 1=1");
         match filter {
             TaskFilter::All => {}
             TaskFilter::Enabled => sql.push_str(" AND enabled = 1"),
@@ -166,14 +165,7 @@ impl AutomationStore {
     pub fn get_task(&self, id: &str) -> AutomationResult<Option<AutomationTask>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, title, goal_prompt, repo_path, session_mode, session_id,
-                        provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
-                        notify_on_success, notify_on_failure, notify_channel,
-                        dingtalk_webhook_url, dingtalk_sign_secret,
-                        enabled, next_run_at_ms, last_run_at_ms, last_viewed_run_at_ms, last_status, created_at_ms, updated_at_ms
-                 FROM automation_tasks WHERE id = ?1",
-            )
+            .prepare(&format!("{TASK_SELECT} FROM automation_tasks WHERE id = ?1"))
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
         stmt.query_row(params![id], |row| Ok(row_to_task(row)?))
             .optional()
@@ -206,7 +198,7 @@ impl AutomationStore {
             .to_string();
         let enabled = input.enabled.unwrap_or(true);
         let next = if enabled {
-            compute_next_run_at(input.schedule_kind, &input.schedule_expr, now)?
+            compute_next_run_at_with_overrides(input.schedule_kind, &input.schedule_expr, now, &[])?
         } else {
             None
         };
@@ -243,8 +235,9 @@ impl AutomationStore {
                     provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
                     notify_on_success, notify_on_failure, notify_channel,
                     dingtalk_webhook_url, dingtalk_sign_secret,
-                    enabled, next_run_at_ms, last_run_at_ms, last_status, created_at_ms, updated_at_ms
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL,NULL,?20,?20)",
+                    enabled, next_run_at_ms, last_run_at_ms, last_status, created_at_ms, updated_at_ms,
+                    schedule_overrides
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL,NULL,?20,?20,?21)",
                 params![
                     id,
                     input.title.trim(),
@@ -266,6 +259,7 @@ impl AutomationStore {
                     bool_i(enabled),
                     next,
                     now,
+                    "[]",
                 ],
             )
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
@@ -338,6 +332,8 @@ impl AutomationStore {
         if let Some(level) = input.thinking_level {
             task.thinking_level = normalize_thinking_level(level.as_deref());
         }
+        let schedule_changed =
+            input.schedule_kind.is_some() || input.schedule_expr.is_some();
         if let Some(kind) = input.schedule_kind {
             task.schedule_kind = kind;
         }
@@ -349,6 +345,12 @@ impl AutomationStore {
                 ));
             }
             task.schedule_expr = e.to_string();
+        }
+        if let Some(overrides) = input.schedule_overrides {
+            task.schedule_overrides = sanitize_overrides(overrides)?;
+        } else if schedule_changed {
+            // 源日程变了，旧例外作废
+            task.schedule_overrides.clear();
         }
         if let Some(tz) = input.timezone {
             let t = tz.trim();
@@ -378,10 +380,19 @@ impl AutomationStore {
             task.dingtalk_webhook_url.as_deref(),
         )?;
         // 校验日程仍可解析
-        let _ = compute_next_run_at(task.schedule_kind, &task.schedule_expr, now_ms())?;
+        let _ = compute_next_run_at_with_overrides(
+            task.schedule_kind,
+            &task.schedule_expr,
+            now_ms(),
+            &task.schedule_overrides,
+        )?;
         if task.enabled {
-            task.next_run_at_ms =
-                compute_next_run_at(task.schedule_kind, &task.schedule_expr, now_ms())?;
+            task.next_run_at_ms = compute_next_run_at_with_overrides(
+                task.schedule_kind,
+                &task.schedule_expr,
+                now_ms(),
+                &task.schedule_overrides,
+            )?;
         }
         task.updated_at_ms = now_ms();
         self.persist_task(&task)?;
@@ -395,8 +406,12 @@ impl AutomationStore {
         task.enabled = enabled;
         task.updated_at_ms = now_ms();
         if enabled {
-            task.next_run_at_ms =
-                compute_next_run_at(task.schedule_kind, &task.schedule_expr, now_ms())?;
+            task.next_run_at_ms = compute_next_run_at_with_overrides(
+                task.schedule_kind,
+                &task.schedule_expr,
+                now_ms(),
+                &task.schedule_overrides,
+            )?;
         } else {
             task.next_run_at_ms = None;
         }
@@ -429,7 +444,8 @@ impl AutomationStore {
                     provider=?7, model=?8, thinking_level=?9, schedule_kind=?10, schedule_expr=?11, timezone=?12,
                     notify_on_success=?13, notify_on_failure=?14, notify_channel=?15,
                     dingtalk_webhook_url=?16, dingtalk_sign_secret=?17, enabled=?18,
-                    next_run_at_ms=?19, last_run_at_ms=?20, last_viewed_run_at_ms=?21, last_status=?22, updated_at_ms=?23
+                    next_run_at_ms=?19, last_run_at_ms=?20, last_viewed_run_at_ms=?21, last_status=?22, updated_at_ms=?23,
+                    schedule_overrides=?24
                  WHERE id=?1",
                 params![
                     task.id,
@@ -455,6 +471,7 @@ impl AutomationStore {
                     task.last_viewed_run_at_ms,
                     task.last_status,
                     task.updated_at_ms,
+                    serialize_overrides(&task.schedule_overrides),
                 ],
             )
             .map_err(|e| AutomationError::Persistence(e.to_string()))?;
@@ -654,8 +671,12 @@ impl AutomationStore {
         task.last_status = Some(status.as_str().to_string());
         task.updated_at_ms = now;
         if advance_schedule && task.enabled {
-            task.next_run_at_ms =
-                compute_next_run_at(task.schedule_kind, &task.schedule_expr, now)?;
+            task.next_run_at_ms = compute_next_run_at_with_overrides(
+                task.schedule_kind,
+                &task.schedule_expr,
+                now,
+                &task.schedule_overrides,
+            )?;
             // once_at 跑完后自动暂停
             if task.schedule_kind == ScheduleKind::OnceAt && task.next_run_at_ms.is_none() {
                 task.enabled = false;
@@ -669,7 +690,12 @@ impl AutomationStore {
     pub fn recalibrate_next_runs(&self) -> AutomationResult<()> {
         let now = now_ms();
         for task in self.list_tasks(TaskFilter::Enabled, None)? {
-            let next = compute_next_run_at(task.schedule_kind, &task.schedule_expr, now)?;
+            let next = compute_next_run_at_with_overrides(
+                task.schedule_kind,
+                &task.schedule_expr,
+                now,
+                &task.schedule_overrides,
+            )?;
             self.conn
                 .execute(
                     "UPDATE automation_tasks SET next_run_at_ms = ?2, updated_at_ms = ?3 WHERE id = ?1",
@@ -732,7 +758,12 @@ fn validate_create(input: &CreateTaskInput) -> AutomationResult<()> {
             ));
         }
     }
-    let _ = compute_next_run_at(input.schedule_kind, &input.schedule_expr, now_ms())?;
+    let _ = compute_next_run_at_with_overrides(
+        input.schedule_kind,
+        &input.schedule_expr,
+        now_ms(),
+        &[],
+    )?;
     validate_notify_config(
         input.notify_channel.unwrap_or_default(),
         input.notify_on_success.unwrap_or(true),
@@ -776,10 +807,59 @@ fn normalize_thinking_level(raw: Option<&str>) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+const TASK_SELECT: &str = "SELECT id, title, goal_prompt, repo_path, session_mode, session_id,
+                    provider, model, thinking_level, schedule_kind, schedule_expr, timezone,
+                    notify_on_success, notify_on_failure, notify_channel,
+                    dingtalk_webhook_url, dingtalk_sign_secret,
+                    enabled, next_run_at_ms, last_run_at_ms, last_viewed_run_at_ms, last_status,
+                    created_at_ms, updated_at_ms, schedule_overrides";
+
+fn serialize_overrides(overrides: &[ScheduleOverride]) -> String {
+    serde_json::to_string(overrides).unwrap_or_else(|_| "[]".into())
+}
+
+fn parse_overrides_json(raw: &str) -> Vec<ScheduleOverride> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<ScheduleOverride>>(trimmed).unwrap_or_default()
+}
+
+fn sanitize_overrides(overrides: Vec<ScheduleOverride>) -> AutomationResult<Vec<ScheduleOverride>> {
+    let mut out = Vec::with_capacity(overrides.len());
+    for ovr in overrides {
+        let origin = ovr.origin_date.trim();
+        if chrono::NaiveDate::parse_from_str(origin, "%Y-%m-%d").is_err() {
+            return Err(AutomationError::InvalidInput(format!(
+                "invalid origin_date: {}",
+                ovr.origin_date
+            )));
+        }
+        if ovr.hour > 23 || ovr.minute > 59 {
+            return Err(AutomationError::InvalidInput(
+                "override hour/minute out of range".into(),
+            ));
+        }
+        // 同一 originDate 只保留最后一条
+        if let Some(idx) = out.iter().position(|x: &ScheduleOverride| x.origin_date == origin) {
+            out.remove(idx);
+        }
+        out.push(ScheduleOverride {
+            origin_date: origin.to_string(),
+            day_offset: ovr.day_offset,
+            hour: ovr.hour,
+            minute: ovr.minute,
+        });
+    }
+    Ok(out)
+}
+
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationTask> {
     let session_mode = SessionMode::parse(&row.get::<_, String>(4)?).unwrap_or(SessionMode::New);
     let schedule_kind =
         ScheduleKind::parse(&row.get::<_, String>(9)?).unwrap_or(ScheduleKind::Interval);
+    let overrides_raw: String = row.get(24).unwrap_or_else(|_| "[]".into());
     Ok(AutomationTask {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -792,6 +872,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationTask> {
         thinking_level: row.get(8)?,
         schedule_kind,
         schedule_expr: row.get(10)?,
+        schedule_overrides: parse_overrides_json(&overrides_raw),
         timezone: row.get(11)?,
         notify_on_success: row.get::<_, i64>(12)? != 0,
         notify_on_failure: row.get::<_, i64>(13)? != 0,
@@ -933,6 +1014,7 @@ mod tests {
             thinking_level: None,
             schedule_kind: ScheduleKind::Interval,
             schedule_expr: "3600".into(),
+            schedule_overrides: Vec::new(),
             timezone: "local".into(),
             notify_on_success: false,
             notify_on_failure: true,

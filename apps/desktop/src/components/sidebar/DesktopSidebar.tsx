@@ -9,26 +9,20 @@ import {
   MoreHorizontal,
   PencilLine,
   Search,
-  Settings,
-  Smartphone,
-  Sparkles,
   SquarePen,
   SquareTerminal,
-  Waypoints,
 } from "lucide-react";
 import Lenis from "lenis";
 import { motion, useReducedMotion } from "motion/react";
-import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { OptionalRightPaneTab, RightPaneTab } from "../common/AppChromeIcons";
 import { BranchPickerNavItem, type BranchPickerNavItemProps } from "../git/BranchPickerNavItem";
-import { AutomationIcon } from "../icons";
 
 import type { AppText } from "../../lib/generalSettings";
 import type { AgentChatSession } from "../../lib/agentSessions";
-import { firstLetter } from "../../lib/textFormatting";
-import type { GitUserIdentity, RepositoryEntry } from "../../lib/types";
+import type { RepositoryEntry } from "../../lib/types";
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED } from "../../lib/featureFlags";
 import {
@@ -39,7 +33,6 @@ import {
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,
@@ -85,7 +78,6 @@ type DesktopSidebarProps = {
   activeSessionId: string;
   draftRepoId: string;
   sessionBusyById: Record<string, boolean>;
-  gitUserIdentity: GitUserIdentity;
   getVisibleRepoSessions: (repoId: string) => AgentChatSession[];
   hasMoreRepoSessions: (repoId: string) => boolean;
   isRepoSessionsLoading: (repoId: string) => boolean;
@@ -109,29 +101,23 @@ type DesktopSidebarProps = {
   rightModules: Record<RightPaneTab, boolean>;
   branchPicker?: Omit<BranchPickerNavItemProps, "text"> | null;
   onOpenRightPane: (tab: RightPaneTab) => void;
-  onOpenSettings: () => void;
-  onOpenMobilePairQr: () => void;
-  mobileClientConnected?: boolean;
   remoteRepoActive: boolean;
   onOpenRemoteRepos: () => void;
-  automationActive?: boolean;
-  onOpenAutomation?: () => void;
 };
 
 const SECTION_LABEL_CLASS = "h-6 min-w-0 flex-1 px-1.5 text-sm font-medium text-muted-foreground";
 
-type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser" | "worktree">;
+/** 对话页侧栏工具：只保留会话上下文相关入口；记忆/任务/插件已上移到总导航。 */
+type LeftNavPaneTab = Exclude<RightPaneTab, "changes" | "remoteRepos" | "browser" | "worktree" | "assetGraph" | "skills">;
 
 const LEFT_NAV_PANES: Array<{
   tab: LeftNavPaneTab;
   icon: React.ComponentType<{ className?: string }>;
-  labelKey?: keyof Pick<AppText, "terminal" | "skills">;
+  labelKey?: keyof Pick<AppText, "terminal">;
   /** labelKey 覆盖不到的 pane 用固定文案（对齐 tabLabels 的「远程仓库」做法）。 */
   label?: string;
 }> = [
   { tab: "terminal", icon: SquareTerminal, labelKey: "terminal" },
-  { tab: "skills", icon: Sparkles, labelKey: "skills" },
-  { tab: "assetGraph", icon: Waypoints, label: "记忆" }
 ];
 
 const SIDEBAR_SCROLL_EDGE_EPSILON = 1;
@@ -222,7 +208,6 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     activeSessionId,
     draftRepoId,
     sessionBusyById,
-    gitUserIdentity,
     getVisibleRepoSessions,
     hasMoreRepoSessions,
     isRepoSessionsLoading,
@@ -246,13 +231,8 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
     rightModules,
     branchPicker,
     onOpenRightPane,
-    onOpenSettings,
-    onOpenMobilePairQr,
-    mobileClientConnected = false,
     remoteRepoActive,
     onOpenRemoteRepos,
-    automationActive = false,
-    onOpenAutomation,
   } = props;
 
   const { pinnedRepos, otherRepos } = useMemo(() => {
@@ -268,11 +248,7 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
   return (
     <Sidebar
       collapsible="none"
-      className="h-full overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
-      style={{
-        "--sidebar": "color-mix(in srgb, var(--bg) 92%, #8f8270 8%)",
-        backgroundColor: "var(--sidebar)",
-      } as CSSProperties}
+      className="h-full overflow-hidden rounded-l-[14px] border-0 bg-sidebar text-sidebar-foreground"
     >
       <SidebarHeader className="shrink-0 gap-1 py-2 pl-[10px] pr-2 pt-10" data-tauri-drag-region>
         <SidebarMenu className="gap-0.5">
@@ -287,14 +263,6 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
             label={text.search}
             onClick={onOpenSearch}
           />
-          {onOpenAutomation ? (
-            <NavItem
-              icon={AutomationIcon}
-              label={text.automation}
-              isActive={automationActive}
-              onClick={onOpenAutomation}
-            />
-          ) : null}
           {REMOTE_REPO_MODULE_ENABLED ? (
             <NavItem
               icon={Cloud}
@@ -406,39 +374,6 @@ export function DesktopSidebar(props: DesktopSidebarProps) {
         ) : null}
 
       </SmoothSidebarContent>
-
-      <SidebarFooter className="shrink-0 p-2">
-        <SidebarMenu>
-          <SidebarMenuItem className="flex items-center gap-1">
-            {/* 设置与手机入口并排独立高亮，避免设置 hover/active 背景盖住手机图标 */}
-            <SidebarMenuButton
-              size="default"
-              className="h-9 min-w-0 flex-1 text-sm [&>svg]:size-[18px]"
-              onClick={onOpenSettings}
-            >
-              <Settings />
-              <span className="truncate">{text.settings}</span>
-              <span className="sr-only">{gitUserIdentity.name || gitUserIdentity.email || getIdentityInitial(gitUserIdentity)}</span>
-            </SidebarMenuButton>
-            <button
-              type="button"
-              title={mobileClientConnected ? "手机已连接" : "连接你的手机"}
-              aria-label={mobileClientConnected ? "手机已连接" : "连接你的手机"}
-              className="flex size-9 shrink-0 appearance-none items-center justify-center rounded-md border-0 bg-transparent text-muted-foreground outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2"
-              onClick={() => {
-                onOpenMobilePairQr();
-              }}
-            >
-              <span className="relative inline-flex">
-                <Smartphone className="size-[16px]" strokeWidth={1.75} />
-                {mobileClientConnected ? (
-                  <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-emerald-500 ring-2 ring-sidebar" />
-                ) : null}
-              </span>
-            </button>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
     </Sidebar>
   );
 }
@@ -459,7 +394,7 @@ function NavItem({ icon: Icon, label, onClick, disabled = false, isActive = fals
         size={size}
         isActive={isActive}
         disabled={disabled}
-        className="h-8 text-sm transition-[background-color,color,box-shadow] hover:bg-[color-mix(in_srgb,#8f8270_10%,transparent)] active:bg-[color-mix(in_srgb,#8f8270_14%,transparent)] data-[active=true]:!bg-[color-mix(in_srgb,#8f8270_18%,var(--bg)_82%)] data-[active=true]:!text-sidebar-foreground data-[active=true]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,#8f8270_16%,transparent)] data-[active=true]:hover:!bg-[color-mix(in_srgb,#8f8270_21%,var(--bg)_79%)]"
+        className="h-8 text-sm transition-[background-color,color] hover:bg-black/[0.035] active:bg-black/[0.05] data-[active=true]:!bg-black/[0.05] data-[active=true]:!text-sidebar-foreground data-[active=true]:hover:!bg-black/[0.05] dark:hover:bg-[color-mix(in_srgb,var(--chrome-warm)_10%,transparent)] dark:active:bg-[color-mix(in_srgb,var(--chrome-warm)_14%,transparent)] dark:data-[active=true]:!bg-[color-mix(in_srgb,var(--chrome-warm)_18%,var(--bg)_82%)] dark:data-[active=true]:hover:!bg-[color-mix(in_srgb,var(--chrome-warm)_21%,var(--bg)_79%)]"
         onClick={onClick}
       >
         <Icon />
@@ -509,11 +444,6 @@ function FilledPinIcon({ className }: { className?: string }) {
       <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
     </svg>
   );
-}
-
-function getIdentityInitial(identity: GitUserIdentity): string {
-  const value = identity.name.trim() || identity.email.trim() || "G";
-  return firstLetter(value).toUpperCase();
 }
 
 type ProjectSectionProps = {
@@ -957,7 +887,7 @@ const SessionRow = memo(function SessionRow({ title, active = false, running = f
           "relative flex h-8 w-full min-w-0 items-center rounded-lg border-0 bg-transparent py-0 pl-[34px] pr-3 text-left text-sm text-sidebar-foreground outline-none ring-sidebar-ring transition-[background-color,color,box-shadow] duration-150 ease-out hover:bg-[color-mix(in_srgb,var(--text)_5%,transparent)] hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-[color-mix(in_srgb,var(--text)_7%,transparent)]",
           hasTrailing && "pr-[58px]",
           hasArchive && !hasTrailing && "pr-9",
-          active && "bg-[color-mix(in_srgb,var(--text)_8%,transparent)] font-medium text-sidebar-accent-foreground shadow-[inset_0_0_0_1px_rgba(0,0,0,0.025)] hover:bg-[color-mix(in_srgb,var(--text)_8%,transparent)]"
+          active && "bg-[color-mix(in_srgb,var(--text)_8%,transparent)] font-medium text-sidebar-accent-foreground hover:bg-[color-mix(in_srgb,var(--text)_8%,transparent)]"
         )}
         data-active={active}
         onClick={onClick}

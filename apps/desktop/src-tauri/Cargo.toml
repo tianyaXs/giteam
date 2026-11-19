@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.57"
+version = "0.2.58"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -65,8 +65,12 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["std", "NSButton", "NSControl", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", features = ["NSGeometry", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3.2", features = ["std", "NSBitmapImageRep", "NSButton", "NSControl", "NSEvent", "NSImage", "NSImageRep", "NSMenu", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSString", "objc2-core-foundation"] }
+# IdleDroplets 折射底板：WKWebView.takeSnapshot 抓「当前可视像素」，
+# 避开 DOM→foreignObject 与 Virtuoso 虚拟列表不兼容的问题。
+objc2-web-kit = { version = "0.3.2", features = ["WKSnapshotConfiguration", "WKWebView", "block2"] }
+block2 = "0.6"
 # agent 覆盖层窗口转 NSPanel：普通 NSWindow 在 release 打包后置顶失效、盖不住全屏
 # 空间（tauri#9556/#5566）；NonActivatingPanel + FullScreenAuxiliary 配方照
 # tauri-macos-spotlight-example。rev 锁 v2.1 分支头（2026-11-10）。

@@ -35,8 +35,31 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsDraft = {
   maxToolIterations: 0,
   closeBehavior: "tray",
   navigatorSide: "right",
-  navigatorScope: "all"
+  navigatorScope: "all",
+  navigatorStyle: "rail",
+  contentProtectEnabled: true,
+  contentProtectIdleSec: 5,
+  contentProtectEffect: "droplets",
 };
+
+const CONTENT_PROTECT_IDLE_SECS = new Set([5, 10, 30, 60, 120, 300]);
+const CONTENT_PROTECT_EFFECTS = new Set(["droplets", "clouds", "frost"]);
+
+export function normalizeContentProtectIdleSec(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_GENERAL_SETTINGS.contentProtectIdleSec;
+  const sec = Math.floor(n);
+  return CONTENT_PROTECT_IDLE_SECS.has(sec) ? sec : DEFAULT_GENERAL_SETTINGS.contentProtectIdleSec;
+}
+
+export function normalizeContentProtectEffect(
+  value: unknown,
+): "droplets" | "clouds" | "frost" {
+  if (typeof value === "string" && CONTENT_PROTECT_EFFECTS.has(value)) {
+    return value as "droplets" | "clouds" | "frost";
+  }
+  return DEFAULT_GENERAL_SETTINGS.contentProtectEffect;
+}
 
 export type AppLocale = "zh-CN" | "zh-TW" | "en-US";
 
@@ -200,6 +223,10 @@ export function loadGeneralSettings(
           : "tray",
       navigatorSide: parsed.navigatorSide === "left" ? "left" : "right",
       navigatorScope: parsed.navigatorScope === "sent" ? "sent" : "all",
+      navigatorStyle: parsed.navigatorStyle === "sailing" ? "sailing" : "rail",
+      contentProtectEnabled: parsed.contentProtectEnabled !== false,
+      contentProtectIdleSec: normalizeContentProtectIdleSec(parsed.contentProtectIdleSec),
+      contentProtectEffect: normalizeContentProtectEffect(parsed.contentProtectEffect),
       // 数值字段防御归一：手改 localStorage 产生的 NaN/负数/小数组值回退为 0（不限制）。
       maxToolIterations:
         typeof parsed.maxToolIterations === "number" &&

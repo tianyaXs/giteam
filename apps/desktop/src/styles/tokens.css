@@ -1,14 +1,17 @@
 :root {
-  /* VSCode-like dark theme tokens */
-  --bg: #1e1e1e;
-  --bg-elev: #252526;
-  --bg-panel: #252526;
-  --bg-soft: #2d2d2d;
-  --surface: #252526;
+  /*
+   * 深色 Codex：微色阶 + 轻右影，不用硬线。
+   * 轨条最深 → 侧栏微亮 → 内容最亮。
+   */
+  --bg: #2b2b2d;
+  --bg-elev: #2b2b2d;
+  --bg-panel: #242426;
+  --bg-soft: #323234;
+  --surface: #2b2b2d;
   --text: #d4d4d4;
-  --muted: #9da5b4;
-  --line: #3c3c3c;
-  --border: #3c3c3c;
+  --muted: #9a9aa3;
+  --line: #3a3a42;
+  --border: #3a3a42;
   --accent: #0e639c;
   --accent-soft: rgba(14, 99, 156, 0.28);
   --primary: #0e639c;
@@ -17,21 +20,38 @@
   --interactive-hover: rgba(255, 255, 255, 0.04);
   --interactive-active: rgba(72, 104, 145, 0.2);
   --interactive-active-strong: rgba(72, 104, 145, 0.3);
-  --sidebar-bg: #222325;
+  /* 深色 chrome：中性灰锚，避免暖棕染泥；对齐 Fluid Tooltip 白图标 */
+  --chrome-warm: #8a8a90;
+  --activity-bg: #1a1a1a;
+  --sidebar-bg: #242426;
+  --chrome-line: rgba(255, 255, 255, 0.06);
+  --nav-icon: rgba(255, 255, 255, 0.86);
+  --nav-icon-active: #ffffff;
+  --nav-item-active-bg: #323234;
+  --nav-item-hover-bg: rgba(255, 255, 255, 0.04);
+  --nav-item-active-ring: transparent;
+  --nav-tooltip-bg: #141414;
+  --nav-tooltip-fg: #f2f2f3;
+  --nav-tooltip-muted: #89898e;
+  /* 对齐 composer 旋转白标：透明底 + invert，非白盘黑标 */
+  --nav-logo-bg: transparent;
+  --nav-logo-border: rgba(255, 255, 255, 0.14);
+  --nav-logo-filter: invert(1);
   --sidebar-hover: rgba(255, 255, 255, 0.045);
   --sidebar-active: rgba(255, 255, 255, 0.08);
   --sidebar-selected: var(--selection-sidebar-bg);
-  --selection-bg: color-mix(in srgb, var(--text) 8%, transparent);
-  --selection-bg-subtle: color-mix(in srgb, var(--text) 6%, transparent);
-  --selection-bg-hover: color-mix(in srgb, var(--text) 10%, transparent);
-  --selection-border: color-mix(in srgb, var(--text) 9%, transparent);
+  --sidebar-accent: rgba(255, 255, 255, 0.08);
+  --selection-bg: rgba(255, 255, 255, 0.08);
+  --selection-bg-subtle: rgba(255, 255, 255, 0.06);
+  --selection-bg-hover: rgba(255, 255, 255, 0.1);
+  --selection-border: rgba(255, 255, 255, 0.09);
   --selection-foreground: var(--text);
-  --selection-sidebar-bg: color-mix(in srgb, var(--text) 8%, transparent);
-  --selection-sidebar-bg-hover: color-mix(in srgb, var(--text) 10%, transparent);
-  --selection-sidebar-border: color-mix(in srgb, var(--text) 9%, transparent);
-  --message-surface: rgba(255, 255, 255, 0.035);
-  --message-user-surface: rgba(83, 110, 144, 0.18);
-  --composer-surface: rgba(37, 38, 40, 0.92);
+  --selection-sidebar-bg: #323234;
+  --selection-sidebar-bg-hover: #38383a;
+  --selection-sidebar-border: transparent;
+  --message-surface: rgba(255, 255, 255, 0.04);
+  --message-user-surface: rgba(83, 110, 144, 0.16);
+  --composer-surface: #38383a;
   --switch-off-bg: #34363a;
   --switch-off-border: #4a4d52;
   --switch-thumb-bg: #f3f4f6;
@@ -95,49 +115,78 @@
   --gt-sidebar-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --gt-sidebar-motion-distance: 18px;
 
-  /* Elevation: Shadows (Dark) */
-  --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --gt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.30);
-  --gt-shadow-3: 0 4px 16px rgba(0, 0, 0, 0.35);
-  --gt-shadow-4: 0 8px 32px rgba(0, 0, 0, 0.40);
+  /*
+   * 会话栏浮起：阴影落在导航上（左）+ 内容上（右）；导航本身不投影。
+   * 深浅色同一 4px/10px 几何，只调墨色。
+   */
+  --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --gt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --gt-shadow-3: 0 4px 14px rgba(0, 0, 0, 0.26);
+  --gt-shadow-4: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --gt-elev-rail: none;
+  /* 略加强：内容区与左侧栏交界更清晰，仍保持轻软不糊 */
+  --gt-elev-sidebar:
+    -4px 0 12px rgba(0, 0, 0, 0.3),
+    4px 0 12px rgba(0, 0, 0, 0.3);
+  --gt-elev-card: 0 1px 2px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.18);
 }
 
 :root[data-theme="light"] {
-  /* VSCode-like light theme tokens */
+  /*
+   * Codex 式无分割线：轨条浅底作画布，侧栏纯白面板靠软阴影浮起。
+   * 不用 1px 硬线，也不靠大块冷灰。
+   */
   --bg: #ffffff;
-  --bg-elev: #f3f3f3;
-  --bg-panel: #f3f3f3;
-  --bg-soft: #eaeaea;
+  --bg-elev: #ffffff;
+  --bg-panel: #ebebef;
+  --bg-soft: #e6e6eb;
   --surface: #ffffff;
   --text: #1e1e1e;
-  --muted: #5f6368;
-  --line: #e5e5e5;
-  --border: #e5e5e5;
+  --muted: #6b6b73;
+  --line: #ececef;
+  --border: #ececef;
   --accent: #0066b8;
   --accent-soft: rgba(0, 102, 184, 0.18);
   --primary: #0066b8;
   --primary-soft: rgba(0, 102, 184, 0.12);
   --primary-glow: rgba(0, 102, 184, 0.2);
-  --interactive-hover: rgba(0, 0, 0, 0.045);
+  --interactive-hover: rgba(0, 0, 0, 0.04);
   --interactive-active: rgba(0, 102, 184, 0.12);
   --interactive-active-strong: rgba(0, 102, 184, 0.18);
-  --sidebar-bg: #f2f4f7;
-  --sidebar-hover: rgba(34, 36, 40, 0.05);
-  --sidebar-active: rgba(34, 36, 40, 0.07);
+  --chrome-warm: #8a8a90;
+  --activity-bg: #ebebef;
+  --sidebar-bg: #ffffff;
+  --chrome-line: rgba(0, 0, 0, 0.06);
+  --nav-icon: rgba(30, 30, 30, 0.45);
+  --nav-icon-active: #141416;
+  --nav-item-active-bg: rgba(0, 0, 0, 0.06);
+  --nav-item-hover-bg: rgba(0, 0, 0, 0.035);
+  --nav-item-active-ring: transparent;
+  --nav-tooltip-bg: #ffffff;
+  --nav-tooltip-fg: var(--text);
+  --nav-tooltip-muted: var(--muted);
+  /* 浅色：无圆盘/描边，黑标直接落在轨条与选中面上 */
+  --nav-logo-bg: transparent;
+  --nav-logo-border: transparent;
+  --nav-logo-filter: none;
+  --sidebar-hover: rgba(0, 0, 0, 0.04);
+  --sidebar-active: rgba(0, 0, 0, 0.07);
   --sidebar-selected: var(--selection-sidebar-bg);
-  --selection-bg: color-mix(in srgb, var(--text) 7%, transparent);
-  --selection-bg-subtle: color-mix(in srgb, var(--text) 5%, transparent);
-  --selection-bg-hover: color-mix(in srgb, var(--text) 9%, transparent);
-  --selection-border: color-mix(in srgb, var(--text) 8%, transparent);
+  --sidebar-accent: rgba(0, 0, 0, 0.06);
+  --selection-bg: rgba(0, 0, 0, 0.05);
+  --selection-bg-subtle: rgba(0, 0, 0, 0.035);
+  --selection-bg-hover: rgba(0, 0, 0, 0.07);
+  --selection-border: rgba(0, 0, 0, 0.08);
   --selection-foreground: var(--text);
-  --selection-sidebar-bg: color-mix(in srgb, var(--text) 7%, transparent);
-  --selection-sidebar-bg-hover: color-mix(in srgb, var(--text) 9%, transparent);
-  --selection-sidebar-border: color-mix(in srgb, var(--text) 8%, transparent);
-  --message-surface: rgba(20, 24, 31, 0.03);
+  /* Codex：选中是浅灰圆角块，不是白底描边 */
+  --selection-sidebar-bg: rgba(0, 0, 0, 0.05);
+  --selection-sidebar-bg-hover: rgba(0, 0, 0, 0.07);
+  --selection-sidebar-border: transparent;
+  --message-surface: rgba(0, 0, 0, 0.025);
   --message-user-surface: rgba(0, 102, 184, 0.08);
-  --composer-surface: rgba(255, 255, 255, 0.96);
-  --switch-off-bg: #eef1f5;
-  --switch-off-border: #d2d8e1;
+  --composer-surface: #ffffff;
+  --switch-off-bg: #ececef;
+  --switch-off-border: #d4d4d8;
   --switch-thumb-bg: #ffffff;
   --success: #1f8f43;
   --danger: #c2364f;
@@ -145,9 +194,14 @@
   --add: #dcf6e3;
   --del: #ffe1e6;
 
-  /* Elevation: Shadows (Light overrides) */
-  --gt-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
-  --gt-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.08);
-  --gt-shadow-3: 0 4px 16px rgba(0, 0, 0, 0.10);
-  --gt-shadow-4: 0 8px 32px rgba(0, 0, 0, 0.14);
+  /* 与深色同一套几何：左落导航、右落内容，会话栏突出 */
+  --gt-shadow-1: 0 1px 2px rgba(15, 18, 28, 0.04), 0 2px 8px rgba(15, 18, 28, 0.04);
+  --gt-shadow-2: 0 2px 8px rgba(15, 18, 28, 0.05), 0 8px 20px rgba(15, 18, 28, 0.06);
+  --gt-shadow-3: 0 4px 12px rgba(15, 18, 28, 0.06), 0 14px 28px rgba(15, 18, 28, 0.08);
+  --gt-shadow-4: 0 8px 20px rgba(15, 18, 28, 0.07), 0 24px 48px rgba(15, 18, 28, 0.1);
+  --gt-elev-rail: none;
+  --gt-elev-sidebar:
+    -4px 0 10px rgba(15, 18, 28, 0.06),
+    4px 0 10px rgba(15, 18, 28, 0.06);
+  --gt-elev-card: 0 1px 2px rgba(15, 18, 28, 0.04), 0 6px 16px rgba(15, 18, 28, 0.05);
 }

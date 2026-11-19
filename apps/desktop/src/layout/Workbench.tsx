@@ -18,6 +18,8 @@ export function Workbench(props: {
   sidebarWidth: number;
   rightPanelWidth?: number;
   sidebarCollapsed?: boolean;
+  /** 首页→对话等场景：侧栏一次到位，避免与内容显隐叠出二次闪动。 */
+  sidebarInstant?: boolean;
   sidebarResizing: boolean;
   rightPanelResizing?: boolean;
   onSidebarWidthChange: (width: number) => void;
@@ -30,12 +32,14 @@ export function Workbench(props: {
   const reduceMotion = useReducedMotion();
   // 临界阻尼（damping≈2√(stiffness·mass)≈36.4）：消除 width 过冲，让 editor 宽度随
   // 侧栏收放单调变化 → contentLeft（纯 CSS calc 即时跟随）单调 → 消息流/进度卡/标题不再来回滑动。
-  const sidebarTransition = reduceMotion
-    ? { duration: 0 }
-    : { type: "spring" as const, stiffness: 360, damping: 38, mass: 0.92 };
-  const splitterTransition = reduceMotion
-    ? { duration: 0 }
-    : { duration: 0.22, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] };
+  const sidebarTransition =
+    reduceMotion || props.sidebarInstant
+      ? { duration: 0 }
+      : { type: "spring" as const, stiffness: 360, damping: 38, mass: 0.92 };
+  const splitterTransition =
+    reduceMotion || props.sidebarInstant
+      ? { duration: 0 }
+      : { duration: 0.22, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] };
   const cls =
     (props.panelPlacement === "right"
       ? "wb wb-panel-right"
@@ -49,6 +53,7 @@ export function Workbench(props: {
   const hasActivity = Boolean(props.activityBar);
   const rightPanelOpen = props.panelPlacement === "right";
   const style = {
+    "--wb-activity-width": hasActivity ? "84px" : "0px",
     "--wb-sidebar-width": `${resolvedSidebarWidth}px`,
     "--wb-sidebar-current-width": props.sidebarCollapsed ? "0px" : `${resolvedSidebarWidth}px`,
     "--wb-right-width": `${resolvedRightPanelWidth}px`,
@@ -65,8 +70,12 @@ export function Workbench(props: {
         className="wb-activity"
         style={{
           display: hasActivity ? "block" : "none",
-          flex: hasActivity ? "0 0 56px" : "0 0 0px",
-          width: hasActivity ? 56 : 0
+          // 84px：三色按钮约 x=16..70，右侧留出余量，避免贴导航右缘被切割
+          flex: hasActivity ? "0 0 84px" : "0 0 0px",
+          width: hasActivity ? 84 : 0,
+          overflow: "visible",
+          // 低于会话栏：阴影落在导航上，会话栏视觉突出
+          zIndex: 2,
         }}
       >
         {props.activityBar}
@@ -82,7 +91,9 @@ export function Workbench(props: {
           flex: "0 0 auto",
           width: props.sidebarCollapsed ? 0 : resolvedSidebarWidth,
           minWidth: 0,
-          overflow: "hidden"
+          // visible：左右软阴影不被裁切；内部滚动由 DesktopSidebar 负责
+          overflow: "visible",
+          zIndex: 3,
         }}
       >
         {props.sideBar}

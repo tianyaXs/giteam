@@ -32,14 +32,7 @@ export function DeepAgentComposer({
     controller.current?.update(options ?? {});
   }, [options]);
 
-  return (
-    <div
-      ref={host}
-      className={className}
-      data-motion-component="deep-agent-composer"
-      style={{ overflow: "visible", position: "relative", zIndex: 40 }}
-    />
-  );
+  return <div ref={host} className={className} data-motion-component="deep-agent-composer" />;
 }
 
 export type { DeepAgentComposerOptions };

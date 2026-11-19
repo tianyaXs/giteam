@@ -1,5 +1,5 @@
 /**
- * 右侧「记忆」tab：跨会话仓库记忆图谱。
+ * 总导航「记忆」主区：跨会话仓库记忆图谱。
  *
  * 渲染设计完整对齐 semantica Knowledge Explorer（同款 sigma.js 组件族）：
  * - 曲边 + 箭头（@sigma/edge-curve EdgeCurvedArrowProgram，方向可辨）
@@ -1408,7 +1408,7 @@ const GraphNodeInspector = memo(function GraphNodeInspector({
   const rows = useMemo(() => propsRows(detail.props).slice(0, 5), [detail.props]);
 
   return (
-    <div className="absolute right-2 top-12 z-10 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-background/95 p-2.5 shadow-md backdrop-blur">
+    <div className="absolute right-2 top-2 z-10 max-h-64 w-72 overflow-y-auto rounded-md border border-border bg-background/95 p-2.5 shadow-md backdrop-blur">
       <div className="mb-1.5 flex items-start gap-2">
         <span className="mt-1 size-2 shrink-0 rounded-full" style={{ backgroundColor: nodeDotColor }} />
         <div className="min-w-0 flex-1">
@@ -1491,6 +1491,10 @@ function AssetGraphPanelInner({
   const [counts, setCounts] = useState<GraphCounts | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [hits, setHits] = useState<NodeHit[]>([]);
+  /** 下拉是否打开：有结果 / 无结果 / 搜索中都要显示，失焦后关掉 */
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [searchEmpty, setSearchEmpty] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [view, setView] = useState<SubgraphView | null>(null);
   const [loadingView, setLoadingView] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -1608,14 +1612,29 @@ function AssetGraphPanelInner({
     }
   }, [repoPath, bumpScene]);
 
-  /** 首次打开 / 切项目 / 手动刷新 */
-  const loadLatest = useCallback(async () => {
+  /**
+   * 首次打开 / 切项目 / 刷新。
+   * 默认先增量扫描存量会话（asset_graph_rebuild），进入「记忆」即自动跑，无需空态手动点扫描。
+   */
+  const loadLatest = useCallback(async (opts?: { scan?: boolean }) => {
     if (!IS_TAURI || !repoPath) return;
     pendingRepoLoadRef.current = false;
     const pathAtRequest = repoPath;
+    const shouldScan = opts?.scan !== false;
     setLoadingView(true);
     setLoadPhase("idle");
     try {
+      if (shouldScan) {
+        setRebuilding(true);
+        try {
+          await invoke("asset_graph_rebuild", { repoPath: pathAtRequest });
+        } catch (error) {
+          console.warn("[asset-graph] auto rebuild failed", error);
+        } finally {
+          if (repoPathRef.current === pathAtRequest) setRebuilding(false);
+        }
+        if (repoPathRef.current !== pathAtRequest) return;
+      }
       const summary = await invoke<GraphCounts>("asset_graph_summary", { repoPath: pathAtRequest });
       if (repoPathRef.current !== pathAtRequest) return;
       setCounts(summary);
@@ -1659,6 +1678,9 @@ function AssetGraphPanelInner({
       viewRef.current = null;
       setSceneView(null);
       setHits([]);
+      setSearchEmpty(false);
+      setSearchPanelOpen(false);
+      setSearching(false);
       setDetail(null);
       setDrilled(null);
       setSearchQuery("");
@@ -1671,6 +1693,9 @@ function AssetGraphPanelInner({
     sceneEverReadyRef.current = false;
     pendingMergeViewRef.current = null;
     setHits([]);
+    setSearchEmpty(false);
+    setSearchPanelOpen(false);
+    setSearching(false);
     setDetail(null);
     setDrilled(null);
     setSearchQuery("");
@@ -1944,50 +1969,54 @@ function AssetGraphPanelInner({
     focusApiRef.current?.setFocus(focusNodeId);
   }, [focusNodeId, drilled, ready, currentSessionId]);
 
+  const dismissSearchPanel = useCallback(() => {
+    setHits([]);
+    setSearchEmpty(false);
+    setSearchPanelOpen(false);
+    setSearching(false);
+  }, []);
+
   const runSearch = useCallback(async () => {
     const q = searchQuery.trim();
-    if (!IS_TAURI || !repoPath || !q) { setHits([]); return; }
+    if (!IS_TAURI || !repoPath || !q) {
+      dismissSearchPanel();
+      return;
+    }
+    setSearching(true);
+    setSearchPanelOpen(true);
+    setSearchEmpty(false);
     try {
       const result = await invoke<{ hits: NodeHit[] }>("asset_graph_search", { repoPath, query: q });
-      setHits(result?.hits ?? []);
+      const list = result?.hits ?? [];
+      setHits(list);
+      setSearchEmpty(list.length === 0);
+      setSearchPanelOpen(true);
     } catch (error) {
       console.warn("[asset-graph] search failed", error);
+      setHits([]);
+      setSearchEmpty(true);
+      setSearchPanelOpen(true);
+    } finally {
+      setSearching(false);
     }
-  }, [repoPath, searchQuery]);
+  }, [repoPath, searchQuery, dismissSearchPanel]);
 
   const rebuild = useCallback(async () => {
-    if (!IS_TAURI || !repoPath) return;
-    setRebuilding(true);
-    try {
-      await invoke("asset_graph_rebuild", { repoPath });
-      setView(null);
-      viewRef.current = null;
-      await loadLatest();
-    } catch (error) {
-      console.warn("[asset-graph] rebuild failed", error);
-    } finally {
-      setRebuilding(false);
-    }
-  }, [repoPath, loadLatest]);
+    setView(null);
+    viewRef.current = null;
+    await loadLatest({ scan: true });
+  }, [loadLatest]);
 
   const empty = !counts || counts.nodes === 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
-      {loadPhase === "idle" && empty ? (
-        <div className="relative flex flex-1 items-center justify-center">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-2 top-2 size-8 rounded-md border border-border/50 bg-background/80 text-muted-foreground shadow-sm backdrop-blur hover:bg-background"
-            title="刷新记忆图谱"
-            onClick={() => void loadLatest()}
-            disabled={loadingView}
-          >
-            {loadingView ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-          </Button>
+      {loadPhase === "idle" || rebuilding ? (
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Loader2 className="size-5 animate-spin text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
+            {rebuilding ? "正在扫描存量会话…" : "加载记忆图谱…"}
+          </p>
         </div>
       ) : empty ? (
         <div className="relative flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
@@ -1997,69 +2026,204 @@ function AssetGraphPanelInner({
             size="icon"
             className="absolute right-2 top-2 size-8 rounded-md border border-border/50 bg-background/80 text-muted-foreground shadow-sm backdrop-blur hover:bg-background"
             title="刷新记忆图谱"
-            onClick={() => void loadLatest()}
-            disabled={loadingView}
+            onClick={() => void rebuild()}
+            disabled={loadingView || rebuilding}
           >
-            {loadingView ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+            {loadingView || rebuilding ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
           </Button>
           <Waypoints className="size-8 text-muted-foreground/40" />
           <p className="text-sm text-muted-foreground">
             {counts?.mounted === false ? "记忆尚未挂载：创建一个 agent 会话后自动生成" : "暂无记忆数据"}
           </p>
-          <Button type="button" variant="outline" size="sm" onClick={() => void rebuild()} disabled={rebuilding}>
-            {rebuilding ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-            扫描存量会话
-          </Button>
         </div>
       ) : (
-        <div className="relative min-h-0 flex-1">
-          <div ref={containerRef} className="absolute inset-0" />
-
-          {/* 搜索：左上 */}
-          <div className="absolute left-2 top-2 z-10 w-72">
-            <form
-              className="relative"
-              onSubmit={(e) => { e.preventDefault(); void runSearch(); }}
-            >
-              <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={
-                  counts?.mounted && !empty
-                    ? `搜索记忆…（${counts.nodes} · ${counts.edges}）`
-                    : "搜索记忆…"
-                }
-                className="h-8 rounded-md border-border/50 bg-background/80 pl-7 text-xs shadow-sm backdrop-blur"
-              />
-            </form>
-            {/* 日期筛选：默认全部；自定义展开起止日期（闭区间） */}
-            <div className="mt-1 flex flex-wrap items-center gap-1">
-              {DATE_PRESETS.map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  onClick={() => setDatePreset(p.key)}
-                  className={`rounded-md border px-1.5 py-0.5 text-[10px] backdrop-blur transition-colors ${
-                    datePreset === p.key
-                      ? "border-border bg-background/90 text-foreground shadow-sm"
-                      : "border-border/40 bg-background/50 text-muted-foreground hover:bg-background/80"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {datePreset === "custom" && (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* 顶栏：搜索 + 时间筛 | 计数 + 沉淀 + 刷新；画布全幅在下 */}
+          <div className="relative z-20 shrink-0 border-b border-border/40 bg-background">
+            <div className="flex h-9 items-center gap-2 px-2">
               <div
-                className="mt-1 flex items-center gap-1 rounded-md border border-border/50 bg-background/80 px-1.5 py-1 shadow-sm backdrop-blur"
+                className="relative w-[min(220px,34vw)] shrink-0"
+                onBlur={(e) => {
+                  const next = e.relatedTarget as Node | null;
+                  if (!e.currentTarget.contains(next)) dismissSearchPanel();
+                }}
+              >
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void runSearch();
+                  }}
+                >
+                  <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setSearchQuery(next);
+                      if (!next.trim()) dismissSearchPanel();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        dismissSearchPanel();
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    placeholder="搜索记忆…"
+                    aria-label="搜索记忆"
+                    aria-expanded={searchPanelOpen}
+                    aria-controls="asset-graph-search-results"
+                    className="h-7 rounded-md border-border/50 bg-muted/40 pl-7 text-xs shadow-none"
+                  />
+                </form>
+                {searchPanelOpen ? (
+                  <div
+                    id="asset-graph-search-results"
+                    role="listbox"
+                    className="absolute left-0 top-full z-30 mt-1 max-h-56 w-72 overflow-y-auto rounded-md border border-border bg-background shadow-md"
+                  >
+                    {searching ? (
+                      <div className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+                        <Loader2 className="size-3.5 animate-spin" />
+                        搜索中…
+                      </div>
+                    ) : searchEmpty ? (
+                      <div className="px-2.5 py-2.5 text-xs text-muted-foreground">
+                        未找到与「{searchQuery.trim()}」相关的记忆
+                      </div>
+                    ) : (
+                      hits.map((hit) => (
+                        <button
+                          key={hit.nodeId}
+                          type="button"
+                          role="option"
+                          className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-accent"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            dismissSearchPanel();
+                            void openSubgraph(hit.nodeId);
+                          }}
+                        >
+                          <span
+                            className="size-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: nodeDotColor }}
+                          />
+                          <span className="truncate text-foreground">
+                            {resolveNodeLabel(hit.nodeType, hit.label, undefined)}
+                          </span>
+                          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            {TYPE_LABELS[hit.nodeType] ?? hit.nodeType}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <div
+                className="flex min-w-0 items-center gap-0.5 overflow-x-auto"
+                role="group"
+                aria-label="时间筛选"
+              >
+                {DATE_PRESETS.map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => setDatePreset(p.key)}
+                    aria-pressed={datePreset === p.key}
+                    className={`shrink-0 rounded-md px-2 py-1 text-[11px] transition-colors ${
+                      datePreset === p.key
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              {drilled ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                  onClick={() => void openFull()}
+                >
+                  ← 返回全图
+                </button>
+              ) : null}
+
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                {counts?.mounted && !empty ? (
+                  <span className="hidden tabular-nums text-[10px] text-muted-foreground sm:inline">
+                    {counts.nodes} · {counts.edges}
+                  </span>
+                ) : null}
+                {queue && queue.pending + queue.claimed > 0 ? (
+                  <div className="pointer-events-none flex items-center gap-2 rounded-full border border-border/50 bg-muted/30 px-2.5 py-0.5">
+                    <span className="relative flex size-1.5">
+                      <span className="absolute inset-0 animate-pulse rounded-full bg-foreground/50" />
+                      <span className="relative size-1.5 rounded-full bg-foreground/80" />
+                    </span>
+                    <span className="text-[11px] font-medium text-foreground/90">沉淀中</span>
+                    <span className="text-[10px] tabular-nums text-muted-foreground">
+                      {queueProgress.done}/{Math.max(queueProgress.total, queueProgress.done)}
+                    </span>
+                    <span className="h-0.5 w-12 overflow-hidden rounded-full bg-muted">
+                      <span
+                        className="block h-full rounded-full bg-foreground/55 transition-[width] duration-500 ease-out"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round(
+                              (queueProgress.done /
+                                Math.max(1, queueProgress.total, queueProgress.done)) *
+                                100,
+                            ),
+                          )}%`,
+                        }}
+                      />
+                    </span>
+                    {queue.claimed > 0 ? (
+                      <span className="text-[10px] text-muted-foreground">写入中</span>
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground">排队 {queue.pending}</span>
+                    )}
+                  </div>
+                ) : queueSettled ? (
+                  <div className="pointer-events-none flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/20 px-2.5 py-0.5">
+                    <span className="size-1.5 rounded-full bg-foreground/40" />
+                    <span className="text-[11px] font-medium text-foreground/80">已沉淀</span>
+                  </div>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  title="刷新记忆图谱"
+                  onClick={() => void loadLatest()}
+                  disabled={loadingView || rebuilding}
+                >
+                  {loadingView ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3.5" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {datePreset === "custom" ? (
+              <div
+                className="flex items-center gap-2 border-t border-border/30 px-2 py-1.5"
                 style={{ colorScheme: themeMode }}
               >
                 <input
                   type="date"
                   value={customFrom}
                   onChange={(e) => setCustomFrom(e.target.value)}
-                  className="h-5 min-w-0 flex-1 bg-transparent text-[10px] text-foreground outline-none"
+                  className="h-6 min-w-0 rounded-md border border-border/50 bg-muted/30 px-1.5 text-[11px] text-foreground outline-none"
                   aria-label="开始日期"
                 />
                 <span className="shrink-0 text-[10px] text-muted-foreground">至</span>
@@ -2067,127 +2231,48 @@ function AssetGraphPanelInner({
                   type="date"
                   value={customTo}
                   onChange={(e) => setCustomTo(e.target.value)}
-                  className="h-5 min-w-0 flex-1 bg-transparent text-[10px] text-foreground outline-none"
+                  className="h-6 min-w-0 rounded-md border border-border/50 bg-muted/30 px-1.5 text-[11px] text-foreground outline-none"
                   aria-label="结束日期"
                 />
               </div>
-            )}
-            <div className="mt-1">
-              {drilled && (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-1.5 rounded-md border border-border bg-background/90 px-2 py-1.5 text-left text-xs text-foreground shadow-sm backdrop-blur hover:bg-accent"
-                  onClick={() => void openFull()}
-                >
-                  <span className="text-muted-foreground">←</span>
-                  返回全图
-                  <span className="ml-auto truncate text-[10px] text-muted-foreground/70">下钻视图</span>
-                </button>
-              )}
-              {hits.length > 0 && (
-                <div className="mt-1 max-h-56 overflow-y-auto rounded-md border border-border bg-background/95 shadow-md backdrop-blur">
-                  {hits.map((hit) => (
-                    <button
-                      key={hit.nodeId}
-                      type="button"
-                      className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-accent"
-                      onClick={() => { setHits([]); void openSubgraph(hit.nodeId); }}
-                    >
-                      <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: nodeDotColor }} />
-                      <span className="truncate text-foreground">{resolveNodeLabel(hit.nodeType, hit.label, undefined)}</span>
-                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                        {TYPE_LABELS[hit.nodeType] ?? hit.nodeType}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-
-          {/* 右上：队列指示 + 刷新（避开左侧搜索框） */}
-          <div className="absolute right-2 top-2 z-20 flex items-center gap-2">
-            {queue && (queue.pending + queue.claimed) > 0 ? (
-              <div className="pointer-events-none flex items-center gap-2 rounded-full border border-border/60 bg-background/85 px-3 py-1 shadow-sm backdrop-blur">
-                <span className="relative flex size-1.5">
-                  <span className="absolute inset-0 animate-pulse rounded-full bg-foreground/50" />
-                  <span className="relative size-1.5 rounded-full bg-foreground/80" />
-                </span>
-                <span className="text-[11px] font-medium text-foreground/90">沉淀中</span>
-                <span className="text-[10px] tabular-nums text-muted-foreground">
-                  {queueProgress.done}/{Math.max(queueProgress.total, queueProgress.done)}
-                </span>
-                <span className="h-0.5 w-14 overflow-hidden rounded-full bg-muted">
-                  <span
-                    className="block h-full rounded-full bg-foreground/55 transition-[width] duration-500 ease-out"
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        Math.round(
-                          (queueProgress.done /
-                            Math.max(1, queueProgress.total, queueProgress.done)) *
-                            100,
-                        ),
-                      )}%`,
-                    }}
-                  />
-                </span>
-                {queue.claimed > 0 ? (
-                  <span className="text-[10px] text-muted-foreground">写入中</span>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">排队 {queue.pending}</span>
-                )}
-              </div>
-            ) : queueSettled ? (
-              <div className="pointer-events-none flex items-center gap-2 rounded-full border border-border/50 bg-background/80 px-3 py-1 shadow-sm backdrop-blur">
-                <span className="size-1.5 rounded-full bg-foreground/40" />
-                <span className="text-[11px] font-medium text-foreground/80">已沉淀</span>
-              </div>
             ) : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-8 rounded-md border border-border/50 bg-background/80 text-muted-foreground shadow-sm backdrop-blur hover:bg-background"
-              title="刷新记忆图谱"
-              onClick={() => void loadLatest()}
-              disabled={loadingView || rebuilding}
-            >
-              {loadingView ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-            </Button>
+
           </div>
 
-          {detail ? (
-            <GraphNodeInspector
-              detail={detail}
-              nodeDotColor={nodeDotColor}
-              onClose={handleCloseDetail}
-              onDrill={handleDrillNode}
-              onCiteNode={onCiteNode}
-            />
-          ) : null}
+          <div className="relative min-h-0 flex-1">
+            <div ref={containerRef} className="absolute inset-0" />
 
-          {loadingView ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
-            </div>
-          ) : !ready && !sceneEverReadyRef.current ? (
-            // 仅首次构建显示加载遮罩；后续增量/重建不遮挡，避免点击时误感知为「转圈」
-            view && view.nodes.length > 0 ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+            {detail ? (
+              <GraphNodeInspector
+                detail={detail}
+                nodeDotColor={nodeDotColor}
+                onClose={handleCloseDetail}
+                onDrill={handleDrillNode}
+                onCiteNode={onCiteNode}
+              />
+            ) : null}
+
+            {loadingView ? (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/60">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
-                <p className="text-[10px] text-muted-foreground/70">图谱构建中…</p>
               </div>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
-                <p className="text-xs text-muted-foreground">暂无可视数据</p>
-                <p className="text-[10px] text-muted-foreground/60">
-                  尝试调整日期筛选、右上角刷新或扫描存量会话
-                </p>
-              </div>
-            )
-          ) : null}
+            ) : !ready && !sceneEverReadyRef.current ? (
+              // 仅首次构建显示加载遮罩；后续增量/重建不遮挡，避免点击时误感知为「转圈」
+              view && view.nodes.length > 0 ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                  <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                  <p className="text-[10px] text-muted-foreground/70">图谱构建中…</p>
+                </div>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
+                  <p className="text-xs text-muted-foreground">暂无可视数据</p>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    尝试调整时间筛选，或点击刷新重新扫描
+                  </p>
+                </div>
+              )
+            ) : null}
+          </div>
         </div>
       )}
     </div>

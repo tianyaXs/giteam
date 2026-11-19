@@ -1,0 +1,3 @@
+import type { MotionOptions, MotionController } from "./motion-runtime";
+export type AsciiSharksOptions = MotionOptions & { theme?: "light" | "dark"; paused?: boolean; speed?: number; seed?: number; fishCount?: number; sharks?: { kind: "classic" | "hammerhead" | "zebra" | "tiger" | "greathammer" | "mako" | "thresher" | "nurse"; size: number }[]; showComposer?: boolean; onSubmit?: (message: { text: string; attachments: File[] }) => void; onVoiceInput?: () => void };
+export function mountAsciiSharks(target: HTMLElement, options?: AsciiSharksOptions): Omit<MotionController, "update"> & { update(options: AsciiSharksOptions): void };

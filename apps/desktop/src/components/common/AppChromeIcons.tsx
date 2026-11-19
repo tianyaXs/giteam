@@ -21,7 +21,7 @@ export const PINNED_RIGHT_PANE_TAB = "changes" satisfies RightPaneTab;
 
 export type OptionalRightPaneTab = Exclude<RightPaneTab, typeof PINNED_RIGHT_PANE_TAB>;
 
-export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "skills", "browser", "assetGraph"];
+export const RIGHT_PANE_TAB_ORDER: RightPaneTab[] = ["changes", "worktree", "terminal", "remoteRepos", "browser"];
 
 export const RIGHT_PANE_TAB_ICONS: Record<RightPaneTab, LucideIcon> = {
   changes: ListChecksIcon,

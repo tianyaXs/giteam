@@ -12,7 +12,6 @@ import {
   type RefObject
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import appIconMarkUrl from "../../assets/app-icon-mark.png";
 import {
   type AgentThinkingLevel,
   type ComposerAgentName
@@ -45,7 +44,6 @@ import {
 } from "../../lib/agentPermissionPresets";
 import type { DeepAgentComposerOptions } from "../deep-agent-composer/DeepAgentComposerEngine";
 import { FullAccessRiskDialog } from "./FullAccessRiskDialog";
-import { Confirmation, ConfirmationAction, ConfirmationActions } from "../ai-elements/confirmation";
 import { QueueItem, QueueItemContent } from "../ai-elements/queue";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
 import { Button } from "../ui/button";
@@ -53,6 +51,7 @@ import { CloseIcon } from "../icons";
 import {
   FilePen,
   FileCode,
+  Globe,
   Terminal,
   Wrench,
   type LucideIcon,
@@ -167,7 +166,17 @@ function permissionToolIcon(tool: string): LucideIcon {
   if (tool === "bash") return Terminal;
   if (tool === "edit" || tool === "hashline_edit" || tool === "write") return FilePen;
   if (tool === "read" || tool === "grep" || tool === "find" || tool === "ls") return FileCode;
+  if (tool === "web_search" || tool === "web_fetch") return Globe;
   return Wrench;
+}
+
+function permissionRiskLabel(risk: string): string {
+  const key = risk.trim().toUpperCase();
+  if (key === "NETWORK") return "网络";
+  if (key === "WRITE" || key === "EDIT") return "写入";
+  if (key === "EXEC" || key === "SHELL") return "执行";
+  if (key === "READ") return "读取";
+  return risk.trim();
 }
 
 export function AgentComposerPanel(props: AgentComposerPanelProps) {
@@ -462,39 +471,66 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           </div>
         ) : null}
         {permissions.length > 0 ? (
-          <div className="grid gap-2" role="status" aria-live="polite">
+          <div className="grid gap-1.5" role="status" aria-live="polite">
             {visiblePermissions.map((request) => {
               const view = describePermissionInteraction(request);
               const ToolIcon = permissionToolIcon(view.tool);
+              const riskLabel = view.risk ? permissionRiskLabel(view.risk) : "";
               return (
-                <Confirmation
+                <div
                   key={request.id}
-                  approval={{ id: request.id }}
-                  state="approval-requested"
-                  className="rounded-xl border-border/60 bg-card/80 p-3 shadow-sm"
+                  className="rounded-xl border border-border/70 bg-card px-3 py-2 shadow-[var(--gt-elev-card)] dark:shadow-none"
+                  title={view.target || undefined}
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/60 text-muted-foreground">
-                      <ToolIcon className="h-4 w-4" />
+                    <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                      <ToolIcon className="size-3.5" aria-hidden />
                     </span>
-                    <div className="grid min-w-0">
-                      <strong className="truncate text-sm font-semibold">{view.tool}</strong>
-                      {view.risk ? <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{view.risk}</span> : null}
+                    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                      <strong className="truncate text-[13px] font-semibold leading-5 text-foreground">
+                        {view.tool}
+                      </strong>
+                      {riskLabel ? (
+                        <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                          {riskLabel}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => onReplyPermission(request.id, "reject")}
+                      >
+                        拒绝
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={() => onReplyPermission(request.id, "once")}
+                      >
+                        本次允许
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="contrast"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={() => onReplyPermission(request.id, "always")}
+                      >
+                        总是允许
+                      </Button>
                     </div>
                   </div>
-                  {view.target ? (
-                    <code className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/55 px-3 py-2 font-mono text-xs leading-relaxed">{view.target}</code>
-                  ) : null}
-                  <ConfirmationActions>
-                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "reject")} variant="ghost" size="sm">拒绝</ConfirmationAction>
-                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "once")} variant="outline" size="sm">本次允许</ConfirmationAction>
-                    <ConfirmationAction onClick={() => onReplyPermission(request.id, "always")} variant="contrast" size="sm">总是允许</ConfirmationAction>
-                  </ConfirmationActions>
-                </Confirmation>
+                </div>
               );
             })}
             {hiddenPermissionCount > 0 ? (
-              <Button type="button" className="h-auto justify-start px-3 py-2 text-xs" onClick={onOpenPermissionsPanel} variant="ghost">
+              <Button type="button" className="h-auto justify-start px-2 py-1.5 text-xs" onClick={onOpenPermissionsPanel} variant="ghost">
                 还有 {hiddenPermissionCount} 条授权请求，前往详情面板处理
               </Button>
             ) : null}
@@ -556,14 +592,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
             className="flex w-full flex-col gap-8 motion-safe:transition-[margin-top] motion-safe:duration-200 motion-safe:ease-out"
             style={emptyGrowUpOffset > 0 ? { marginTop: -emptyGrowUpOffset } : undefined}
           >
-            <div className="flex flex-col items-center gap-5">
-              <img
-                src={appIconMarkUrl}
-                alt=""
-                aria-hidden="true"
-                draggable={false}
-                className="size-9 origin-center opacity-[0.92] dark:invert motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)] motion-safe:hover:rotate-[360deg]"
-              />
+            <div className="flex flex-col items-center">
               <div className="max-w-[28rem] text-center text-[22px] font-semibold leading-snug tracking-tight text-foreground">
                 {(labels.emptyComposerHeadline || "What should we build in {name}?").replace(
                   "{name}",

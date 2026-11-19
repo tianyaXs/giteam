@@ -2,7 +2,7 @@
 
 use giteam_core::automation::{
     self, deliver_run_notification, AutomationRun, AutomationTask, CreateTaskInput, NotifyChannel,
-    RunOutcome, ScheduleKind, SessionMode, TaskFilter, UpdateTaskInput,
+    RunOutcome, ScheduleKind, ScheduleOverride, SessionMode, TaskFilter, UpdateTaskInput,
 };
 use giteam_core::dingtalk::{send_message, SendMessageRequest, SendMessageResult};
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,7 @@ pub struct UpdateTaskRequest {
     pub thinking_level: Option<Option<String>>,
     pub schedule_kind: Option<String>,
     pub schedule_expr: Option<String>,
+    pub schedule_overrides: Option<Vec<ScheduleOverride>>,
     pub timezone: Option<String>,
     pub notify_on_success: Option<bool>,
     pub notify_on_failure: Option<bool>,
@@ -174,6 +175,7 @@ pub fn automation_update_task(request: UpdateTaskRequest) -> Result<AutomationTa
             .map(parse_schedule_kind)
             .transpose()?,
         schedule_expr: request.schedule_expr,
+        schedule_overrides: request.schedule_overrides,
         timezone: request.timezone,
         notify_on_success: request.notify_on_success,
         notify_on_failure: request.notify_on_failure,

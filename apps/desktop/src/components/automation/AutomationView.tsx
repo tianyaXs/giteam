@@ -3,11 +3,10 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   ChevronDown,
-  FileText,
   LoaderCircle,
-  Megaphone,
   Pause,
   Play,
+  Plus,
   Search,
   Trash2,
 } from "lucide-react";
@@ -22,7 +21,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
+import { VelocityFocusDrag } from "../velocity-focus-drag/VelocityFocusDrag";
 import { cn } from "../../lib/utils";
+import {
+  rescheduleOccurrence,
+  startOfWeek,
+  tasksToCalendarEvents,
+} from "../../lib/automationCalendar";
 import type { AgentModelInfo } from "../../lib/agent/client";
 import {
   clampThinkingLevelToModel,
@@ -34,7 +39,6 @@ import {
 import type { RepositoryEntry } from "../../lib/types";
 import type { AgentChatSession } from "../../lib/agentSessions";
 import {
-  AUTOMATION_SUGGESTIONS,
   createAutomationTask,
   deleteAutomationTask,
   formatRelativeMs,
@@ -126,8 +130,6 @@ const EMPTY_DRAFT: DraftForm = {
   dingtalkSignSecret: "",
   enabled: true,
 };
-
-const SUGGESTION_ICONS = [Megaphone, FileText, Search] as const;
 
 const PANEL_SPRING = { type: "spring" as const, stiffness: 380, damping: 36 };
 const LIST_FADE = { duration: 0.22, ease: "easeOut" as const };
@@ -362,8 +364,34 @@ export function AutomationView(props: Props) {
   const [runningIds, setRunningIds] = useState<Set<string>>(() => new Set());
   /** 本地触发立即运行的时间戳；用于 DB 尚未写入 running 前保持列表状态 */
   const pendingRunStartedAtRef = useRef<Map<string, number>>(new Map());
+  const calendarHostRef = useRef<HTMLDivElement>(null);
+  const [calendarHeight, setCalendarHeight] = useState(640);
+  /** 0=本周，±1 翻周 */
+  const [weekOffset, setWeekOffset] = useState(0);
 
   const showForm = creating || Boolean(selectedId);
+
+  const weekAnchor = useMemo(() => {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() + weekOffset * 7);
+    return d;
+  }, [weekOffset]);
+
+  const weekStartMs = useMemo(() => startOfWeek(weekAnchor).getTime(), [weekAnchor]);
+
+  useEffect(() => {
+    if (showForm) return;
+    const el = calendarHostRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height;
+      if (!h) return;
+      setCalendarHeight(Math.max(480, Math.floor(h)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [showForm]);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
@@ -430,6 +458,11 @@ export function AutomationView(props: Props) {
         t.repoPath.toLowerCase().includes(q)
     );
   }, [tasks, search]);
+
+  const boardEvents = useMemo(
+    () => tasksToCalendarEvents(visibleTasks, weekAnchor),
+    [visibleTasks, weekAnchor]
+  );
 
   const selectedRepo = useMemo(
     () => repos.find((r) => normalizePath(r.path) === normalizePath(draft.repoPath)) || null,
@@ -512,6 +545,76 @@ export function AutomationView(props: Props) {
     }
   }
 
+  const handleCalendarMove = useCallback(
+    async (
+      taskId: string,
+      day: number,
+      hour: number,
+      originDay: number,
+      originDate?: string | null
+    ) => {
+      const task = tasks.find((t) => t.id === taskId);
+      if (!task) return;
+      try {
+        const next = rescheduleOccurrence(
+          task,
+          day,
+          hour,
+          weekAnchor,
+          originDay,
+          originDate ?? null
+        );
+        if (next.mode === "override") {
+          await updateAutomationTask({
+            id: taskId,
+            scheduleOverrides: next.scheduleOverrides,
+          });
+        } else {
+          await updateAutomationTask({
+            id: taskId,
+            scheduleKind: next.scheduleKind,
+            scheduleExpr: next.scheduleExpr,
+            scheduleOverrides: next.scheduleOverrides,
+          });
+        }
+        await refresh({ silent: true });
+      } catch (e) {
+        setError(String(e));
+        await refresh({ silent: true });
+      }
+    },
+    [tasks, refresh, weekAnchor]
+  );
+
+  const calendarOptions = useMemo(
+    () => ({
+      height: calendarHeight,
+      events: boardEvents,
+      weekStartMs,
+      onEventMove: (
+        taskId: string,
+        day: number,
+        hour: number,
+        originDay: number,
+        originDate?: string | null
+      ) => {
+        void handleCalendarMove(taskId, day, hour, originDay, originDate);
+      },
+      onEventClick: (taskId: string) => {
+        void openTask(taskId);
+      },
+      onSlotClick: (day: number, hour: number) => {
+        handleSlotCreate(day, hour);
+      },
+      onWeekChange: (delta: -1 | 0 | 1) => {
+        if (delta === 0) setWeekOffset(0);
+        else setWeekOffset((v) => v + delta);
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [calendarHeight, boardEvents, handleCalendarMove, weekStartMs]
+  );
+
   function startCreate(partial?: Partial<DraftForm>) {
     setCreating(true);
     setSelectedId(null);
@@ -553,13 +656,12 @@ export function AutomationView(props: Props) {
       const input = draftToInput(draft);
       if (creating || !selectedId) {
         await createAutomationTask(input);
-        await refresh();
-        closeForm();
       } else {
         await updateAutomationTask({ id: selectedId, ...input });
-        await refresh();
-        await openTask(selectedId);
       }
+      await refresh();
+      // 保存后回到日历/列表，与「取消」一致，避免停在详情页
+      closeForm();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -636,26 +738,34 @@ export function AutomationView(props: Props) {
     }
   }
 
-  function applySuggestion(item: (typeof AUTOMATION_SUGGESTIONS)[number]) {
-    const parts = item.scheduleExpr.trim().split(/\s+/);
-    const minute = parts[0] || "0";
-    const hour = parts[1] || "9";
-    const dow = parts[4] || "1-5";
-    let schedulePreset: SchedulePreset = "weekdays";
-    if (dow === "*") schedulePreset = "daily";
-    else if (dow === "5") schedulePreset = "weekly";
-    else if (dow === "1-5") schedulePreset = "weekdays";
+  function handleCreateClick() {
+    if (repos.length === 0) {
+      onOpenImportProject();
+      return;
+    }
+    startCreate();
+  }
+
+  /** 点击日历空白格：带入该日该时创建任务 */
+  function handleSlotCreate(day: number, hour: number) {
+    if (repos.length === 0) {
+      onOpenImportProject();
+      return;
+    }
+    const time = `${String(hour).padStart(2, "0")}:00`;
     startCreate({
-      title: item.title,
-      goalPrompt: item.goalPrompt,
-      schedulePreset,
-      time: `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`,
+      schedulePreset: "custom",
+      customUnit: "week",
+      customDays: [day],
+      customEvery: "1",
+      time,
     });
   }
 
   const listPane = (
     <TaskListPane
-      compact={showForm}
+      // 日历并排时也用紧凑轨，避免大标题+白卡片造成外挂感
+      compact
       filter={filter}
       search={search}
       loading={loading}
@@ -666,9 +776,8 @@ export function AutomationView(props: Props) {
       runningIds={runningIds}
       onFilterChange={setFilter}
       onSearchChange={setSearch}
-      onCreate={() => (repos.length === 0 ? onOpenImportProject() : startCreate())}
+      onCreate={handleCreateClick}
       onOpenTask={(id) => void openTask(id)}
-      onSuggestion={applySuggestion}
     />
   );
 
@@ -691,7 +800,7 @@ export function AutomationView(props: Props) {
       >
         {!showForm ? (
           <motion.div
-            className="flex min-h-0 flex-1 flex-col"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.28, ease: "easeOut" }}
@@ -701,7 +810,30 @@ export function AutomationView(props: Props) {
                 {error}
               </div>
             ) : null}
-            {listPane}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              {/* 列表与日历同色连续面：左侧栏投影到日历，不再套白圆角卡片 */}
+              <div className="relative z-[2] flex w-[min(320px,34%)] shrink-0 flex-col overflow-hidden bg-background pt-8 shadow-[var(--gt-elev-sidebar)]">
+                <div className="flex items-center justify-between gap-2 px-4 pb-2">
+                  <h1 className="text-[15px] font-semibold tracking-tight">已安排的任务</h1>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn(CODEX_PILL_BTN, "h-7 shrink-0 gap-1 px-2.5")}
+                    onClick={handleCreateClick}
+                  >
+                    <Plus className="size-3.5" aria-hidden />
+                    创建
+                  </Button>
+                </div>
+                {listPane}
+              </div>
+              <div
+                ref={calendarHostRef}
+                className="relative z-[1] min-h-0 min-w-0 flex-1 overflow-hidden bg-background pt-8"
+              >
+                <VelocityFocusDrag className="h-full w-full" options={calendarOptions} />
+              </div>
+            </div>
           </motion.div>
         ) : (
           <motion.div
@@ -1091,7 +1223,6 @@ function TaskListPane(props: {
   onSearchChange: (v: string) => void;
   onCreate: () => void;
   onOpenTask: (id: string) => void;
-  onSuggestion: (item: (typeof AUTOMATION_SUGGESTIONS)[number]) => void;
 }) {
   const {
     compact,
@@ -1107,11 +1238,10 @@ function TaskListPane(props: {
     onSearchChange,
     onCreate,
     onOpenTask,
-    onSuggestion,
   } = props;
 
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", !compact && "mx-auto w-full max-w-3xl")}>
+    <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", !compact && "w-full")}>
       <AnimatePresence initial={false}>
         {!compact ? (
           <motion.div
@@ -1192,10 +1322,22 @@ function TaskListPane(props: {
             加载中…
           </div>
         ) : visibleTasks.length === 0 ? (
-          <div className="px-2 py-6 text-sm text-muted-foreground">
-            {reposEmpty
-              ? "还没有项目。先导入工作区后再创建自动化任务。"
-              : "还没有自动化任务。点创建或使用下方建议。"}
+          <div className="flex flex-col items-start gap-3 px-3 py-8">
+            <div className="text-sm font-medium text-foreground">还没有任务</div>
+            <p className="text-[13px] leading-5 text-muted-foreground">
+              {reposEmpty
+                ? "先导入一个项目工作区，再来安排自动化任务。"
+                : "点右上角「创建」，或在右侧日历点选空白时段，会带上对应时间。"}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(CODEX_PILL_BTN, "mt-1 h-8 gap-1")}
+              onClick={onCreate}
+            >
+              <Plus className="size-3.5" aria-hidden />
+              {reposEmpty ? "导入项目" : "创建任务"}
+            </Button>
           </div>
         ) : (
           <ul className="flex flex-col">
@@ -1245,36 +1387,6 @@ function TaskListPane(props: {
             })}
           </ul>
         )}
-
-        <div className={cn("mt-8", compact ? "px-2" : "px-2")}>
-          <div className="mb-3 text-sm font-medium text-muted-foreground">建议</div>
-          <div className="flex flex-col gap-1">
-            {AUTOMATION_SUGGESTIONS.map((item, index) => {
-              const Icon = SUGGESTION_ICONS[index % SUGGESTION_ICONS.length];
-              return (
-                <button
-                  key={item.title}
-                  type="button"
-                  className="flex items-start gap-3 rounded-xl px-2 py-2.5 text-left hover:bg-[var(--selection-bg-subtle)]"
-                  onClick={() => onSuggestion(item)}
-                >
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
-                    <Icon className="size-4" />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">
-                      {item.title}
-                      <span className="ml-2 font-normal text-muted-foreground">{item.summary}</span>
-                    </span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground line-clamp-2">
-                      {item.goalPrompt}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
       </div>
     </div>
   );

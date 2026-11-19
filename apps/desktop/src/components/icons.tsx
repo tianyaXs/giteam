@@ -90,6 +90,43 @@ export function AutomationIcon(props: React.SVGProps<SVGSVGElement>): React.Reac
   );
 }
 
+/** 任务 / 日历编排导航图标 */
+export function TasksCalendarIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <rect x="3" y="4.5" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M3 8H17" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M7 3V6" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+      <path d="M13 3V6" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+      <rect x="6" y="10.5" width="3" height="3" rx="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** 记忆 / 知识图谱导航图标：上二下一的分叉节点（与参考图一致） */
+export function MemoryOrbitIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
+  return (
+    <svg aria-hidden="true" fill="none" height="20" viewBox="0 0 20 20" width="20" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <circle cx="5.5" cy="5.2" r="2.15" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="14.5" cy="5.2" r="2.15" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="10" cy="15.1" r="2.15" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M5.5 7.35V8.6C5.5 9.4 6.15 10.05 6.95 10.05H13.05C13.85 10.05 14.5 9.4 14.5 8.6V7.35"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+      <path
+        d="M10 10.05V12.95"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
 export function CloseIcon(props: React.SVGProps<SVGSVGElement>): React.ReactElement {
   return (
     <svg aria-hidden="true" fill="none" height="21" viewBox="0 0 21 21" width="21" xmlns="http://www.w3.org/2000/svg" {...props}>
