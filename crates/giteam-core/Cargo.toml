@@ -18,9 +18,8 @@ futures = "0.3"
 # fork 修复：openai 兼容流式 chunk 容忍显式 "choices": null / "delta": null
 # （indemind/glm-5.3-flash 间歇发送，serde default 只兜缺失不兜 null，
 # 上游解析即炸致 run 中断——见 ui-debug 2026-11-13 四次 JSON parse error）。
-# Local path while verifying kimi message_delta cache_read mapping; bump back to
-# git rev after publishing the pi_agent_rust anthropic usage fix.
-pi = { package = "pi_agent_rust", path = "../../../pi_agent_rust", default-features = false }
+# fork：openai null choices + anthropic message_delta cache_read（Kimi Coding）
+pi = { package = "pi_agent_rust", git = "https://github.com/tianyaXs/pi_agent_rust", rev = "f5e11c181321e6b2832dc3c934eac52a3e8b8cc5", default-features = false }
 rusqlite = { version = "0.39", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
