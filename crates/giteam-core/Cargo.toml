@@ -15,10 +15,10 @@ base64 = "0.22"
 calamine = "0.37"
 docx-rs = { version = "0.4", default-features = false }
 futures = "0.3"
-# fork 修复：openai 兼容流式 chunk 容忍显式 "choices": null / "delta": null
-# （indemind/glm-5.3-flash 间歇发送，serde default 只兜缺失不兜 null，
-# 上游解析即炸致 run 中断——见 ui-debug 2026-11-13 四次 JSON parse error）。
-# fork：openai null choices + anthropic message_delta cache_read（Kimi Coding）
+# fork tip（旧基线 + 两补丁）：openai null choices/delta + anthropic message_delta
+# cache_read。官方 main 已含后者，但 0.8 需工具链/asupersync 0.5/SDK 大适配，
+# 未迁完前继续钉此 tip；最新+null 补丁在 tianyaXs/pi_agent_rust
+# fix/openai-null-choices-on-main@8cb1319a。
 pi = { package = "pi_agent_rust", git = "https://github.com/tianyaXs/pi_agent_rust", rev = "f5e11c181321e6b2832dc3c934eac52a3e8b8cc5", default-features = false }
 rusqlite = { version = "0.39", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

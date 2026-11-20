@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.2.59"
+version = "0.2.60"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -77,10 +77,10 @@ block2 = "0.6"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "3ffa93ed14e0f8e857e43619b4157f2a685d35a4" }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-process = "2.3.1"
+tauri-plugin-process = "2.4.0"
 # deep-link feature：Windows/Linux 上二次启动把 URL 交给已运行实例，而不是再起一个进程。
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
-tauri-plugin-updater = "2.10.1"
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-deep-link = "2"
 
 [build-dependencies]

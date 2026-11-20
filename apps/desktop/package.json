@@ -1,6 +1,6 @@
 {
   "name": "giteam-desktop",
-  "version": "0.2.59",
+  "version": "0.2.60",
   "private": true,
   "type": "module",
   "scripts": {
@@ -42,9 +42,9 @@
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
-    "@tauri-apps/api": "2.10.1",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@tauri-apps/api": "2.12.5",
+    "@tauri-apps/plugin-process": "2.4.0",
+    "@tauri-apps/plugin-updater": "2.14.1",
     "@types/prop-types": "^15.7.15",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
@@ -91,7 +91,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
-    "@tauri-apps/cli": "2.10.1",
+    "@tauri-apps/cli": "2.12.6",
     "@types/d3-force": "^3.0.10",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
