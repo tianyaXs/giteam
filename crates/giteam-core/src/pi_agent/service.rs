@@ -18,7 +18,6 @@ use super::context_breakdown::{
     billed_prompt_tokens, build_context_breakdown, estimate_tool_schema_tokens,
     ContextBreakdownInput,
 };
-use super::https_egress::{ensure_https_egress_shim_with_paths, HttpsEgressShimState};
 use super::interactions::{InteractionHub, InteractionRunContext, InteractionStore};
 use super::messages::{
     assign_stable_message_ids, attach_session_usage, project_session_usage, AgentUsageProjection,
@@ -131,7 +130,9 @@ impl PiSessionConfig {
             Some(discipline) => base_prompt.map(|base| format!("{base}\n\n{discipline}")),
             None => base_prompt,
         };
-        // system append 只保留稳定段：项目记忆 → 工作区快照 → skills 清单。
+        // system append 只保留稳定段：项目记忆 → 工作区快照。
+        // skills 走官方 `SessionOptions.skills_prompt` 槽位（见 docs/sdk.md），
+        // 不再塞进 append，避免与 memory/workspace 混槽。
         // digest 与调用方 extra 在 prompt 发送时组成 runtime user snapshot，
         // 避免 pi 后续追加 Project Context/date/cwd 把动态段重新挤到中间。
         // AGENTS.md/CLAUDE.md 不在此注入——pi 的 # Project Context 通道会收集
@@ -155,12 +156,17 @@ impl PiSessionConfig {
             &self.repo_path,
             can_execute,
         ));
-        if self.session_kind != "subagent" {
-            if let Some(skills) = super::skills::build_skills_prompt(&self.repo_path) {
-                append_parts.push(skills);
-            }
-        }
         let append_system_prompt = (!append_parts.is_empty()).then(|| append_parts.join("\n\n"));
+        let skills_prompt = if self.session_kind != "subagent" {
+            super::skills::build_skills_prompt(&self.repo_path)
+        } else {
+            None
+        };
+        // 不把 RetryPolicy 交给 SessionOptions：pi 把所有 HTTP 429 当可重试，
+        // 无法区分瞬时限流与「余额不足 / 无资源包」。后者在 SDK 内连重试 10 次
+        // 只会让 UI 卡在空的「运行中 1 个步骤」。瞬时重试改由 prompt 外层
+        // 在 `is_quota_error` 门禁后处理（settings.json 的 maxRetries 仍生效）。
+        let retry = None;
         SessionOptions {
             provider: self.provider,
             model: self.model,
@@ -171,6 +177,8 @@ impl PiSessionConfig {
                 .and_then(|level| level.parse().ok()),
             system_prompt,
             append_system_prompt,
+            skills_prompt,
+            retry,
             enabled_tools: self.enabled_tools,
             working_directory: Some(self.repo_path),
             no_session: self.no_session,
@@ -206,7 +214,7 @@ async fn write_runtime_context_snapshot(
     handle: &AgentSessionHandle,
     content: String,
 ) -> Result<(), String> {
-    let cx = pi::agent_cx::AgentCx::for_request();
+    let cx = pi::sdk::AgentCx::for_request();
     let mut session = handle
         .session()
         .session
@@ -254,7 +262,7 @@ async fn write_runtime_context_snapshot(
 async fn load_session_usage_projection(
     handle: &AgentSessionHandle,
 ) -> Result<AgentUsageProjection, String> {
-    let cx = pi::agent_cx::AgentCx::for_request();
+    let cx = pi::sdk::AgentCx::for_request();
     let session = handle
         .session()
         .session
@@ -370,8 +378,6 @@ struct ManagedSession {
     handle: AsyncMutex<AgentSessionHandle>,
     /// 审批/提问交互枢纽（PR6）：随 session 创建，run 上下文在 prompt 时绑定。
     hub: Arc<InteractionHub>,
-    /// Windows HTTPS 出站旁路（见 https_egress）：https base → loopback HTTP 反代。
-    https_egress_provider: Mutex<Option<HttpsEgressShimState>>,
     /// 已安装的 tool call id 清洗包装（见 provider_sanitizer）。pi 切换模型会
     /// 重建 provider 丢弃包装，prompt 前按指针比对重装。
     sanitized_provider: Mutex<Option<Arc<dyn pi::sdk::Provider>>>,
@@ -383,12 +389,11 @@ struct ManagedSession {
     runtime_prompt: Option<String>,
     /// 动态 runtime Custom 的 supersede 投影（仅内容变化时写入）。
     runtime_context: Mutex<super::runtime_context::RuntimeContextProjection>,
-    /// steer 排队（run 进行中的用户补充指令）。注册为 pi 的 steering
-    /// fetcher 后由 agent loop 在工具批/回合边界自动 drain——同一次 run
-    /// 内中轮注入（收到即跳过剩余工具批，等价 Codex 插话）；run 结束后
-    /// 遗留的消息在下次 prompt 的 run_loop 开头 drain（pi 自带边界）。
-    /// Arc 供 fetcher 闭包无锁共享；上限与 pi MAX_STEERING_QUEUE_SIZE 对齐。
-    pending_steers: Arc<Mutex<Vec<String>>>,
+    /// 官方 turn control 安装前的 follow-up 缓冲（register_run → prompt_controlled
+    /// 之间的窗口）。control 就绪后一次性 flush 进 `SessionControlHandle::follow_up`。
+    pending_follow_ups: Mutex<Vec<String>>,
+    /// 当前 controlled turn 的控制柄；`steer`/`abort` 跨线程使用。turn 结束即清空。
+    live_turn_control: Mutex<Option<pi::session_control::SessionControlHandle>>,
     /// 内存侧会话类型；list 过滤优先读这里，避免 catalog 写入竞态把子会话漏进主列表。
     session_kind: String,
     parent_session_id: Option<String>,
@@ -422,9 +427,8 @@ struct ActiveRun {
 /// steer 结果：排队成功 / 会话空闲（调用方应转普通 prompt）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SteerOutcome {
-    /// 已入队；`run_id` 是承载投递的活跃 run。消息由 pi agent loop 在
-    /// 下一个工具批/回合边界注入同一 run（中轮插话），前端以
-    /// message.completed(user) 事件作为正式投递信号。
+    /// 已入队；`run_id` 是承载投递的活跃 run。经官方 `SessionControlHandle::follow_up`
+    /// 在当前回合结束后注入同一 run；前端以 message.completed(user) 为投递信号。
     Queued { run_id: String },
     /// 无活跃 run——steer 无处投递，调用方应走 `prompt` 正常发送。
     Idle,
@@ -806,7 +810,7 @@ impl PiAgentService {
                 None
             }
         };
-        // pi 内核调用（open JSONL / provider 探测）在专用 runtime 执行，不在宿主
+        // pi 内核调用（open JSONL / provider 探测）经 pi_runtime 桥接（默认 asupersync），不在宿主
         // runtime 上 poll——见 pi_runtime 模块文档（fallback 热忙等隔离）。
         let options = sdk_options_with_factory(
             config,
@@ -838,19 +842,17 @@ impl PiAgentService {
             parent_session_id: parent_session_id.clone(),
             parent_tool_call_id: parent_tool_call_id.clone(),
         };
-        let pending_steers = Arc::new(Mutex::new(Vec::new()));
-        register_steer_fetcher(&mut handle, &pending_steers);
         let managed = Arc::new(ManagedSession {
             repo_path,
             handle: AsyncMutex::new(handle),
             hub,
-            https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             usage_projection: Arc::new(Mutex::new(AgentUsageProjection::default())),
             runtime_prompt: append_system_prompt.clone(),
             runtime_context: Mutex::new(super::runtime_context::RuntimeContextProjection::default()),
-            pending_steers,
+            pending_follow_ups: Mutex::new(Vec::new()),
+            live_turn_control: Mutex::new(None),
             session_kind: session_kind.clone(),
             parent_session_id: parent_session_id.clone(),
             parent_tool_call_id: parent_tool_call_id.clone(),
@@ -907,7 +909,7 @@ impl PiAgentService {
         session_id: &str,
     ) -> Result<PiSessionSummary, PiAgentError> {
         let session = self.get_session(session_id).await?;
-        // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+        // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
         let session_for_state = Arc::clone(&session);
         let state = super::pi_runtime::run(async move {
             let handle = session_for_state.handle.lock().await;
@@ -1037,7 +1039,7 @@ impl PiAgentService {
             }
 
             // 成熟产品形态：列表读 catalog / 非阻塞快照，绝不因某会话 prompt 持锁而挂起整表。
-            // pi 读取（state + 按需 messages）在专用 runtime 一次完成；busy 时走
+            // pi 读取（state + 按需 messages）经 pi_runtime 桥接一次完成；busy 时走
             // catalog/快照兜底。驻留会话 live_id 与 catalog id 一致（get_session 已
             // 校验），故可提前用 session_id 判断是否需要读盘派生标题。
             let need_messages = self.record_title(&session_id).is_none();
@@ -1220,7 +1222,7 @@ impl PiAgentService {
     pub async fn messages(&self, session_id: &str) -> Result<Vec<AgentMessage>, PiAgentError> {
         let session = self.get_session(session_id).await?;
         // prompt 持锁期间不能阻塞读；否则桌面展开会话列表会一直转圈到整轮回复结束。
-        // pi 读历史在专用 runtime 执行（见 pi_runtime 模块文档）；busy（try_lock
+        // pi 读历史经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）；busy（try_lock
         // 失败）返回 None 走快照兜底，读取失败则照原语义报错。
         let session_for_read = Arc::clone(&session);
         let locked: Option<(Vec<AgentMessage>, AgentUsageProjection)> =
@@ -1256,14 +1258,11 @@ impl PiAgentService {
         }
     }
 
-    /// run 进行中排队用户补充指令（steer / 中轮插话）。
+    /// run 进行中排队用户补充指令（对外 API 名 `steer`，投递走官方 follow_up）。
     ///
-    /// 只写 `pending_steers` 队列，不持 handle 锁——本方法在 prompt 进行
-    /// 中调用正是主场景。实际投递走 pi 的 **follow_up** fetcher（对齐 Codex
-    /// `pending_input`）：等当前回合（含工具）跑完后再注入下一条，同一 run
-    /// 内一次只开一条 follow-up；**不会**像 pi `steering` 那样用「Skipped due to queued user
-    /// message」跳过未执行工具——否则连发「还有上海/南京」时前面的查询会被
-    /// 全部跳过，模型容易只答最后一句。
+    /// 优先 `SessionControlHandle::follow_up`（不 skip 工具）；control 尚未安装时
+    /// 写入会话缓冲，turn 开始时 flush。桌面 busy 主路径用本地跟进队列、结束后
+    /// 新开 prompt，通常不调用本方法。
     pub fn steer(&self, session_id: &str, message: &str) -> Result<SteerOutcome, PiAgentError> {
         let message = message.trim();
         if message.is_empty() {
@@ -1287,10 +1286,21 @@ impl PiAgentService {
         };
 
         let position = {
-            let Ok(mut queue) = session.pending_steers.lock() else {
-                return Err(PiAgentError::State("steer queue poisoned".to_string()));
+            let Ok(control_slot) = session.live_turn_control.lock() else {
+                return Err(PiAgentError::State("turn control poisoned".to_string()));
             };
-            push_pending_steer(&mut queue, message)
+            if let Some(control) = control_slot.as_ref() {
+                control
+                    .follow_up(message)
+                    .map_err(|error| PiAgentError::Sdk(error.to_string()))?;
+                u32::try_from(control.snapshot().pending_follow_up.max(1)).unwrap_or(u32::MAX)
+            } else {
+                drop(control_slot);
+                let Ok(mut queue) = session.pending_follow_ups.lock() else {
+                    return Err(PiAgentError::State("follow-up buffer poisoned".to_string()));
+                };
+                push_pending_follow_up(&mut queue, message)
+            }
         };
 
         let sequence = next_event_sequence(&self.event_buffers, session_id, &run_id);
@@ -1549,21 +1559,21 @@ impl PiAgentService {
             format!("{prompt}\n\n（系统提示：当前端点不支持图像输入，本次附图已被移除；请基于上述文字内容正常回复，并简要告知用户图片未能处理，建议切换到支持视觉的模型。）")
         };
 
-        // 对齐 Pi RPC `run_prompt_with_retry`：可重试错误不终止任务，自动 resume；
-        // 默认最多 10 次（settings.json retry.maxRetries，由 ensure_pi_retry_settings 写入）。
-        let retry_config = pi::config::Config::load().unwrap_or_else(|_| pi::config::Config {
-            retry: Some(pi::config::RetrySettings {
-                enabled: Some(true),
-                max_retries: Some(10),
-                base_delay_ms: None,
-                max_delay_ms: None,
-            }),
-            ..Default::default()
-        });
-        let retry_enabled = retry_config.retry_enabled();
-        let max_retries = retry_config.retry_max_retries().max(1);
+        // 瞬时失败外层重试（配额/鉴权错误立即失败）。产品特例：图片降级、
+        // tool-call-id 溢出后再清洗一试。settings.json retry.enabled=false 时
+        // 仅保留产品特例各一次。
+        let (max_transient_retries, retry_base_delay_ms, retry_max_delay_ms) =
+            match pi::config::Config::load() {
+                Ok(config) if config.retry_enabled() => (
+                    config.retry_max_retries().max(1),
+                    u64::from(config.retry_base_delay_ms().max(1)),
+                    u64::from(config.retry_max_delay_ms().max(1)),
+                ),
+                Ok(_) => (0, 500, 500),
+                Err(_) => (10, 1_000, 30_000),
+            };
 
-        // pi 内核调用（历史快照 + provider 流式 + 重试循环）整体在专用 runtime
+        // pi 内核调用（历史快照 + provider 流式 + 产品特例重试）整体经 pi_runtime 桥接（默认 asupersync）
         // 执行：prompt 的 HTTP 流式正是 asupersync fallback 热忙等的高发区，直接
         // 在宿主 runtime 上 poll 会与其它任务互相挤饿挂死（见 pi_runtime 模块
         // 文档）。桥接安全：handle 锁是 futures Mutex（runtime 无关），事件经
@@ -1617,26 +1627,6 @@ impl PiAgentService {
                     *snap = current;
                 }
             }
-            // Windows：https provider 经 loopback HTTP 反代出站（见 https_egress），
-            // 避开 asupersync TLS 的 WSAENOTCONN 10057。必须在 sanitizer 之前安装，
-            // 以便清洗包装套在 loopback provider 上。
-            /* Windows HTTPS 出站已由 asupersync fork 的 connect 完成检测根治修复
-             * （[patch.crates-io] tianyaXs/asupersync-1 分支 fix/windows-connect-completion-v0.3.9），
-             * pi 直连 https 即可，不再需要 loopback 反代旁路。反代安装块暂时禁用，
-             * 便于本次 fork 真机验证：若 10057 复现，去掉此块注释即可回退到反代兜底。
-            if let Ok(store) = self.secret_store() {
-                let models_path = store
-                    .auth_file_path()
-                    .parent()
-                    .map(|dir| dir.join("models.json"));
-                ensure_https_egress_shim_with_paths(
-                    &mut handle.session_mut().agent,
-                    &session.https_egress_provider,
-                    store.auth_file_path(),
-                    models_path,
-                );
-            }
-            */
             // 根修：给 provider 套上流事件清洗包装（见 provider_sanitizer 模块文档）。
             // indemind 等兼容网关逐 chunk 重复下发完整 tool_calls[].id，pi 端 push_str
             // 累加出超长 id（实测 1479）污染消息历史，下一轮回放 HTTP 400（call_id ≤ 64）。
@@ -1650,37 +1640,14 @@ impl PiAgentService {
             // 会留下 TextContent{text:""} 并落地进历史，下一轮原样发给 provider。
             // kimi-coding 等严格端点据此返回 HTTP 400 “text content is empty”。
             // pi 仓库只读无法改其 convert，这里用 pi 公开的 messages/replace_messages 在发送前剔除。
-            // steer 投递由 pi agent loop 的 follow_up fetcher 负责（当前步骤/
-            // 工具批完成后注入同一 run；见 register_steer_fetcher），
-            // 这里不再手动续跑，避免双投。
-            // run 期间周期性 flush（十八轮实证：pi write-behind 是 run 结束才统一
-            // 落盘，dev 重启强杀进程会丢整轮内存产物——最后一条 toolResult 之后的
-            // assistant 全部丢失）。session Arc 是 pi 的 pub 字段，克隆给后台任务走
-            // pi 官方锁入口（OwnedMutexGuard::lock + flush_autosave），与 prompt
-            // future 的独占借用解耦；run 结束即取消（pi 自己会统一落盘，双方不竞争）。
+            // 中轮插话走 prompt_controlled + SessionControlHandle::follow_up（官方 control 车道）。
+            // run 期间周期性 flush：embedding 无 RPC 周期器，write-behind 仅在 turn
+            // 结束统一落盘；强杀会丢 toolResult 之后的 assistant（十八轮实证）。
+            // 官方尚未给 in-process 暴露 periodic flush hook，故仍用 session Arc +
+            // AgentCx（sdk 稳定面）+ flush_autosave(Periodic)（session 模块，hidden）。
+            // 与 prompt 对 handle 的独占借用解耦；run 结束 abort 本任务。
             let session_arc = handle.session_mut().session.clone();
-            let flush_task = tokio::spawn({
-                let session_arc = session_arc.clone();
-                async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    loop {
-                        interval.tick().await;
-                        let cx = pi::agent_cx::AgentCx::for_request();
-                        let Ok(guard) =
-                            asupersync::sync::OwnedMutexGuard::lock(session_arc.clone(), cx.cx())
-                                .await
-                        else {
-                            continue;
-                        };
-                        let mut guard = guard;
-                        let _ = guard
-                            .flush_autosave(pi::session::AutosaveFlushTrigger::Periodic)
-                            .await;
-                        drop(guard);
-                    }
-                }
-            });
+            let flush_task = tokio::spawn(periodic_session_flush_loop(session_arc));
 
             // deferred-init：所有读取路径都先经 abort/match 分支赋值，无需占位初值。
             let mut final_error: Option<String>;
@@ -1711,61 +1678,58 @@ impl PiAgentService {
                 // 用于 revert / persist 收尾。
                 let attempt_result = {
                     let attempt_future = async {
-                    if do_image_degraded {
-                        // 图片降级重试：provider 拒收图片，去图用纯文本重发，避免报错中断 agent。
-                        handle
-                            .prompt_with_abort(
+                        let result = if do_image_degraded {
+                            // 图片降级重试：provider 拒收图片，去图用纯文本重发。
+                            let turn = handle.prompt_controlled(
                                 degraded_image_prompt.clone(),
-                                abort_signal_for_prompt.clone(),
                                 on_event_cb,
-                            )
-                            .await
-                    } else if retry_count == 0 {
-                        match &content_blocks {
-                            None => {
-                                handle
-                                    .prompt_with_abort(
+                            );
+                            await_controlled_turn(&session_for_run, turn).await
+                        } else if retry_count == 0 {
+                            match &content_blocks {
+                                None => {
+                                    let turn = handle.prompt_controlled(
                                         effective_prompt.clone(),
-                                        abort_signal_for_prompt.clone(),
                                         on_event_cb,
-                                    )
-                                    .await
-                            }
-                            Some(blocks) => {
-                                handle
-                                    .session_mut()
-                                    .run_with_content_with_abort(
+                                    );
+                                    await_controlled_turn(&session_for_run, turn).await
+                                }
+                                Some(blocks) => {
+                                    let turn = handle.prompt_controlled_with_content(
                                         blocks.clone(),
-                                        Some(abort_signal_for_prompt.clone()),
                                         on_event_cb,
-                                    )
-                                    .await
+                                    );
+                                    await_controlled_turn(&session_for_run, turn).await
+                                }
                             }
-                        }
-                    } else {
-                        handle
-                            .continue_turn_with_abort(
-                                abort_signal_for_prompt.clone(),
-                                on_event_cb,
+                        } else {
+                            // 产品特例续跑：无 control 车道（极少路径）；插话窗口已关闭。
+                            clear_live_turn_control(&session_for_run);
+                            handle
+                                .continue_turn_with_abort(
+                                    abort_signal_for_prompt.clone(),
+                                    on_event_cb,
+                                )
+                                .await
+                        };
+                        result
+                    };
+                    tokio::pin!(attempt_future);
+                    tokio::select! {
+                        biased;
+                        _ = abort_signal_for_prompt.wait() => {
+                            // AbortHandle 唤醒后，再确保 controlled turn 收到 abort。
+                            abort_live_turn_control(&session_for_run);
+                            // 收尾窗口：等待 pi 感知 abort 并完成 persist；结果仍按 abort 处理。
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(ABORT_DRAIN_SECS),
+                                &mut attempt_future,
                             )
-                            .await
+                            .await;
+                            Err(pi::error::Error::session("aborted".to_string()))
+                        }
+                        result = &mut attempt_future => result,
                     }
-                };
-                tokio::pin!(attempt_future);
-                let attempt_result = tokio::select! {
-                    biased;
-                    _ = abort_signal_for_prompt.wait() => {
-                        // 收尾窗口：等待 pi 感知 abort 并完成 persist；结果仍按 abort 处理。
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(ABORT_DRAIN_SECS),
-                            &mut attempt_future,
-                        )
-                        .await;
-                        Err(pi::error::Error::session("aborted".to_string()))
-                    }
-                    result = &mut attempt_future => result,
-                };
-                attempt_result
                 };
 
                 if abort_signal_in_run.is_aborted() {
@@ -1785,6 +1749,8 @@ impl PiAgentService {
                     }));
                 }
 
+                // 外层：配额/鉴权立即失败；图片降级与 tool-id 溢出各试一次；
+                // 其余瞬时错误按 settings maxRetries 退避重试。
                 let should_retry = match &attempt_result {
                     Ok(message)
                         if matches!(
@@ -1801,17 +1767,20 @@ impl PiAgentService {
                         if image_unsup {
                             image_degraded_retry = true;
                         }
+                        let tool_overflow = is_tool_call_id_overflow_error(&err_msg);
+                        let product_special = image_unsup || tool_overflow;
+                        let transient = !is_quota_error(&err_msg)
+                            && pi::failover::error_result_is_retryable(message, None);
                         final_error = Some(err_msg.clone());
-                        // 限额/计费类不重试（充值前不会自愈），provider 文案透出。
-                        retry_enabled
-                            && retry_count < max_retries
-                            && !is_quota_error(&err_msg)
-                            && (pi::error::is_retryable_error(
-                                &err_msg,
-                                Some(message.usage.input),
-                                None,
-                            ) || is_tool_call_id_overflow_error(&err_msg)
-                                || image_unsup)
+                        if is_quota_error(&err_msg) {
+                            false
+                        } else if product_special {
+                            retry_count == 0
+                        } else {
+                            max_transient_retries > 0
+                                && retry_count < max_transient_retries
+                                && transient
+                        }
                     }
                     Ok(message)
                         if matches!(message.stop_reason, pi::sdk::StopReason::Aborted) =>
@@ -1833,15 +1802,20 @@ impl PiAgentService {
                         if image_unsup {
                             image_degraded_retry = true;
                         }
+                        let tool_overflow = is_tool_call_id_overflow_error(&err_str);
+                        let product_special = image_unsup || tool_overflow;
+                        let transient = !is_quota_error(&err_str)
+                            && pi::failover::call_error_is_retryable(err);
                         final_error = Some(err_str.clone());
-                        // 限额/计费类不重试（充值前不会自愈），provider 文案透出。
-                        retry_enabled
-                            && retry_count < max_retries
-                            && !is_quota_error(&err_str)
-                            && (err.is_transient()
-                                || pi::error::is_retryable_error(&err_str, None, None)
-                                || is_tool_call_id_overflow_error(&err_str)
-                                || image_unsup)
+                        if is_quota_error(&err_str) {
+                            false
+                        } else if product_special {
+                            retry_count == 0
+                        } else {
+                            max_transient_retries > 0
+                                && retry_count < max_transient_retries
+                                && transient
+                        }
                     }
                 };
 
@@ -1864,14 +1838,19 @@ impl PiAgentService {
                 }
 
                 retry_count += 1;
-                let delay_ms = retry_delay_ms(&retry_config, retry_count);
+                let delay_ms = product_retry_delay_ms(
+                    retry_base_delay_ms,
+                    retry_max_delay_ms,
+                    retry_count,
+                );
                 let error_message = final_error
                     .clone()
                     .unwrap_or_else(|| "Request error".to_string());
+                let max_attempts = max_transient_retries.max(1);
                 on_event_for_run(pi::sdk::AgentEvent::AutoRetryStart {
                     attempt: retry_count,
-                    max_attempts: max_retries,
-                    delay_ms: u64::from(delay_ms),
+                    max_attempts,
+                    delay_ms,
                     error_message,
                 });
 
@@ -1879,7 +1858,7 @@ impl PiAgentService {
                 let cancelled = tokio::select! {
                     biased;
                     _ = abort_signal_for_prompt.wait() => true,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(u64::from(delay_ms))) => false,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => false,
                 };
                 if cancelled {
                     on_event_for_run(pi::sdk::AgentEvent::AutoRetryEnd {
@@ -1893,8 +1872,8 @@ impl PiAgentService {
                 let _ = handle.session_mut().revert_incomplete_response().await;
             };
 
-            // steer 续跑已由 pi follow_up fetcher 接管（步骤完成后注入同一 run），
-            // 此处不再手动 drain。
+            // follow-up 由 SessionControlHandle 在 turn 内投递；此处清空残留 control。
+            clear_live_turn_control(&session_for_run);
             // run 主体结束：停掉周期 flush（此后 pi 统一落盘，双方不竞争）。
             flush_task.abort();
             // abort/retry 可能回滚 incomplete assistant；以最终原始分支校正总量。
@@ -2017,6 +1996,7 @@ impl PiAgentService {
         let Some(run) = runs.get(run_id) else {
             return false;
         };
+        // 唤醒外层 select（AbortHandle）+ 取消 controlled turn（SessionControlHandle）。
         run.abort_handle.abort();
         let session_id = run.session_id.clone();
         let candidates: Vec<(String, String)> = runs
@@ -2025,6 +2005,8 @@ impl PiAgentService {
             .map(|(id, child)| (id.clone(), child.session_id.clone()))
             .collect();
         drop(runs);
+
+        abort_session_turn_control(self, &session_id);
 
         // 父 run 暂停时一并中止其子 agent，避免子 session 继续烧配额、回写迟到事件。
         let mut child_targets: Vec<(String, String)> = Vec::new();
@@ -2042,6 +2024,9 @@ impl PiAgentService {
                     child.abort_handle.abort();
                 }
             }
+        }
+        for (_, child_session_id) in &child_targets {
+            abort_session_turn_control(self, child_session_id);
         }
 
         // abort 立即释放该 run 的 pending 交互，等待中的工具按拒绝收尾。
@@ -2289,7 +2274,7 @@ impl PiAgentService {
     ) -> Result<PiSessionSummary, PiAgentError> {
         self.ensure_not_running(session_id)?;
         let session = self.get_session(session_id).await?;
-        // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+        // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
         let session_for_state = Arc::clone(&session);
         let current_provider = super::pi_runtime::run(async move {
             let handle = session_for_state.handle.lock().await;
@@ -2335,10 +2320,7 @@ impl PiAgentService {
                 .set_model(&provider_for_set, &model_for_set)
                 .await
                 .map_err(|error| error.to_string())?;
-            // pi 已按新模型重建 provider，旁路/清洗缓存失效，下次 prompt 重装。
-            if let Ok(mut slot) = session_for_set.https_egress_provider.lock() {
-                *slot = None;
-            }
+            // pi 已按新模型重建 provider，清洗包装失效，下次 prompt 重装。
             if let Ok(mut slot) = session_for_set.sanitized_provider.lock() {
                 *slot = None;
             }
@@ -2377,7 +2359,7 @@ impl PiAgentService {
         self.ensure_not_running(session_id)?;
         let level: pi::sdk::ThinkingLevel = level.parse().map_err(PiAgentError::Sdk)?;
         let session = self.get_session(session_id).await?;
-        // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+        // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
         let session_for_level = Arc::clone(&session);
         super::pi_runtime::run(async move {
             let mut handle = session_for_level.handle.lock().await;
@@ -2418,7 +2400,7 @@ impl PiAgentService {
             .unwrap_or(false);
         if unchanged {
             let session = self.get_session(session_id).await?;
-            // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+            // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
             let session_for_state = Arc::clone(&session);
             let state = super::pi_runtime::run(async move {
                 let handle = session_for_state.handle.lock().await;
@@ -2455,7 +2437,7 @@ impl PiAgentService {
         }
         // 3. 重建：重载 jsonl 历史 + 新工具集/系统提示；session_id 不变。
         let session = self.get_session(session_id).await?;
-        // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+        // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
         let session_for_state = Arc::clone(&session);
         let state = super::pi_runtime::run(async move {
             let handle = session_for_state.handle.lock().await;
@@ -3101,7 +3083,7 @@ impl PiAgentService {
                 None
             }
         };
-        // pi 内核调用在专用 runtime 执行（见 pi_runtime 模块文档）。
+        // pi 内核调用经 pi_runtime 桥接（默认 asupersync）（见 pi_runtime 模块文档）。
         let options = sdk_options_with_factory(
             config,
             &hub,
@@ -3125,19 +3107,17 @@ impl PiAgentService {
                 "persisted session id mismatch: expected {session_id}, got {actual_id}"
             )));
         }
-        let pending_steers = Arc::new(Mutex::new(Vec::new()));
-        register_steer_fetcher(&mut handle, &pending_steers);
         let managed = Arc::new(ManagedSession {
             repo_path: record.repo_path,
             handle: AsyncMutex::new(handle),
             hub,
-            https_egress_provider: Mutex::new(None),
             sanitized_provider: Mutex::new(None),
             message_snapshot: Arc::new(Mutex::new(Vec::new())),
             usage_projection: Arc::new(Mutex::new(AgentUsageProjection::default())),
             runtime_prompt: record.append_system_prompt.clone(),
             runtime_context: Mutex::new(super::runtime_context::RuntimeContextProjection::default()),
-            pending_steers,
+            pending_follow_ups: Mutex::new(Vec::new()),
+            live_turn_control: Mutex::new(None),
             session_kind: record.session_kind.clone(),
             parent_session_id: record.parent_session_id.clone(),
             parent_tool_call_id: record.parent_tool_call_id.clone(),
@@ -3333,78 +3313,112 @@ fn publish_event(
     super::events::publish_event(subscribers, buffers, event);
 }
 
-/// 入队一条 steer（FIFO）。上限对齐 pi `MAX_STEERING_QUEUE_SIZE`（16）：
-/// 打满丢最旧，保序不无界。返回该消息的排队位次（从 1 计）。
-fn push_pending_steer(queue: &mut Vec<String>, message: &str) -> u32 {
-    const MAX_PENDING_STEERS: usize = 16;
-    if queue.len() >= MAX_PENDING_STEERS {
+/// run 进行中的 write-behind 周期刷盘。
+///
+/// `AgentCx` 来自 `pi::sdk`（稳定面）；`flush_autosave(Periodic)` 仍在
+/// `pi::session`（doc hidden）——上游给 embedding 官方 hook 前保留此旁路。
+async fn periodic_session_flush_loop(
+    session_arc: Arc<asupersync::sync::Mutex<pi::session::Session>>,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let cx = pi::sdk::AgentCx::for_request();
+        let Ok(guard) =
+            asupersync::sync::OwnedMutexGuard::lock(session_arc.clone(), cx.cx()).await
+        else {
+            continue;
+        };
+        let mut guard = guard;
+        let _ = guard
+            .flush_autosave(pi::session::AutosaveFlushTrigger::Periodic)
+            .await;
+        drop(guard);
+    }
+}
+
+/// control 安装前的 follow-up 缓冲（FIFO）。上限对齐 pi control 车道（100）。
+fn push_pending_follow_up(queue: &mut Vec<String>, message: &str) -> u32 {
+    const MAX_PENDING_FOLLOW_UPS: usize = 100;
+    if queue.len() >= MAX_PENDING_FOLLOW_UPS {
         queue.remove(0);
     }
     queue.push(message.to_string());
     u32::try_from(queue.len()).unwrap_or(u32::MAX)
 }
 
-/// 一次性取出队首一条 steer 并转为 pi 消息。
-/// 对齐 Codex `maybe_send_next_queued_input`：当前回合结束后只开下一条，
-/// 而不是把队列一次倒空。锁中毒时返回空——本轮不注入，留给下一个边界。
-fn drain_pending_steers(queue: &Arc<Mutex<Vec<String>>>) -> Vec<pi::sdk::Message> {
-    let text = queue.lock().ok().and_then(|mut queue| {
-        if queue.is_empty() {
-            None
-        } else {
-            Some(queue.remove(0))
-        }
-    });
-    let Some(text) = text else {
-        return Vec::new();
+fn abort_session_turn_control(service: &PiAgentService, session_id: &str) {
+    let Some(session) = service
+        .sessions
+        .lock()
+        .ok()
+        .and_then(|sessions| sessions.get(session_id).cloned())
+    else {
+        return;
     };
-    let timestamp = i64::try_from(now_ms()).unwrap_or(0);
-    vec![
-        pi::sdk::Message::User(pi::sdk::UserMessage {
-            content: pi::sdk::UserContent::Text(text),
-            timestamp,
-        }),
-        pi::sdk::Message::Custom(pi::sdk::CustomMessage {
-            content: STEER_CONTINUE_HINT.to_string(),
-            custom_type: "giteam.steer_continue".to_string(),
-            display: false,
-            details: None,
-            timestamp,
-        }),
-    ]
+    abort_live_turn_control(&session);
 }
 
-/// 插话续跑提示：不进 UI（Custom display=false），只进模型上下文。
-const STEER_CONTINUE_HINT: &str = "\
-The user sent a follow-up after the previous reply finished. Answer this follow-up now. \
-If an earlier user question in this run still lacks a complete answer, finish that first.";
-
-/// 把 steer 队列注册为 pi 的 **follow_up** fetcher。
-///
-/// 注意：官方 TS SDK（pi-mono）的 `session.steer()` 会等当前回合工具全部跑完再注入；
-/// 当前依赖的 pi_agent_rust 仍会在 steering 路径跳过未执行工具。桌面插话因此改为
-/// 「本地队列 + 本轮 prompt 结束后再开下一次 prompt」，不再依赖本 fetcher。
-/// 手机等仍调用 `steer()` 的端可继续用 follow_up 注入同一 run。
-fn register_steer_fetcher(handle: &mut AgentSessionHandle, queue: &Arc<Mutex<Vec<String>>>) {
-    let queue = Arc::clone(queue);
-    let fetcher: pi::agent::MessageFetcher = Arc::new(move || {
-        let queue = Arc::clone(&queue);
-        Box::pin(async move { drain_pending_steers(&queue) })
-    });
-    handle
-        .session_mut()
-        .agent
-        // steering=None, follow_up=Some —— 见上方注释。
-        .register_message_fetchers(None, Some(fetcher));
+fn abort_live_turn_control(session: &ManagedSession) {
+    if let Ok(slot) = session.live_turn_control.lock() {
+        if let Some(control) = slot.as_ref() {
+            let _ = control.abort();
+        }
+    }
 }
 
-fn retry_delay_ms(config: &pi::config::Config, attempt: u32) -> u32 {
-    let base = u64::from(config.retry_base_delay_ms());
-    let max = u64::from(config.retry_max_delay_ms());
-    let shift = attempt.saturating_sub(1);
-    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
-    let delay = base.saturating_mul(multiplier).min(max);
-    u32::try_from(delay).unwrap_or(u32::MAX)
+fn clear_live_turn_control(session: &ManagedSession) {
+    if let Ok(mut slot) = session.live_turn_control.lock() {
+        *slot = None;
+    }
+    if let Ok(mut queue) = session.pending_follow_ups.lock() {
+        queue.clear();
+    }
+}
+
+fn install_live_turn_control(
+    session: &ManagedSession,
+    control: pi::session_control::SessionControlHandle,
+) {
+    let pending = session
+        .pending_follow_ups
+        .lock()
+        .ok()
+        .map(|mut queue| std::mem::take(&mut *queue))
+        .unwrap_or_default();
+    for message in pending {
+        if let Err(error) = control.follow_up(&message) {
+            eprintln!("[pi-agent] flush buffered follow-up failed: {error}");
+        }
+    }
+    if let Ok(mut slot) = session.live_turn_control.lock() {
+        *slot = Some(control);
+    }
+}
+
+async fn await_controlled_turn<F>(
+    session: &ManagedSession,
+    turn: pi::session_control::ControlledTurn<F>,
+) -> pi::sdk::Result<pi::sdk::AssistantMessage>
+where
+    F: std::future::Future<Output = pi::sdk::Result<pi::sdk::AssistantMessage>>,
+{
+    let control = turn.control();
+    install_live_turn_control(session, control.clone());
+    let result = turn.await;
+    if let Ok(mut slot) = session.live_turn_control.lock() {
+        *slot = None;
+    }
+    // 未投递的 follow-up 由宿主回收，避免静默丢进下一轮。
+    let unclaimed = control.take_pending();
+    if !unclaimed.is_empty() {
+        eprintln!(
+            "[pi-agent] reclaiming {} unclaimed follow-up(s) after turn",
+            unclaimed.len()
+        );
+    }
+    result
 }
 
 fn resolve_prompt_images(
@@ -3814,6 +3828,14 @@ fn strip_empty_text_blocks(agent: &mut pi::sdk::Agent) {
     agent.replace_messages(messages);
 }
 
+/// 产品外层重试退避：attempt 为 1-based，按 base×2^(n-1) 封顶 max。
+fn product_retry_delay_ms(base_ms: u64, max_ms: u64, attempt: u32) -> u64 {
+    let base = base_ms.max(1);
+    let max = max_ms.max(base);
+    let shift = attempt.saturating_sub(1).min(16);
+    base.saturating_mul(1u64 << shift).min(max)
+}
+
 /// 限额/计费类错误判定（对照 Codex `usage_limit_reached` 不重试的取向）。
 ///
 /// pi 的 `is_retryable_error` 把 `429`/`rate limit` 一律判可重试；但限额类
@@ -3835,6 +3857,9 @@ fn is_quota_error(message: &str) -> bool {
         "balance is not enough",
         "no enough balance",
         "accountnoenoughbalance",
+        "no resource package",
+        "resource package",
+        "please recharge",
         "余额不足",
         "账户余额",
         "欠费",
@@ -4296,56 +4321,19 @@ mod tests {
     }
 
     #[test]
-    fn steer_queue_is_fifo_with_cap_dropping_oldest() {
-        // FIFO 投递顺序 + 上限淘汰最旧（giteam 侧 cap=16；pi 内部队列另有上限）。
-        let queue = Arc::new(Mutex::new(Vec::new()));
-        assert_eq!(
-            push_pending_steer(queue.lock().unwrap().as_mut(), "first"),
-            1
-        );
-        assert_eq!(
-            push_pending_steer(queue.lock().unwrap().as_mut(), "second"),
-            2
-        );
-        let steer_texts = |messages: &[pi::sdk::Message]| -> Vec<String> {
-            messages
-                .iter()
-                .filter_map(|message| match message {
-                    pi::sdk::Message::User(user) => match &user.content {
-                        pi::sdk::UserContent::Text(text) => Some(text.clone()),
-                        pi::sdk::UserContent::Blocks(_) => Some(String::new()),
-                    },
-                    _ => None,
-                })
-                .collect()
-        };
-        let drained = drain_pending_steers(&queue);
-        assert_eq!(steer_texts(&drained), vec!["first"]);
-        assert!(
-            drained.iter().any(|message| matches!(
-                message,
-                pi::sdk::Message::Custom(custom)
-                    if custom.custom_type == "giteam.steer_continue" && !custom.display
-            )),
-            "drain must attach a non-display steer-continue hint for the model"
-        );
-        let drained_second = drain_pending_steers(&queue);
-        assert_eq!(steer_texts(&drained_second), vec!["second"]);
-        assert!(drain_pending_steers(&queue).is_empty());
+    fn follow_up_buffer_is_fifo_with_cap_dropping_oldest() {
+        // control 安装前缓冲：FIFO + 上限 100 淘汰最旧。
+        let mut queue = Vec::new();
+        assert_eq!(push_pending_follow_up(&mut queue, "first"), 1);
+        assert_eq!(push_pending_follow_up(&mut queue, "second"), 2);
+        assert_eq!(queue, vec!["first".to_string(), "second".to_string()]);
 
-        for index in 0..20 {
-            push_pending_steer(queue.lock().unwrap().as_mut(), &format!("m{index}"));
+        for index in 0..110 {
+            push_pending_follow_up(&mut queue, &format!("m{index}"));
         }
-        assert_eq!(queue.lock().unwrap().len(), 16, "cap should drop oldest");
-        let drained = drain_pending_steers(&queue);
-        let texts = steer_texts(&drained);
-        assert_eq!(texts, vec!["m4"]);
-        assert!(
-            drained
-                .iter()
-                .any(|message| matches!(message, pi::sdk::Message::Custom(_))),
-            "cap drain still attaches continue hint"
-        );
+        assert_eq!(queue.len(), 100, "cap should drop oldest");
+        assert_eq!(queue.first().map(String::as_str), Some("m10"));
+        assert_eq!(queue.last().map(String::as_str), Some("m109"));
     }
 
     #[test]
@@ -4359,6 +4347,8 @@ mod tests {
             "usage limit reached (resets at 2026-08-18)",
             "您的人工智能免费额度已用完",
             "Rate limit 429 quota exceeded for requests",
+            // z.ai code 1113：HTTP 429 但正文是余额/资源包，绝不能当瞬时限流重试。
+            "OpenAI API error (HTTP 429): {\"error\":{\"code\":\"1113\",\"message\":\"Insufficient balance or no resource package. Please recharge.\"}}",
         ] {
             assert!(
                 is_quota_error(message),
@@ -4374,6 +4364,14 @@ mod tests {
         ] {
             assert!(!is_quota_error(message), "not quota: {message}");
         }
+    }
+
+    #[test]
+    fn product_retry_delay_doubles_then_caps() {
+        assert_eq!(product_retry_delay_ms(1_000, 30_000, 1), 1_000);
+        assert_eq!(product_retry_delay_ms(1_000, 30_000, 2), 2_000);
+        assert_eq!(product_retry_delay_ms(1_000, 30_000, 3), 4_000);
+        assert_eq!(product_retry_delay_ms(1_000, 5_000, 10), 5_000);
     }
 
     #[test]

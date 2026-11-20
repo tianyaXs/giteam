@@ -7,6 +7,7 @@
 
 mod commands;
 mod os_overlay;
+mod pet_window;
 mod remote_repo;
 
 use tauri::{Emitter, Manager};
@@ -238,7 +239,11 @@ fn main() {
     let mut builder = tauri::Builder::default()
         .manage(commands::watch::GitWorktreeWatcherState::default())
         // 窗口状态持久化：保存/恢复 size、position、maximized（首次启动用 tauri.conf 默认）。
-        .plugin(tauri_plugin_window_state::Builder::default().build());
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["desktop-pet"])
+                .build(),
+        );
 
     // 关到托盘后进程仍在；无单实例守卫时，再点快捷方式 / 安装器会再起一个进程 → 无限叠窗。
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -371,6 +376,11 @@ fn main() {
             commands::os_permissions::request_os_permission,
             commands::os_permissions::open_os_permission_settings,
             os_overlay::os_overlay_ready,
+            pet_window::pet_sync,
+            pet_window::pet_ready,
+            pet_window::pet_pointer,
+            pet_window::pet_open_client,
+            pet_window::pet_save_position,
             commands::release_notes::fetch_latest_release,
             commands::ui::pick_agent_attachments,
             commands::ui::read_agent_attachments_from_paths,
@@ -587,8 +597,8 @@ fn clamp_window_to_monitor(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 从托盘 / Dock 图标把主窗口拉回前台。
-fn show_main_window(app: &tauri::AppHandle) {
+/// 从托盘 / Dock 图标 / 桌面宠物把主窗口拉回前台。
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();

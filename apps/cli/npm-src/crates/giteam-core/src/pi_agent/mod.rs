@@ -1,20 +1,45 @@
 mod browser_controller;
 mod environment;
 mod events;
-mod https_egress;
 mod interactions;
 mod managed_bins;
+mod mcp;
 mod messages;
+mod os_controller;
+mod compaction;
+mod context_breakdown;
+mod path_guard;
+pub(crate) mod sandbox_policy;
+mod permission_presets;
 mod permissions;
+mod pi_runtime;
 mod project_memory;
 mod prompt;
+mod prompt_assembly;
 mod provider_sanitizer;
+pub(crate) mod runtime_context;
 mod providers;
 mod secrets;
 mod service;
 mod skills;
 mod subagents;
 mod tools;
+
+/// giteam 数据根目录（~/.giteam 或 $GITEAM_HOME）：桌面端日志落盘等用。
+pub fn giteam_data_dir() -> Option<std::path::PathBuf> {
+    secrets::default_data_dir()
+}
+
+/// office 文件历史版本恢复（写/改工具自动快照；桌面端 Tauri 命令入口）。
+pub fn restore_office_previous_version(path: &std::path::Path) -> Result<bool, String> {
+    tools::office::restore_previous_version(path)
+}
+
+/// office 文件剩余可回退版本数。
+pub fn office_previous_version_count(path: &std::path::Path) -> usize {
+    tools::office::previous_version_count(path)
+}
+
 mod types;
 
 pub use browser_controller::{BrowserAction, BrowserActionResult, BrowserController};
@@ -22,42 +47,58 @@ pub use events::{
     set_ui_event_hook, AgentEvent, AgentEventEnvelope, MemoryExtractionEntity, PiEventTranslator,
     AGENT_EVENT_SCHEMA_VERSION,
 };
-pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole};
+pub use managed_bins::{
+    agent_bin_dir, agent_bin_dir_string, ensure_agent_bins, prepend_agent_bin_to_path,
+    BinEnsureReport, BinSource,
+};
+pub use mcp::{
+    add_service as mcp_add_service, admin_add_service as mcp_admin_add_service,
+    admin_authenticate_service as mcp_admin_authenticate_service,
+    admin_connect_service as mcp_admin_connect_service,
+    admin_disconnect_service as mcp_admin_disconnect_service,
+    admin_list_services as mcp_admin_list_services, admin_list_tools as mcp_admin_list_tools,
+    admin_remove_service as mcp_admin_remove_service, load_for_repo as mcp_load_for_repo,
+    load_with_base as mcp_load_with_base, parse_opencode_entry as mcp_parse_opencode_entry,
+    refresh_tools as mcp_refresh_tools, remove_service as mcp_remove_service,
+    repo_config_path as mcp_repo_config_path, McpError, McpMutationResult, McpRuntime,
+    McpServiceError, McpServiceInput, McpServiceStatus, McpToolInfo, McpToolSpec, McpToolsSnapshot,
+};
+pub use context_breakdown::{
+    ContextBreakdown, ContextCategoryId, ContextCategoryUsage,
+};
+pub use messages::{AgentMessage, AgentPart, AgentPromptImage, AgentRole, AgentTokenUsage};
+pub use os_controller::{OsActionResult, OsController, SharedOsController};
 pub use prompt::default_system_prompt;
 pub use providers::{
     AgentModelCost, AgentModelInfo, AgentProviderInfo, CustomProviderInput, ProviderCatalog,
-};
-pub use managed_bins::{
-    agent_bin_dir, agent_bin_dir_string, ensure_agent_bins, prepend_agent_bin_to_path, BinEnsureReport,
-    BinSource,
 };
 pub use secrets::{
     default_data_dir, default_pi_agent_dir, ensure_data_dir, ensure_pi_agent_dir_env,
     ensure_pi_retry_settings, ensure_repo_pi_sessions_dir, ensure_workspace_giteam_gitignore,
     legacy_platform_data_dir, legacy_repo_memory_db_path, legacy_repo_pi_sessions_dir,
-    legacy_tauri_bundle_data_dir, memory_db_path_for_repo, migrate_legacy_tauri_data_into_canonical,
-    migrate_session_file_bundle, pi_sessions_dir_for_repo, pi_sessions_root,
-    remap_legacy_session_path, repo_sessions_key, SecretStore,
+    legacy_tauri_bundle_data_dir, memory_db_path_for_repo,
+    migrate_legacy_tauri_data_into_canonical, migrate_session_file_bundle,
+    pi_sessions_dir_for_repo, pi_sessions_root, remap_legacy_session_path, repo_sessions_key,
+    SecretStore,
 };
 pub use service::{
     AgentEventReceiver, AgentEventSink, PiAgentError, PiAgentService, PiSessionConfig,
     PiSessionSummary, SteerOutcome,
-};
-pub use subagents::{
-    build_child_system_prompt, build_extract_system_prompt, child_stall_secs, child_timeout_secs,
-    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionFallback,
-    ExtractionCompletionRequest,
-    ExtractionCompletionResult, MemoryExtractionPublisher, SubagentDefinition, SubagentHost,
-    SubagentSpawnRequest, SubagentSpawnResult, SubagentType, DEFAULT_CHILD_STALL_SECS,
-    DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS, EXTRACT_ROLE_RULES,
-    MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
 };
 pub use skills::{
     build_skills_prompt, install_builtin_agent_skill, list_installed_agent_skills,
     remove_installed_agent_skills_by_path, save_agent_skill_source_groups, AgentInstalledSkill,
     AgentSkillSourceGroupEntry,
 };
+pub use subagents::{
+    build_child_system_prompt, build_extract_system_prompt, child_stall_secs, child_timeout_secs,
+    extract_timeout_secs, resolve as resolve_subagent_type, ExtractionCompletionFallback,
+    ExtractionCompletionRequest, ExtractionCompletionResult, MemoryExtractionPublisher,
+    SubagentDefinition, SubagentHost, SubagentSpawnRequest, SubagentSpawnResult, SubagentType,
+    DEFAULT_CHILD_STALL_SECS, DEFAULT_CHILD_TIMEOUT_SECS, DEFAULT_EXTRACT_TIMEOUT_SECS,
+    EXPLORE_ENABLED_TOOLS, EXTRACT_ROLE_RULES, MAX_CONCURRENT_CHILDREN, PLAN_ENABLED_TOOLS,
+};
 pub use types::{
-    AgentInteraction, AgentInteractionReply, AgentQuestion, AgentQuestionOption, AgentSessionStatus,
-    AgentTodo, AgentTodoStatus, PiRuntimeInfo, RuntimeCapabilities,
+    AgentInteraction, AgentInteractionReply, AgentQuestion, AgentQuestionOption,
+    AgentSessionStatus, AgentTodo, AgentTodoStatus, PiRuntimeInfo, RuntimeCapabilities,
 };

@@ -9,11 +9,12 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
-      // 多页构建：index.html 主应用；overlay.html agent 覆盖层（极简入口，
-      // 见 src/os/overlay-main.tsx）。两页完全隔离，覆盖层不引主应用 bundle。
+      // 多页构建：index.html 主应用；overlay.html agent 覆盖层；pet.html 桌面宠物。
+      // 各页隔离，宠物窗口不引主应用 bundle。
       input: {
         main: "index.html",
         overlay: "overlay.html",
+        pet: "pet.html",
       },
       output: {
         manualChunks(id) {

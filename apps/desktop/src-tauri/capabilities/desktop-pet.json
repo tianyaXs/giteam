@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-pet",
+  "description": "Transparent always-on-top desktop pet. It can listen for appearance updates and move itself.",
+  "windows": ["desktop-pet"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor",
+    "core:window:allow-inner-size",
+    "core:window:allow-current-monitor",
+    "core:window:allow-primary-monitor"
+  ]
+}

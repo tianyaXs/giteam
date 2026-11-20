@@ -37,6 +37,7 @@ import {
   dedupeVisibleSubagentTaskParts,
   resolveTaskCardTitle
 } from "../../lib/subagentRun";
+import { humanizeAgentError } from "../../lib/humanizeAgentError";
 import { cn } from "../../lib/utils";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
@@ -909,6 +910,7 @@ const SEGMENT_TITLES: Record<string, { active: string; done: string }> = {
   "记录": { active: "记录中", done: "已记录" },
   "回忆": { active: "回忆中", done: "已回忆" },
   "操作文件": { active: "操作文件中", done: "已操作文件" },
+  "重试": { active: "重试中", done: "已重试" },
   "执行": { active: "执行中", done: "已执行" }
 };
 
@@ -938,14 +940,25 @@ function ActivitySegment({
   renderMarkdown: RenderMarkdown;
 }) {
   const anyRunning = !forceInactive;
+  const retryParts = steps.flatMap((step) =>
+    step.kind === "part"
+    && String((step.part as { type?: string }).type || "") === "runtime.retry"
+      ? [step.part]
+      : []
+  );
+  const hasRetry = retryParts.length > 0;
+  const retryRunning = retryParts.some((part) => {
+    const phase = String((part as { phase?: string }).phase || "").trim();
+    const success = (part as { success?: boolean | null }).success;
+    return phase === "started" || (phase === "completed" && success === false);
+  });
   const hasTask = steps.some(
     (step) =>
       (step.kind === "part" && isTaskToolPart(step.part))
       || (step.kind === "tool-batch" && step.batchKind === "task")
   );
-  // 只有含「子任务」的段默认展开运行态；思考/探索/命令/编辑段保持收起的摘要行（默认值仅
-  // 在用户未点过时生效，timelineOpenState 优先）。
-  const autoOpenRunning = hasTask;
+  // 子任务/重试行默认展开，避免只看到「运行中 1 个步骤」却看不到重试原因。
+  const autoOpenRunning = hasTask || (anyRunning && retryRunning);
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
   const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
   const setError = steps.some((step) =>
@@ -959,7 +972,9 @@ function ActivitySegment({
   // 段头按「原子调用数最多的 kind」取名（合并后一个 shell 批可能含多次命令）：
   // 对齐官方 Task 的"主导动作"语义——一段里运行了 5 条命令 + 顺手读了 2 个文件，
   // 段名应叫「已运行」而不是末尾的「已探索/已读取」。
+  // 有 runtime.retry 时优先「重试」，否则折叠标题看不出在自动重试。
   const segmentLabel = (() => {
+    if (hasRetry) return "重试";
     const counts = new Map<string, number>();
     const bump = (label: string, weight: number) =>
       counts.set(label, (counts.get(label) || 0) + weight);
@@ -981,7 +996,7 @@ function ActivitySegment({
       } else if (step.kind === "part") {
         const type = String((step.part as { type?: string }).type || "");
         if (type === "runtime.memory") bump("记录", 1);
-        else if (type === "text") continue;
+        else if (type === "text" || type === "runtime.retry") continue;
         else bump("运行", 1);
       }
     }
@@ -1002,6 +1017,16 @@ function ActivitySegment({
     if (step.kind === "context" || step.kind === "tool-batch") return sum + (step.parts.length || 1);
     return sum + 1;
   }, 0);
+  const retrySummary = (() => {
+    if (!hasRetry) return "";
+    const part = retryParts[retryParts.length - 1];
+    const attempt = Number((part as { attempt?: number }).attempt) || 0;
+    const maxAttempts = Number((part as { maxAttempts?: number }).maxAttempts) || 0;
+    const attemptLabel = maxAttempts > 0 ? `${attempt}/${maxAttempts}` : String(attempt || "?");
+    const error = humanizeAgentError(String((part as { error?: string }).error || "").trim());
+    const preview = error.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+    return preview ? `${attemptLabel} · ${preview}` : attemptLabel;
+  })();
 
   // 官方 Test Results 识别：同一段里 bash 命令 + 输出可解析出套件/用例时，
   // 用官方 test-results 卡替代该次命令的普通终端行；其余命令仍走原渲染。
@@ -1053,7 +1078,7 @@ function ActivitySegment({
             </TraceIcon>
             <TraceTitle className="text-sm">{anyRunning ? titles.active : titles.done}</TraceTitle>
             <TraceDescription className="max-w-[240px] shrink truncate">
-              {`${stepCount} 个步骤`}
+              {retrySummary || `${stepCount} 个步骤`}
             </TraceDescription>
           </TraceLine>
         </TraceCollapsibleTrigger>
@@ -2083,7 +2108,7 @@ function RuntimeRetryPart({ part }: { part: AgentDetailedPart }) {
   const attempt = Number((part as { attempt?: number }).attempt) || 0;
   const maxAttempts = Number((part as { maxAttempts?: number }).maxAttempts) || 0;
   const success = (part as { success?: boolean | null }).success;
-  const error = String((part as { error?: string }).error || "").trim();
+  const error = humanizeAgentError(String((part as { error?: string }).error || "").trim());
   const attemptLabel = maxAttempts > 0 ? `${attempt}/${maxAttempts}` : String(attempt || "?");
   const running = phase === "started" || (phase === "completed" && success === false && !error);
   const failed = phase === "completed" && success === false;
@@ -2283,7 +2308,7 @@ function MemoryExtractionPart({
 
 function AgentErrorMessage({ message }: { message: string }) {
   const [open, setOpen] = useState(false);
-  const text = message.trim();
+  const text = humanizeAgentError(message).trim();
   if (!text) return null;
   const paused = /^(已暂停|已中止|aborted)$/i.test(text) || /中止|暂停|已停止|abort/i.test(text);
   const label = paused ? "已暂停" : "运行失败";
@@ -2494,13 +2519,20 @@ export function AgentMessageStream({
   /** 程序化写滚动期间忽略 scroll 事件，避免被误判成读者上滚而清 stick。 */
   const writingScrollRef = useRef(false);
   const atBottomRef = useRef(true);
+  /**
+   * 只在 run busy 时持续追底。结束后收口/高度回缩再 pin，会把视口拽回
+   * 「user 贴底」的刚发送姿态；busy→idle 只钉一次终态位置。
+   */
+  const activeSessionBusyRef = useRef(activeSessionBusy);
+  activeSessionBusyRef.current = activeSessionBusy;
+  const prevSessionBusyRef = useRef(activeSessionBusy);
   /** 加载更早历史：保存可见行锚点，prepend 后校正。 */
   const prependAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const firstRowKeyRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   /**
    * 概览标尺进度：scrollTop / maxScroll ∈ [0,1]，存在 ref 里。
-   * 帆船标尺每帧读 ref，父级只在高亮下标变化时 setState。
+   * 帆船 Y 与蓝点高亮共用这一轴：船每帧读 ref，蓝点 = progress 映射到消息下标。
    */
   const navigatorProgressRef = useRef(0);
   const navigatorMaxIndexRef = useRef(0);
@@ -2547,10 +2579,8 @@ export function AgentMessageStream({
     writeScrollTop(sc.scrollHeight, immediate);
     stickToBottomRef.current = true;
     atBottomRef.current = true;
-    // 程序化到底也必须刷新尺标：scroll 回调可能因 observedTop 对齐而跳过 sync。
-    navigatorProgressRef.current = 1;
-    const maxIdx = navigatorMaxIndexRef.current;
-    setNavigatorActiveIndex(maxIdx <= 0 ? 0 : maxIdx);
+    // 尺标进度/蓝点一律走 sync（progress 同轴），避免贴底时另写一套下标。
+    syncNavigatorFromScrollRef.current();
     onAtBottomChange(true);
   }, [writeScrollTop, onAtBottomChange]);
 
@@ -2954,6 +2984,8 @@ export function AgentMessageStream({
       else if (top >= maxScroll - 2) progress = 1;
       else progress = top / maxScroll;
     }
+    // 船与蓝点同一轴：progress → 船 Y；round(progress×maxIdx) → 蓝点（再取最近 marker）。
+    // 勿再用视口中心命中：消息高度不均时蓝点会漂到船外很远。
     navigatorProgressRef.current = progress;
     const maxIdx = navigatorMaxIndexRef.current;
     const nextIndex = maxIdx <= 0 ? 0 : Math.round(progress * maxIdx);
@@ -3101,7 +3133,13 @@ export function AgentMessageStream({
 
     const onResize = () => {
       lenisRef.current?.resize();
-      if (stickToBottomRef.current && !pendingLocateIdRef.current && !locatedThisSessionRef.current) {
+      // 仅 busy 追高；收口后的 Resize（思考/工具收起）再 pin 会跳回 user 贴底。
+      if (
+        activeSessionBusyRef.current
+        && stickToBottomRef.current
+        && !pendingLocateIdRef.current
+        && !locatedThisSessionRef.current
+      ) {
         pinToBottom(true);
       } else {
         syncNavigatorFromScrollRef.current();
@@ -3310,37 +3348,50 @@ export function AgentMessageStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocateId, pendingLocateIndex, sessionLoading]);
 
-  // 会话就绪且无定位：滚到底。
+  // 切会话 / 加载完成：滚到底（不跟 length——收口并行走数变化时再 pin 会误跳）。
   useEffect(() => {
     if (sessionLoading || rowsWithTurnSummary.length === 0) return;
     if (pendingLocateId || locatedThisSessionRef.current) return;
+    if (!stickToBottomRef.current) return;
     pinToBottom(true);
     const timers = [64, 200, 420].map((ms) => window.setTimeout(() => {
-      if (!pendingLocateIdRef.current && !locatedThisSessionRef.current) pinToBottom(true);
+      if (!pendingLocateIdRef.current && !locatedThisSessionRef.current && stickToBottomRef.current) {
+        pinToBottom(true);
+      }
     }, ms));
     return () => timers.forEach((t) => window.clearTimeout(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId, sessionLoading, rowsWithTurnSummary.length]);
+  }, [activeSessionId, sessionLoading]);
 
-  // 末尾追加用户消息：强制贴底。
+  // busy→idle：钉在输出结束位置一次，之后不再追布局回缩。
+  useLayoutEffect(() => {
+    const wasBusy = prevSessionBusyRef.current;
+    prevSessionBusyRef.current = activeSessionBusy;
+    if (wasBusy && !activeSessionBusy && canStickPin()) {
+      pinToBottom(true);
+    }
+  }, [activeSessionBusy, pinToBottom]);
+
+  // 流式增长时追底；结束后的 contentSig/收口抖动不再 pin。
   const lastRowKey = rowsWithTurnSummary[rowsWithTurnSummary.length - 1]?.stableKey ?? null;
   const lastRow = rowsWithTurnSummary[rowsWithTurnSummary.length - 1];
-  // 流式同 key 变高：用正文长度 + timeline 组数驱动贴底，不只依赖 ResizeObserver。
   const lastRowContentSig = lastRow
     ? `${lastRowKey}:${lastRow.msg.content.length}:${lastRow.liveParts.length}:${lastRow.renderParts.length}:${lastRow.fallbackReply.length}:${lastRow.timelineGroups.length}`
     : "";
   const prevLastRowKeyRef = useRef<string | null>(null);
+  const lastRowIsAssistant = Boolean(lastRow?.isAssistant);
   useLayoutEffect(() => {
     const prev = prevLastRowKeyRef.current;
     prevLastRowKeyRef.current = lastRowKey;
     if (!lastRowKey) return;
-    const row = rowsWithTurnSummary[rowsWithTurnSummary.length - 1];
-    if (row && !row.isAssistant && lastRowKey !== prev) {
-      pinToBottom(true);
+    // 不要依赖 rowsWithTurnSummary 引用：蓝点 setState 也会换新数组，会把贴底打成死循环。
+    if (!lastRowIsAssistant && lastRowKey !== prev) {
+      if (canStickPin()) pinToBottom(true);
       return;
     }
-    if (canStickPin()) pinToBottom(true);
-  }, [lastRowKey, lastRowContentSig, rowsWithTurnSummary, pinToBottom]);
+    // 仅 run 进行中跟进最新；结束后停在输出完的位置。
+    if (activeSessionBusy && canStickPin()) pinToBottom(true);
+  }, [lastRowKey, lastRowContentSig, lastRowIsAssistant, activeSessionBusy, pinToBottom]);
 
   if (sessionLoading) {
     return (

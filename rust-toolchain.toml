@@ -1,5 +1,6 @@
 [toolchain]
-channel = "nightly-2026-07-05"
+# 对齐 pi_agent_rust 0.8（rust-version 1.95；上游锁 nightly-2026-08-31）
+channel = "nightly-2026-08-31"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
 

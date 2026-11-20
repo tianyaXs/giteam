@@ -547,7 +547,6 @@ export function AgentProviderSettingsPanel({
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2 px-0.5">
                 <span className="text-[12px] font-medium text-foreground">模型列表</span>
-                <span className="text-[11px] text-muted-foreground">开关控制是否出现在选择器中</span>
                 <div className="ml-auto flex items-center gap-1.5">
                   <Button
                     type="button"
@@ -575,12 +574,6 @@ export function AgentProviderSettingsPanel({
                   />
                 </div>
               </div>
-
-              {enabledCount === 0 && pool.length > 0 ? (
-                <div className="rounded-lg border border-dashed border-border/80 bg-muted/25 px-3 py-2 text-[12px] text-muted-foreground">
-                  当前没有显示中的模型。打开下方开关后，才会出现在对话的模型选择器里。
-                </div>
-              ) : null}
 
               <ScrollArea className="min-h-0 flex-1">
                 <div className="pb-2 pr-1">

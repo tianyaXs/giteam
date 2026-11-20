@@ -9,7 +9,11 @@ use super::runtime_context::build_runtime_snapshot;
 use super::skills::build_skills_prompt;
 
 /// 稳定 system append 段顺序（不含 pi 自带的 Project Context / date / cwd）。
-pub const STABLE_APPEND_ORDER: &[&str] = &["memory", "workspace", "skills"];
+/// skills 走官方 `SessionOptions.skills_prompt`，不在 append 内。
+pub const STABLE_APPEND_ORDER: &[&str] = &["memory", "workspace"];
+
+/// 官方 skills 槽位（与 append 并列，见 `SessionOptions.skills_prompt`）。
+pub const SKILLS_PROMPT_SECTION: &str = "skills";
 
 /// 动态 runtime 段顺序（独立 Custom，不进 system）。
 pub const RUNTIME_SECTION_ORDER: &[&str] = &["sandbox", "digest", "extra"];
@@ -46,9 +50,9 @@ pub fn sample_prompt_assembly(
     }
     stable_parts.push(build_workspace_context(repo_path, true));
     stable_sections.push("workspace");
-    if let Some(skills) = build_skills_prompt(repo_path) {
-        stable_parts.push(skills);
-        stable_sections.push("skills");
+    let skills = build_skills_prompt(repo_path);
+    if skills.is_some() {
+        stable_sections.push(SKILLS_PROMPT_SECTION);
     }
     let stable = {
         let mut base = default_system_prompt(None);
@@ -57,6 +61,12 @@ pub fn sample_prompt_assembly(
                 base.push_str("\n\n");
             }
             base.push_str(&stable_parts.join("\n\n"));
+        }
+        if let Some(skills) = skills.as_deref() {
+            if !base.is_empty() {
+                base.push_str("\n\n");
+            }
+            base.push_str(skills);
         }
         base
     };
@@ -91,7 +101,8 @@ mod tests {
 
     #[test]
     fn stable_order_constant_matches_policy() {
-        assert_eq!(STABLE_APPEND_ORDER, &["memory", "workspace", "skills"]);
+        assert_eq!(STABLE_APPEND_ORDER, &["memory", "workspace"]);
+        assert_eq!(SKILLS_PROMPT_SECTION, "skills");
         assert_eq!(RUNTIME_SECTION_ORDER, &["sandbox", "digest", "extra"]);
     }
 

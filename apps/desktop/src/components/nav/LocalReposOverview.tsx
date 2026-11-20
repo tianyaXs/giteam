@@ -7,7 +7,13 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import {
+  animate,
+  motion,
+  useMotionValue,
+  useMotionValueEvent,
+  useReducedMotion,
+} from "motion/react";
 import type { RepositoryEntry } from "../../lib/types";
 import type { ChatSessionSummary } from "../../lib/agentSessions";
 import {
@@ -25,7 +31,10 @@ const ART_CYCLE: GlassFolderArt[] = [
 ];
 
 /**
- * 画廊货架：拱桥只承载项目；添加入口沉到桥下，克制、安静。
+ * 画廊货架：拱桥只承载项目；添加入口沉到桥下。
+ * GlassFolder 按官方用法：原生核心自治，React 只 mount/update/destroy；
+ * 滑动位姿由货架 DOM 直绘。
+ * @see https://leibox.pantoria.cn/docs/animations/glass-folder
  */
 const CARD_WIDTH = 236;
 const CARD_HEIGHT = 252;
@@ -36,6 +45,15 @@ const ROTATE_Y = 10;
 const SCALE_STEP = 0.07;
 const DEPTH_Z = 24;
 const VISIBLE_SPAN = 2.35;
+/** visualDuration：可继承速度；Δ=1 为基准，跨格按 √Δ 拉长。 */
+const STEP_VISUAL_DURATION = 0.52;
+const STEP_BOUNCE = 0.03;
+const MAX_SLIDE_DURATION = 1.15;
+
+function slideVisualDuration(distance: number): number {
+  const steps = Math.max(1, Math.abs(distance));
+  return Math.min(MAX_SLIDE_DURATION, STEP_VISUAL_DURATION * Math.sqrt(steps));
+}
 
 function hashSeed(value: string): number {
   let h = 2166136261;
@@ -120,7 +138,6 @@ function shelfStyle(
   };
 }
 
-/** 桥下动作：暗色玻璃轻触，与文件夹同语汇，无独立容器。 */
 function AddProjectCue(props: {
   empty?: boolean;
   onAdd: () => void;
@@ -198,6 +215,9 @@ export function LocalReposOverview(props: {
     animateEnter = false,
   } = props;
   const reduceMotion = useReducedMotion();
+  const reduceMotionRef = useRef(reduceMotion);
+  reduceMotionRef.current = reduceMotion;
+
   const onOpenRepoRef = useRef(onOpenRepo);
   const onOpenSessionRef = useRef(onOpenSession);
   const onCloseProjectRef = useRef(onCloseProject);
@@ -216,9 +236,57 @@ export function LocalReposOverview(props: {
     moved: boolean;
   } | null>(null);
   const wheelLockRef = useRef(0);
+  const animControlsRef = useRef<{ stop: () => void } | null>(null);
+  const animGenRef = useRef(0);
+  const targetIndexRef = useRef(0);
+  const maxIndexRef = useRef(0);
+  const movingRef = useRef(false);
+  const focusIndexRef = useRef(0);
+  const focusValueRef = useRef(0);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const slide = useMotionValue(0);
   const [focus, setFocus] = useState(0);
-  const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [sliding, setSliding] = useState(false);
+
+  const paintShelf = (focusValue: number) => {
+    focusValueRef.current = focusValue;
+    const nodes = cardRefs.current;
+    const reduced = reduceMotionRef.current;
+    const isMoving = movingRef.current;
+    for (let index = 0; index < nodes.length; index++) {
+      const el = nodes[index];
+      if (!el) continue;
+      const offset = index - focusValue;
+      const abs = Math.abs(offset);
+      if (abs > VISIBLE_SPAN + 0.85) {
+        el.style.visibility = "hidden";
+        el.style.pointerEvents = "none";
+        el.style.opacity = "0";
+        el.setAttribute("aria-hidden", "true");
+        el.setAttribute("aria-selected", "false");
+        continue;
+      }
+      const style = shelfStyle(offset, reduced);
+      const focused = abs < 0.45;
+      el.style.visibility = "visible";
+      el.style.transform = style.transform;
+      el.style.opacity = String(style.opacity);
+      el.style.zIndex = String(focused ? 100 : style.zIndex);
+      el.style.pointerEvents = isMoving ? "none" : abs < 1.35 ? "auto" : "none";
+      el.removeAttribute("aria-hidden");
+      el.setAttribute("aria-selected", focused ? "true" : "false");
+    }
+  };
+
+  useMotionValueEvent(slide, "change", (value) => {
+    paintShelf(value);
+    const next = Math.round(clamp(value, 0, maxIndexRef.current));
+    if (next !== focusIndexRef.current) {
+      focusIndexRef.current = next;
+      setFocus(next);
+    }
+  });
 
   useEffect(() => {
     for (const repo of repos) ensureRepoSessions(repo);
@@ -260,11 +328,88 @@ export function LocalReposOverview(props: {
 
   const maxIndex = Math.max(0, items.length - 1);
   const empty = items.length === 0;
+  maxIndexRef.current = maxIndex;
+
+  useEffect(() => {
+    cardRefs.current.length = items.length;
+    paintShelf(slide.get());
+  }, [items.length, reduceMotion]);
+
+  const setMoving = (next: boolean) => {
+    if (movingRef.current === next) return;
+    movingRef.current = next;
+    paintShelf(slide.get());
+  };
+
+  const stopSlideAnim = () => {
+    animGenRef.current += 1;
+    animControlsRef.current?.stop();
+    animControlsRef.current = null;
+    setSliding(false);
+    setMoving(false);
+  };
+
+  const jumpTo = (value: number, soft = false) => {
+    if (soft) {
+      animControlsRef.current?.stop();
+      animControlsRef.current = null;
+    } else {
+      stopSlideAnim();
+    }
+    const next = clamp(value, 0, maxIndexRef.current);
+    targetIndexRef.current = Math.round(next);
+    if (typeof slide.jump === "function") slide.jump(next);
+    else slide.set(next);
+  };
+
+  const goTo = (index: number) => {
+    const end = clamp(Math.round(index), 0, maxIndexRef.current);
+    if (end === targetIndexRef.current && animControlsRef.current) return;
+
+    if (reduceMotion) {
+      jumpTo(end);
+      return;
+    }
+
+    const from = slide.get();
+    const distance = end - from;
+    if (Math.abs(distance) < 0.02) {
+      jumpTo(end);
+      return;
+    }
+
+    targetIndexRef.current = end;
+    const gen = (animGenRef.current += 1);
+    const velocity =
+      typeof slide.getVelocity === "function" ? slide.getVelocity() : 0;
+    animControlsRef.current?.stop();
+    animControlsRef.current = null;
+    setSliding(true);
+    setMoving(true);
+
+    const controls = animate(slide, end, {
+      type: "spring",
+      visualDuration: slideVisualDuration(distance),
+      bounce: STEP_BOUNCE,
+      velocity,
+      onComplete: () => {
+        if (gen !== animGenRef.current) return;
+        animControlsRef.current = null;
+        if (typeof slide.jump === "function") slide.jump(end);
+        else slide.set(end);
+        setSliding(false);
+        setMoving(false);
+      },
+    });
+    animControlsRef.current = controls;
+  };
+
+  useEffect(() => () => stopSlideAnim(), []);
 
   const syncFocusToSelection = useEffectEvent((repoId: string | null) => {
     if (!repoId) return;
     const idx = items.findIndex((item) => item.repo.id === repoId);
-    if (idx >= 0) setFocus(idx);
+    if (idx >= 0 && targetIndexRef.current !== idx) goTo(idx);
   });
 
   useEffect(() => {
@@ -272,26 +417,21 @@ export function LocalReposOverview(props: {
   }, [selectedRepoId, items]);
 
   useEffect(() => {
-    setFocus((prev) => clamp(prev, 0, maxIndex));
+    if (slide.get() > maxIndex) jumpTo(maxIndex);
   }, [maxIndex]);
 
   const moveBy = (delta: number) => {
     if (empty) return;
-    setFocus((prev) => clamp(prev + delta, 0, maxIndex));
-    setDragOffset(0);
-  };
-
-  const goTo = (index: number) => {
-    setFocus(clamp(index, 0, maxIndex));
-    setDragOffset(0);
+    goTo(Math.round(slide.get()) + delta);
   };
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || empty) return;
+    stopSlideAnim();
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
-      origin: focus + dragOffset,
+      origin: slide.get(),
       moved: false,
     };
   };
@@ -303,6 +443,8 @@ export function LocalReposOverview(props: {
     if (!drag.moved && Math.abs(dx) > 12) {
       drag.moved = true;
       setDragging(true);
+      setMoving(true);
+      event.preventDefault();
       try {
         event.currentTarget.setPointerCapture(event.pointerId);
       } catch {
@@ -310,7 +452,7 @@ export function LocalReposOverview(props: {
       }
     }
     if (!drag.moved) return;
-    setDragOffset(-dx / STEP_X);
+    jumpTo(drag.origin - dx / STEP_X, true);
   };
 
   const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -326,31 +468,26 @@ export function LocalReposOverview(props: {
       }
     }
     if (!drag.moved) {
-      setDragOffset(0);
+      setMoving(false);
       return;
     }
-    const next = clamp(
-      Math.round(drag.origin - (event.clientX - drag.startX) / STEP_X),
-      0,
-      maxIndex
-    );
-    setFocus(next);
-    setDragOffset(0);
+    const raw = drag.origin - (event.clientX - drag.startX) / STEP_X;
+    goTo(Math.round(raw));
   };
 
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (empty) return;
     const dominant =
       Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-    if (Math.abs(dominant) < 10) return;
+    if (Math.abs(dominant) < 8) return;
     event.preventDefault();
     const now = Date.now();
-    if (now - wheelLockRef.current < 280) return;
+    if (now - wheelLockRef.current < STEP_VISUAL_DURATION * 1000 * 0.85) return;
     wheelLockRef.current = now;
     moveBy(dominant > 0 ? 1 : -1);
   };
 
-  const visualFocus = focus + dragOffset;
+  const moving = dragging || sliding;
   const focusItem = items[focus];
   const focusLabel = focusItem?.repo.name || focusItem?.repo.path || "";
 
@@ -416,12 +553,18 @@ export function LocalReposOverview(props: {
 
         <div
           className={[
-            "absolute inset-0",
-            empty ? "cursor-default" : "cursor-grab active:cursor-grabbing",
+            "absolute inset-0 select-none",
+            empty
+              ? "cursor-default"
+              : moving
+                ? "cursor-grabbing"
+                : "cursor-grab active:cursor-grabbing",
           ].join(" ")}
           style={{
             perspective: reduceMotion || empty ? undefined : "2400px",
             perspectiveOrigin: "50% 36%",
+            WebkitUserSelect: "none",
+            userSelect: "none",
           }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -477,57 +620,47 @@ export function LocalReposOverview(props: {
                 className="absolute left-1/2 top-[36%] h-0 w-0"
                 style={{ transformStyle: "preserve-3d" }}
               >
-                {items.map((item, index) => {
-                  const offset = index - visualFocus;
-                  const abs = Math.abs(offset);
-                  if (abs > VISIBLE_SPAN) return null;
-                  const focused = abs < 0.55;
-                  const style = shelfStyle(offset, reduceMotion);
-                  return (
-                    <div
-                      key={item.key}
-                      role="option"
-                      aria-selected={focused}
-                      className="absolute left-0 top-0 will-change-transform"
-                      style={{
-                        width: CARD_WIDTH,
-                        height: CARD_HEIGHT,
-                        marginLeft: -CARD_WIDTH / 2,
-                        marginTop: -CARD_HEIGHT / 2,
-                        transform: style.transform,
-                        opacity: style.opacity,
-                        zIndex: focused ? 100 : style.zIndex,
-                        transition: dragging
-                          ? "none"
-                          : reduceMotion
-                            ? "transform 160ms ease, opacity 160ms ease"
-                            : "transform 580ms cubic-bezier(.22,1,.36,1), opacity 380ms ease",
-                        pointerEvents: abs < 1.25 ? "auto" : "none",
-                        transformStyle: "preserve-3d",
-                      }}
-                      onClick={(event) => {
-                        if (dragRef.current?.moved) {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          return;
-                        }
-                        if (!focused) {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          goTo(index);
-                          onSelectRepoRef.current(item.repo);
-                        }
-                      }}
-                    >
-                      <div className="relative overflow-visible has-[[data-gf-open]]:z-40">
-                        <GlassFolder className="w-full" options={item.options} />
-                      </div>
+                {items.map((item, index) => (
+                  <div
+                    key={item.key}
+                    ref={(node) => {
+                      cardRefs.current[index] = node;
+                    }}
+                    role="option"
+                    aria-selected={index === focus}
+                    className="absolute left-0 top-0"
+                    style={{
+                      width: CARD_WIDTH,
+                      height: CARD_HEIGHT,
+                      marginLeft: -CARD_WIDTH / 2,
+                      marginTop: -CARD_HEIGHT / 2,
+                      transition: "none",
+                      transformStyle: "preserve-3d",
+                      backfaceVisibility: "hidden",
+                      willChange: "transform, opacity",
+                    }}
+                    onPointerDownCapture={(event) => {
+                      if (movingRef.current) {
+                        if (event.button === 0) event.preventDefault();
+                        return;
+                      }
+                      const focused =
+                        Math.abs(index - focusValueRef.current) < 0.45;
+                      if (focused || event.button !== 0) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      dragRef.current = null;
+                      goTo(index);
+                      onSelectRepoRef.current(item.repo);
+                    }}
+                  >
+                    <div className="relative overflow-visible has-[[data-gf-open]]:z-40">
+                      <GlassFolder className="w-full" options={item.options} />
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
 
-              {/* 仅暗色添加贴在桥下，无灰底容器 */}
               <div
                 className="pointer-events-auto absolute left-1/2 z-[6] -translate-x-1/2"
                 style={{ top: "calc(36% + 142px)" }}

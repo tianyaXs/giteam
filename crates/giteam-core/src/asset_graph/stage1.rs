@@ -238,30 +238,29 @@ pub fn live_session_ids_for_repo(repo_path: &Path) -> HashSet<String> {
     out
 }
 
-/// 在任意线程上调度 Stage-1 future。
-/// Agent 事件回调常不在 tokio 运行时上；裸 `tokio::spawn` 会直接 panic 被上层
-/// catch_unwind 吃掉 → job 永远 pending、图谱外层没有实体。
+/// Stage-1 独占 runtime：不挂到 Tauri/宿主 `tokio-rt-worker`。
+/// 宿主默认栈约 2MB；抽取路径嵌套 create_session/prompt/parse，曾在
+/// `semantic extraction: no-op` 后 `stack overflow` 整进程 abort。
+fn stage1_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("giteam-stage1")
+            .thread_stack_size(8 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .expect("asset-graph stage1 tokio runtime")
+    })
+}
+
+/// 调度 Stage-1 future。Agent 事件回调常不在 tokio 运行时上；裸 `tokio::spawn`
+/// 会 panic 被 catch_unwind 吃掉 → job 永远 pending。一律走独占大栈 runtime。
 fn spawn_stage1_task<F>(fut: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(fut);
-        return;
-    }
-    std::thread::Builder::new()
-        .name("giteam-stage1".into())
-        .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                eprintln!("[asset-graph] stage1: failed to build fallback runtime");
-                return;
-            };
-            rt.block_on(fut);
-        })
-        .ok();
+    stage1_runtime().spawn(fut);
 }
 
 /// Kick Stage-1 worker：同 DB 串行；已在飞则合并为「稍后重扫」。

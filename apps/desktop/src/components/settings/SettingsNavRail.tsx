@@ -18,7 +18,7 @@ type SettingsNavRailProps = {
 };
 
 const NAV_GROUPS: Array<{ id: string; label: string; itemIds: string[] }> = [
-  { id: "prefs", label: "偏好", itemIds: ["general", "appearance", "notifications", "sounds"] },
+  { id: "prefs", label: "偏好", itemIds: ["general", "appearance", "pet", "notifications", "sounds"] },
   { id: "connect", label: "连接", itemIds: ["models", "mobile", "remoteRepos"] },
   { id: "system", label: "系统", itemIds: ["updates"] },
 ];

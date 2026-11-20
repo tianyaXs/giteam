@@ -268,6 +268,11 @@ fn map_content_blocks(blocks: Vec<pi::sdk::ContentBlock>) -> Vec<AgentPart> {
                 mime_type: image.mime_type,
                 data: image.data,
             },
+            // 音视频等非图媒体：暂以同结构 Image part 透传 mime/data，前端可按 mime 分支。
+            pi::sdk::ContentBlock::Media(media) => AgentPart::Image {
+                mime_type: media.mime_type,
+                data: media.data,
+            },
             pi::sdk::ContentBlock::ToolCall(call) => AgentPart::ToolCall {
                 tool_call_id: call.id,
                 tool_name: call.name,

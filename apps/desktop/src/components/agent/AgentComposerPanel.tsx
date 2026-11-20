@@ -44,11 +44,13 @@ import {
 } from "../../lib/agentPermissionPresets";
 import type { DeepAgentComposerOptions } from "../deep-agent-composer/DeepAgentComposerEngine";
 import { FullAccessRiskDialog } from "./FullAccessRiskDialog";
-import { QueueItem, QueueItemContent } from "../ai-elements/queue";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
 import { Button } from "../ui/button";
-import { CloseIcon } from "../icons";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { CloseIcon, EditIcon, TrashIcon } from "../icons";
 import {
+  ArrowUp,
+  ChevronDown,
   FilePen,
   FileCode,
   Globe,
@@ -144,6 +146,10 @@ type AgentComposerPanelProps = {
   }) => void;
   queuedFollowUps?: Array<{ id: string; content: string }>;
   onRemoveQueuedFollowUp?: (id: string) => void;
+  /** 取回输入框改口。 */
+  onEditQueuedFollowUp?: (id: string) => void;
+  /** 立刻发送 / 插队：空闲直接发；运行中打断当前回合后发出。 */
+  onSendQueuedFollowUpNow?: (id: string) => void;
   /** 空态建议 chips 点击回填(并聚焦输入框)。 */
   onFillPrompt?: (text: string) => void;
   /** 最近一次 assistant 单次 usage（官方 Context 组件）。 */
@@ -214,6 +220,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     onComposerSubmit,
     queuedFollowUps = [],
     onRemoveQueuedFollowUp,
+    onEditQueuedFollowUp,
+    onSendQueuedFollowUpNow,
     onFillPrompt,
     contextUsage,
     contextBreakdown,
@@ -557,34 +565,70 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
         )) : null}
 
         {queuedFollowUps.length > 0 ? (
-          <div className="grid gap-1.5 px-1" role="status" aria-live="polite">
-            <div className="text-xs text-muted-foreground">
-              {activeSessionBusy ? "将在当前回复结束后继续" : "未发送的跟进"}
-            </div>
-            {queuedFollowUps.map((item) => (
-              <QueueItem
-                key={item.id}
-                className="flex-row items-start gap-2 bg-muted/45 px-2.5 py-1.5 hover:bg-muted/60"
-              >
-                <span className="shrink-0 text-muted-foreground">↳</span>
-                <QueueItemContent className="line-clamp-none whitespace-pre-wrap break-words text-sm text-foreground/90">
-                  {item.content}
-                </QueueItemContent>
-                {onRemoveQueuedFollowUp ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
-                    aria-label="删除待发送"
-                    onClick={() => onRemoveQueuedFollowUp(item.id)}
+          <Collapsible
+            defaultOpen
+            className="group overflow-hidden rounded-xl border border-border/70 bg-background/80"
+          >
+            <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[13px] text-muted-foreground outline-none hover:text-foreground">
+              <ChevronDown className="size-3.5 shrink-0 transition-transform group-data-[state=closed]:-rotate-90" strokeWidth={1.8} />
+              <span className="tabular-nums">
+                {queuedFollowUps.length} Queued Message{queuedFollowUps.length === 1 ? "" : "s"}
+              </span>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="px-2 pb-2">
+              <div className="grid gap-1.5">
+                {queuedFollowUps.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex min-w-0 items-center gap-2 rounded-lg border border-border/60 bg-muted/35 px-2.5 py-1.5"
                   >
-                    <CloseIcon width={12} height={12} />
-                  </Button>
-                ) : null}
-              </QueueItem>
-            ))}
-          </div>
+                    <p className="min-w-0 flex-1 truncate text-[13px] leading-5 text-foreground/90">
+                      {item.content}
+                    </p>
+                    {onSendQueuedFollowUpNow ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
+                        aria-label="Send now"
+                        onClick={() => onSendQueuedFollowUpNow(item.id)}
+                      >
+                        <ArrowUp className="size-3.5" strokeWidth={2} />
+                      </Button>
+                    ) : null}
+                    {onEditQueuedFollowUp ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
+                        aria-label="Edit"
+                        onClick={() => {
+                          setDraftSeed({ text: item.content, key: Date.now() });
+                          onEditQueuedFollowUp(item.id);
+                        }}
+                      >
+                        <EditIcon width={13} height={13} />
+                      </Button>
+                    ) : null}
+                    {onRemoveQueuedFollowUp ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
+                        aria-label="Delete"
+                        onClick={() => onRemoveQueuedFollowUp(item.id)}
+                      >
+                        <TrashIcon width={13} height={13} />
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         ) : null}
 
         {showEmptyState ? (

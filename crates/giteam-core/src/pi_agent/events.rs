@@ -124,9 +124,9 @@ pub enum AgentEvent {
         phase: String,
         error: Option<String>,
     },
-    /// steer 已入队（run 进行中用户补充指令）：当前步骤/工具批完成后由
-    /// follow_up fetcher 注入同一 run（对齐 Codex pending_input，不跳过工具）。
-    /// 前端据此即时显示排队中的用户消息。
+    /// 插话已入队（API `steer` → `SessionControlHandle::follow_up`）：当前回
+    /// 合结束后注入同一 run，不跳过工具。桌面 busy 主路径用本地跟进队列，通
+    /// 常不发此事件。
     #[serde(rename = "runtime.steerQueued")]
     SteerQueued {
         /// 排队中的补充指令全文（前端渲染用户气泡用）。
@@ -564,6 +564,22 @@ impl PiEventTranslator {
                     error: error_message,
                 })
             }
+            pi::sdk::AgentEvent::ManualCompactionStart { .. } => Some(AgentEvent::Compaction {
+                phase: "started".to_string(),
+                error: None,
+            }),
+            pi::sdk::AgentEvent::ManualCompactionEnd {
+                aborted,
+                error_message,
+                ..
+            } => Some(AgentEvent::Compaction {
+                phase: if aborted {
+                    "aborted".to_string()
+                } else {
+                    "completed".to_string()
+                },
+                error: error_message,
+            }),
             pi::sdk::AgentEvent::AutoRetryStart {
                 attempt,
                 max_attempts,
@@ -588,6 +604,62 @@ impl PiEventTranslator {
                 delay_ms: None,
                 success: Some(success),
                 error: final_error,
+            }),
+            pi::sdk::AgentEvent::FailoverStart {
+                from_provider,
+                from_model,
+                to_provider,
+                to_model,
+                class,
+                attempt,
+                ..
+            } => Some(AgentEvent::RuntimeWarning {
+                message: format!(
+                    "Failover {attempt}: {from_provider}/{from_model} → {to_provider}/{to_model} ({class})"
+                ),
+            }),
+            pi::sdk::AgentEvent::FailoverEnd {
+                success,
+                provider,
+                model,
+                restored_primary,
+            } => Some(AgentEvent::RuntimeWarning {
+                message: format!(
+                    "Failover {}: {provider}/{model}{}",
+                    if success { "ok" } else { "failed" },
+                    if restored_primary {
+                        " (restored primary)"
+                    } else {
+                        ""
+                    }
+                ),
+            }),
+            pi::sdk::AgentEvent::AdvisorNote { level, rationale } => {
+                Some(AgentEvent::RuntimeWarning {
+                    message: format!("Advisor [{level}]: {rationale}"),
+                })
+            }
+            pi::sdk::AgentEvent::CostWarning {
+                spent,
+                threshold,
+                message,
+            } => Some(AgentEvent::RuntimeWarning {
+                message: format!("Cost warning ${spent:.2}/${threshold:.2}: {message}"),
+            }),
+            pi::sdk::AgentEvent::PrewalkSwitched {
+                provider,
+                model,
+                thinking,
+            } => Some(AgentEvent::RuntimeWarning {
+                message: format!("Prewalk switched to {provider}/{model} (thinking={thinking:?})"),
+            }),
+            pi::sdk::AgentEvent::ProviderError {
+                provider,
+                model,
+                message,
+                ..
+            } => Some(AgentEvent::RuntimeWarning {
+                message: format!("Provider error {provider}/{model}: {message}"),
             }),
             pi::sdk::AgentEvent::ExtensionError { error, event, .. } => {
                 Some(AgentEvent::RuntimeWarning {

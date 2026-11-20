@@ -8,25 +8,21 @@ default = []
 tauri-app = ["dep:tauri"]
 
 [dependencies]
-# pi AgentSession.session 的锁入口（run 中周期 flush_autosave，见 service.rs）。
-asupersync = { version = "0.3.9", default-features = false }
+# 与 pi_agent_rust 0.8 同版；勿再 patch 成 0.3.9 fork，否则双版本类型打架。
+asupersync = { version = "0.5.0", default-features = false }
 async-trait = "0.1"
 base64 = "0.22"
 calamine = "0.37"
 docx-rs = { version = "0.4", default-features = false }
 futures = "0.3"
-# fork tip（旧基线 + 两补丁）：openai null choices/delta + anthropic message_delta
-# cache_read。官方 main 已含后者，但 0.8 需工具链/asupersync 0.5/SDK 大适配，
-# 未迁完前继续钉此 tip；最新+null 补丁在 tianyaXs/pi_agent_rust
-# fix/openai-null-choices-on-main@8cb1319a。
-pi = { package = "pi_agent_rust", git = "https://github.com/tianyaXs/pi_agent_rust", rev = "f5e11c181321e6b2832dc3c934eac52a3e8b8cc5", default-features = false }
+# 官方 main（含 message_delta cache 合并）；sqlite-sessions 为 session_index 硬依赖。
+pi = { package = "pi_agent_rust", git = "https://github.com/Dicklesworthstone/pi_agent_rust", rev = "b217af54bdfa3dd2063640951084de9fa52917dc", default-features = false, features = ["sqlite-sessions"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [], optional = true }
 thiserror = "2"
-tiny_http = "0.12"
 tokio = { version = "1", default-features = false, features = ["time", "macros", "rt", "rt-multi-thread", "net", "io-util", "sync"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 url = "2"
@@ -46,7 +42,8 @@ zstd = "0.13"
 regex = "1"
 rust_xlsxwriter = "0.101"
 tempfile = "3"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+# 与 pi_agent_rust(=9.0.5) 对齐
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
@@ -57,7 +54,3 @@ tiny_http = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 rusqlite = { version = "0.39", features = ["bundled"] }
-
-[patch.crates-io]
-# Windows HTTPS 出站修复（asupersync#35），见 apps/desktop/src-tauri/Cargo.toml 注释。
-asupersync = { git = "https://github.com/tianyaXs/asupersync-1", branch = "fix/windows-connect-completion-v0.3.9" }

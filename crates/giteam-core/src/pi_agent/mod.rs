@@ -1,7 +1,6 @@
 mod browser_controller;
 mod environment;
 mod events;
-mod https_egress;
 mod interactions;
 mod managed_bins;
 mod mcp;

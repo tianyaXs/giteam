@@ -29,6 +29,9 @@ fn pi_runtime() -> &'static tokio::runtime::Runtime {
     PI_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .thread_name("giteam-pi-control")
+            // 与 pi_agent::pi_runtime 对齐：默认 2MB 在嵌套 agent future 上曾 stack overflow。
+            .thread_stack_size(8 * 1024 * 1024)
             .enable_all()
             .build()
             .expect("failed to build pi tokio runtime")

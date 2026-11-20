@@ -141,7 +141,7 @@ describe("mergeHistoryWithLiveTimeline", () => {
     expect(merged[1].error).toBe("已暂停");
   });
 
-  it("falls back to appending unconsumed history rows at the tail", () => {
+  it("keeps a history-only assistant in its history position", () => {
     const history: AgentChatMessage[] = [
       { id: "u1", role: "user", content: "hi" },
       { id: "srv-only", role: "assistant", content: "服务端独有回复" }
@@ -151,5 +151,26 @@ describe("mergeHistoryWithLiveTimeline", () => {
     ];
     const merged = mergeHistoryWithLiveTimeline(history, live);
     expect(merged.map((m) => m.id)).toEqual(["u1", "srv-only"]);
+  });
+
+  it("puts a new user back at the end when live inserted it before an older assistant", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "旧问题" },
+      { id: "a1", role: "assistant", content: "旧回复" },
+      { id: "a2", role: "assistant", content: "旧回复续" },
+      { id: "u-new", role: "user", content: "新问题" },
+      { id: "a-new", role: "assistant", content: "新回复" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "旧问题" },
+      { id: "a1", role: "assistant", content: "旧回复" },
+      { id: "u-new-local", role: "user", content: "新问题" },
+      { id: "a2", role: "assistant", content: "旧回复续" },
+      { id: "a-new", role: "assistant", content: "新回复" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live, {
+      serverIdByLocalId: { "u-new-local": "u-new" }
+    });
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a1", "a2", "u-new-local", "a-new"]);
   });
 });

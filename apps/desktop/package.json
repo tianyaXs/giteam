@@ -1,6 +1,6 @@
 {
   "name": "giteam-desktop",
-  "version": "0.2.60",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -50,6 +50,7 @@
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.11.3",
     "ai": "^7.0.156",
+    "bot-avatars": "0.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

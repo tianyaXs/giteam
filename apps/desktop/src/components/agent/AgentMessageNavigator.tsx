@@ -8,7 +8,7 @@ import type { AppText } from "../../lib/generalSettings";
  * （由 AgentChatFrame 下发的 --chat-nav-left 定位，与进度卡片并排：消息区｜导航条｜进度卡）。
  *
  * - 每根横杠代表一条消息（采样后 ≤ MAX_MARKERS 根）。
- * - 当前滚动进度最近的消息横杠变蓝（activeIndex 由 scrollTop 比例推导）。
+ * - 滚动进度映射到消息下标后，最近的横杠变蓝（与帆船标尺同一 progress 轴）。
  * - 鱼眼聚焦：hover 某 marker 时它放大、附近 marker 随距离线性衰减，远处不变。
  * - hover 预览：经 hover-intent 延迟后向左弹出该消息的角色 + 首行文本。
  * - 点击：平滑跳转到所点位置；按住拖动超过阈值：进入 scrub，实时跟随滚动。
@@ -30,7 +30,7 @@ export type NavigatorMarker = {
 type AgentMessageNavigatorProps = {
   markers: NavigatorMarker[];
   totalCount: number;
-  /** 当前滚动进度对应的消息下标，其最近 marker 变蓝。 */
+  /** 滚动进度映射到的消息下标，其最近 marker 变蓝。 */
   activeIndex: number | null;
   onNavigate: (index: number, behavior: "smooth" | "auto") => void;
   text: AppText;

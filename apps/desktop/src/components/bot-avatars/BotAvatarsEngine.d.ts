@@ -1,0 +1,3 @@
+import type { MotionOptions, MotionController } from "./motion-runtime";
+export type BotAvatarsOptions = MotionOptions & { locale?: "en" | "zh"; showControls?: boolean; type?: "clover" | "flower" | "triangle" | "square" | "blob" | "ghost" | "circle" | "drop" | "star" | "droid" | "mech" | "alien" | "hexagon" | "cat" | "cloud" | "pill" | "pebble" | "puddle"; state?: "default" | "working" | "sleeping"; shading?: "fabric" | "plastic" | "crisp" | "smooth" | "flat"; face?: "eyes" | "mouth" };
+export function mountBotAvatars(target: HTMLElement, options?: BotAvatarsOptions): Omit<MotionController, "update"> & { update(options: BotAvatarsOptions): void };

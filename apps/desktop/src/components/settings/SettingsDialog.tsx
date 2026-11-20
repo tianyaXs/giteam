@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, cloneElement, isValidElement, type CSSProperties, type ReactElement, type ReactNode, type SVGProps } from "react";
 import { createPortal } from "react-dom";
-import { Package, Plus, Search } from "lucide-react";
+import { Cat, Package, Plus, Search } from "lucide-react";
 import type { RuntimeActionJobStatus, RuntimeDepName, RuntimeDependencyStatus, RuntimeRequirementsStatus } from "../../lib/appCache";
 import { cn } from "../../lib/utils";
 import { REMOTE_REPO_MODULE_ENABLED, MCP_MODULE_ENABLED } from "../../lib/featureFlags";
@@ -23,6 +23,7 @@ import { AgentMcpSection } from "../agent/AgentMcpPanel";
 import { FullAccessRiskDialog } from "../agent/FullAccessRiskDialog";
 import { NavigatorPreview } from "./NavigatorPreview";
 import { ServiceSettingsPanel } from "./ServiceSettingsPanel";
+import { PetSettingsSection, petSectionMeta } from "./PetSettingsSection";
 import { SettingsNavRail } from "./SettingsNavRail";
 
 type ControlServerSettingsDraft = {
@@ -272,7 +273,7 @@ type SettingsDialogProps = {
   onResetRemoteRepoService: () => void;
 };
 
-type SettingsSectionId = "general" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "mobile" | "remoteRepos";
+type SettingsSectionId = "general" | "pet" | "notifications" | "sounds" | "updates" | "appearance" | "models" | "mobile" | "remoteRepos";
 type InitialSettingsSectionId = SettingsSectionId | "modules" | "skillsmp" | "plugins" | "appearance";
 
 type SettingsEntry = {
@@ -296,6 +297,7 @@ type SettingsNavIcon = (props: SVGProps<SVGSVGElement>) => ReactNode;
 
 const SETTINGS_SECTION_ICONS: Record<SettingsSectionId, SettingsNavIcon> = {
   general: SettingsIcon,
+  pet: Cat,
   appearance: ImageIcon,
   models: PackageIcon,
   mobile: LinkIcon,
@@ -1266,6 +1268,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           )
         }
       ],
+      pet: [],
       notifications: [],
       sounds: [],
       updates: [],
@@ -1620,6 +1623,11 @@ export function SettingsDialog(props: SettingsDialogProps) {
             <SettingsGroup title={text.sessionDisplay} entries={openCodeEntries} />
           </div>
         )
+      },
+      {
+        id: "pet" as const,
+        ...petSectionMeta(props.generalSettings.language),
+        content: <PetSettingsSection language={props.generalSettings.language} />
       },
       {
         id: "models" as const,

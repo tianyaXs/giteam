@@ -4,6 +4,7 @@ import {
   commitUserBeforeLiveAssistant,
   consumeQueuedFollowUp,
   dropQueuedFollowUpsAlreadyInTranscript,
+  appendQueuedFollowUp,
   removeQueuedFollowUpById,
   type AgentChatMessage
 } from "./agentSessions";
@@ -23,6 +24,37 @@ describe("commitUserBeforeLiveAssistant", () => {
     const rows = [msg("u1", "user", "北京"), msg("a-live", "assistant", "")];
     const next = commitUserBeforeLiveAssistant(rows, msg("u2", "user", "上海"), "a-live");
     expect(next.map((m) => m.id)).toEqual(["u1", "u2", "a-live"]);
+  });
+
+  it("appends when the live assistant is not the tail", () => {
+    const rows = [
+      msg("u1", "user", "北京"),
+      msg("a-old", "assistant", "旧回复"),
+      msg("u2", "user", "南京"),
+      msg("a-new", "assistant", "")
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("u3", "user", "上海"), "a-old");
+    expect(next.map((m) => m.id)).toEqual(["u1", "a-old", "u2", "a-new", "u3"]);
+  });
+
+  it("updates the unanswered tail user in place instead of inserting a second copy", () => {
+    const rows = [
+      msg("u1", "user", "继续"),
+      msg("a1", "assistant", "上一轮"),
+      msg("u2", "user", "上海"),
+      msg("a-live", "assistant", "")
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("srv", "user", "上海"), "a1");
+    expect(next.map((m) => m.id)).toEqual(["u1", "a1", "u2", "a-live"]);
+  });
+
+  it("appends after a finished reply instead of inserting in front of it", () => {
+    const rows = [
+      msg("u1", "user", "继续"),
+      msg("a1", "assistant", "上一轮")
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("u2", "user", "继续"), "a1");
+    expect(next.map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
   });
 
   it("does not duplicate an already-committed user id", () => {
@@ -85,5 +117,26 @@ describe("removeQueuedFollowUpById", () => {
     ];
     expect(removeQueuedFollowUpById(queue, "q1").map((item) => item.id)).toEqual(["q2"]);
     expect(removeQueuedFollowUpById(queue, "missing")).toEqual(queue);
+  });
+});
+
+describe("appendQueuedFollowUp", () => {
+  it("appends when the queue is empty", () => {
+    let n = 0;
+    const next = appendQueuedFollowUp([], "上海呢", () => `q${++n}`);
+    expect(next).toEqual([{ id: "q1", content: "上海呢" }]);
+  });
+
+  it("accumulates instead of replacing existing pending follow-ups", () => {
+    const queue = [
+      { id: "q1", content: "上海呢" },
+      { id: "q2", content: "还有南京" }
+    ];
+    const next = appendQueuedFollowUp(queue, "再问苏州", () => "q3");
+    expect(next).toEqual([
+      { id: "q1", content: "上海呢" },
+      { id: "q2", content: "还有南京" },
+      { id: "q3", content: "再问苏州" }
+    ]);
   });
 });

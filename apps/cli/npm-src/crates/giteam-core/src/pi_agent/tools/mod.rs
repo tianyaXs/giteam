@@ -9,33 +9,105 @@ mod asset_graph_tools;
 mod background;
 mod browser_use;
 mod command_safety;
-mod shell_resolver;
+mod computer_use;
 mod edit_guard;
+mod mcp;
+pub mod office;
 mod question;
+mod shell_resolver;
 mod task;
 mod todo;
 mod tool_budget;
 mod web;
+mod workspace_guard;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use pi::sdk::{default_tool_registry, Config, Tool, ToolFactory, ToolRegistry};
+use pi::tools::ToolEffects;
+use serde_json::Value;
+
+/// pi 0.8 `into_tools` 交出 `Arc<dyn Tool>`；我们的审批/沙箱包装仍吃 `Box`。
+struct ArcTool(Arc<dyn Tool>);
+
+#[async_trait]
+impl Tool for ArcTool {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn label(&self) -> &str {
+        self.0.label()
+    }
+
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+
+    fn parameters(&self) -> Value {
+        self.0.parameters()
+    }
+
+    fn effects(&self) -> ToolEffects {
+        self.0.effects()
+    }
+
+    fn effects_for_input(&self, input: &Value) -> ToolEffects {
+        self.0.effects_for_input(input)
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: &str,
+        input: Value,
+        on_update: Option<Box<dyn Fn(pi::sdk::ToolUpdate) + Send + Sync>>,
+    ) -> pi::sdk::Result<pi::sdk::ToolOutput> {
+        self.0.execute(tool_call_id, input, on_update).await
+    }
+}
 
 use super::browser_controller::SharedBrowserController;
 use super::interactions::{InteractionHub, InteractionRisk};
+use super::os_controller::SharedOsController;
 use super::subagents::SubagentHost;
 
 pub use approval::ApprovalTool;
+pub use asset_graph_tools::{
+    AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool,
+};
 pub use background::{BackgroundTaskRegistry, BashOutputTool, GiteamBashTool, KillShellTool};
 pub use browser_use::BrowserUseTool;
+pub use computer_use::ComputerUseTool;
 pub use edit_guard::{EditGuardTool, ReadRecorderTool};
+pub use mcp::McpTool;
+pub use office::{
+    EditDocxTool, EditPptxTool, EditXlsxTool, ReadDocxTool, ReadPptxTool, ReadXlsxTool,
+    WriteDocxTool, WritePptxTool, WriteXlsxTool,
+};
 pub use question::QuestionTool;
 pub use task::TaskTool;
-pub use asset_graph_tools::{AssetContextTool, AssetPrecedentsTool, AssetSearchTool, AssetTraceTool};
 pub use todo::TodoTool;
 pub use tool_budget::{ToolBudgetConfig, ToolBudgetTool};
 pub use web::{WebFetchTool, WebSearchTool};
+pub use workspace_guard::WorkspacePathGuardTool;
+
+/// 收集 registry 内工具的 schema 文本，供上下文分类占用估计。
+#[must_use]
+pub fn collect_tool_schema_blobs(registry: &ToolRegistry) -> Vec<(String, String, String)> {
+    registry
+        .tools()
+        .iter()
+        .map(|tool| {
+            (
+                tool.name().to_string(),
+                tool.description().to_string(),
+                tool.parameters().to_string(),
+            )
+        })
+        .collect()
+}
 
 /// 基于 pi `default_tool_registry` 装配，写/执行类工具包装 ApprovalTool；
 /// question/todowrite/task 与后台三件套（bash/bash_output/kill_shell）不是 pi 内置工具，按启用情况追加。
@@ -51,11 +123,15 @@ pub struct GiteamToolFactory {
     web_search_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "browser_use" 时为 true。
     browser_use_enabled: bool,
+    /// enabled_tools 未显式指定（默认全量）或显式包含 "computer_use" 时为 true。
+    computer_use_enabled: bool,
     /// enabled_tools 未显式指定（默认全量）或显式包含 "task" 时为 true；
     /// 实际注册还需要 `subagent_host`（子 agent 默认不注入 host，故不注册 task）。
     task_enabled: bool,
     /// 内置浏览器控制器；desktop 注入实现，CLI/control 为 None。
     browser_controller: SharedBrowserController,
+    /// OS 控制器（computer_use 执行层）；desktop 注入实现，CLI/control 为 None。
+    os_controller: SharedOsController,
     /// 后台任务日志目录（会话目录下）；no_session 模式为 None（落临时目录）。
     session_dir: Option<PathBuf>,
     /// 子 agent 宿主；主会话注入，plan 子会话为 None（禁止再委派）。
@@ -65,6 +141,13 @@ pub struct GiteamToolFactory {
     /// 资产图谱工具（asset_context 等）：enabled_tools 未显式指定（默认全量）
     /// 或显式包含 "asset_context" 时为 true。子 agent 同样可用（只读）。
     asset_graph_enabled: bool,
+    /// Office 文档工具（read_xlsx / write_xlsx）：默认全量或显式包含同名项。
+    /// 子 agent 白名单默认不含；显式 enabled 时才注册。
+    office_enabled: bool,
+    /// 仓库级 MCP 运行时：快照工具全部注册（enabled 只控制服务层）。
+    /// 经 wrap 链：ToolBudget + Approval（mcp__* 归 Write，fail-closed）。
+    /// 配置变化只对新会话生效（load_for_repo 在 create_session 异步边界）。
+    mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
 }
 
 impl GiteamToolFactory {
@@ -74,36 +157,66 @@ impl GiteamToolFactory {
         enabled_tools: Option<&[String]>,
         session_dir: Option<PathBuf>,
         browser_controller: SharedBrowserController,
+        os_controller: SharedOsController,
         subagent_host: Option<Arc<dyn SubagentHost>>,
         tool_budget: ToolBudgetConfig,
+        mcp_runtime: Option<Arc<super::mcp::McpRuntime>>,
     ) -> Self {
-        let question_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
-        let todo_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "todowrite"));
-        let web_fetch_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
-        let web_search_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
-        let browser_use_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
-        let task_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
-        let asset_graph_enabled = enabled_tools
-            .is_none_or(|tools| tools.iter().any(|tool| tool == "asset_context"));
+        let question_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "question"));
+        let todo_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "todowrite"));
+        let web_fetch_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "web_fetch"));
+        let web_search_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "web_search"));
+        let browser_use_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "browser_use"));
+        let computer_use_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "computer_use"));
+        let task_enabled =
+            enabled_tools.is_none_or(|tools| tools.iter().any(|tool| tool == "task"));
+        let asset_graph_enabled = enabled_tools.is_none_or(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.as_str(),
+                    "asset_context" | "asset_search" | "asset_trace" | "asset_precedents"
+                )
+            })
+        });
+        let office_enabled = enabled_tools.is_none_or(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.as_str(),
+                    "read_xlsx"
+                        | "write_xlsx"
+                        | "read_docx"
+                        | "write_docx"
+                        | "read_pptx"
+                        | "write_pptx"
+                        | "edit_xlsx"
+                        | "edit_docx"
+                        | "edit_pptx"
+                )
+            })
+        });
         Self {
             asset_graph_enabled,
+            office_enabled,
             hub,
             question_enabled,
             todo_enabled,
             web_fetch_enabled,
             web_search_enabled,
             browser_use_enabled,
+            computer_use_enabled,
             task_enabled,
             browser_controller,
+            os_controller,
             session_dir,
             subagent_host,
             tool_budget: Arc::new(tool_budget),
+            mcp_runtime,
         }
     }
 }
@@ -118,30 +231,83 @@ impl ToolFactory for GiteamToolFactory {
         let wants_web_fetch = enabled.contains(&"web_fetch");
         let wants_web_search = enabled.contains(&"web_search");
         let wants_browser_use = enabled.contains(&"browser_use");
+        let wants_computer_use = enabled.contains(&"computer_use");
         let wants_task = enabled.contains(&"task");
+        let wants_office = enabled.iter().any(|name| {
+            matches!(
+                *name,
+                "read_xlsx"
+                    | "write_xlsx"
+                    | "read_docx"
+                    | "write_docx"
+                    | "read_pptx"
+                    | "write_pptx"
+                    | "edit_xlsx"
+                    | "edit_docx"
+                    | "edit_pptx"
+            )
+        });
         let builtin: Vec<&str> = enabled
             .iter()
             .copied()
             .filter(|name| {
                 !matches!(
                     *name,
-                    "question" | "todowrite" | "bash" | "bash_output" | "kill_shell"
-                        | "web_fetch" | "web_search" | "browser_use" | "task"
+                    "question"
+                        | "todowrite"
+                        | "bash"
+                        | "bash_output"
+                        | "kill_shell"
+                        | "web_fetch"
+                        | "web_search"
+                        | "browser_use"
+                        | "task"
+                        | "read_xlsx"
+                        | "write_xlsx"
+                        | "read_docx"
+                        | "write_docx"
+                        | "read_pptx"
+                        | "write_pptx"
+                        | "edit_xlsx"
+                        | "edit_docx"
+                        | "edit_pptx"
                 )
             })
             .collect();
         let tools = default_tool_registry(&builtin, cwd, config).into_tools();
 
         // 统一包装链：
-        // 1) read → ReadRecorder；edit → EditGuard
-        // 2) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
-        // 3) 写/执行类 → ApprovalTool（最外）
-        // edit 路径：edit → EditGuard → ToolBudget → ApprovalTool。
+        // 1) 写/编辑类 → WorkspacePathGuard（按会话当前 SandboxMode 热读，禁止跳出 repo / 只读拒写）
+        // 2) read → ReadRecorder；edit/write/hashline_edit → EditGuard
+        // 3) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
+        // 4) 写/执行类 → ApprovalTool（最外）
+        // pi 0.8 into_tools 返回 Arc；先 ArcTool 转成 Box 再走同一 wrap。
         let wrap = |tool: Box<dyn Tool>| -> Box<dyn Tool> {
             let name = tool.name().to_string();
+            let tool: Box<dyn Tool> = if matches!(
+                name.as_str(),
+                "edit"
+                    | "write"
+                    | "hashline_edit"
+                    | "read"
+                    | "write_xlsx"
+                    | "write_docx"
+                    | "write_pptx"
+                    | "edit_xlsx"
+                    | "edit_docx"
+                    | "edit_pptx"
+            ) {
+                Box::new(WorkspacePathGuardTool::new(
+                    tool,
+                    Arc::clone(&self.hub),
+                    cwd,
+                ))
+            } else {
+                tool
+            };
             let tool: Box<dyn Tool> = if name == "read" {
                 Box::new(ReadRecorderTool::new(tool, Arc::clone(&self.hub)))
-            } else if name == "edit" {
+            } else if matches!(name.as_str(), "edit" | "write" | "hashline_edit") {
                 Box::new(EditGuardTool::new(tool, Arc::clone(&self.hub)))
             } else {
                 tool
@@ -155,17 +321,23 @@ impl ToolFactory for GiteamToolFactory {
             }
         };
 
-        let wrapped: Vec<Box<dyn Tool>> = tools.into_iter().map(&wrap).collect();
+        let wrapped: Vec<Box<dyn Tool>> = tools
+            .into_iter()
+            .map(|tool| wrap(Box::new(ArcTool(tool))))
+            .collect();
         let mut registry = ToolRegistry::from_tools(wrapped);
 
         if bash_enabled {
             let background = Arc::new(BackgroundTaskRegistry::new(
-                self.session_dir.as_ref().map(|dir| dir.join("background-tasks")),
+                self.session_dir
+                    .as_ref()
+                    .map(|dir| dir.join("background-tasks")),
             ));
             registry.push(wrap(Box::new(GiteamBashTool::new(
                 cwd,
                 config,
                 Arc::clone(&background),
+                Arc::clone(&self.hub),
             ))));
             registry.push(wrap(Box::new(BashOutputTool::new(Arc::clone(&background)))));
             registry.push(wrap(Box::new(KillShellTool::new(background))));
@@ -192,14 +364,48 @@ impl ToolFactory for GiteamToolFactory {
         if self.web_search_enabled || wants_web_search {
             registry.push(wrap(Box::new(WebSearchTool::new())));
         }
+        // Office 工具经 wrap：read_xlsx 归 Read 免审批；write_xlsx 归 Write
+        // → 自动套 ToolBudget + ApprovalTool（覆盖工作区外的任意路径写入）。
+        if self.office_enabled || wants_office {
+            let cwd = cwd.to_path_buf();
+            registry.push(wrap(Box::new(ReadXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WriteXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(ReadDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WriteDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(ReadPptxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(WritePptxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditXlsxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditDocxTool::new(cwd.clone()))));
+            registry.push(wrap(Box::new(EditPptxTool::new(cwd))));
+        }
         // browser_use 经 wrap：InteractionRisk::for_tool 归 Network → 自动套 ApprovalTool。
         if self.browser_use_enabled || wants_browser_use {
-            registry.push(wrap(Box::new(BrowserUseTool::new(self.browser_controller.clone()))));
+            registry.push(wrap(Box::new(BrowserUseTool::new(
+                self.browser_controller.clone(),
+            ))));
+        }
+        // computer_use / guide 经 wrap：归 System → 自动套 ApprovalTool（逐次审批，
+        // always 仅会话内工具名粒度）。controller None 时工具仍注册（返回
+        // 「仅桌面端可用」），保证工具清单在 CLI/control 端稳定可见。
+        if self.computer_use_enabled || wants_computer_use {
+            registry.push(wrap(Box::new(ComputerUseTool::new(
+                self.os_controller.clone(),
+            ))));
         }
         // task：主会话全量或显式启用，且有 SubagentHost；子 agent 白名单不含 task / host=None。
         if (self.task_enabled || wants_task) && self.subagent_host.is_some() {
             let host = Arc::clone(self.subagent_host.as_ref().expect("checked above"));
             registry.push(Box::new(TaskTool::new(Arc::clone(&self.hub), host)));
+        }
+        // MCP 快照工具：全部注册（enabled 只控制服务层）；经 wrap 自动获得
+        // ToolBudget + Approval（未知工具 fail-closed 归 Write）。
+        if let Some(runtime) = &self.mcp_runtime {
+            for spec in runtime.tools.iter() {
+                registry.push(wrap(Box::new(McpTool::new(
+                    spec.clone(),
+                    Arc::clone(runtime),
+                ))));
+            }
         }
         registry
     }
@@ -241,7 +447,9 @@ mod tests {
             None,
             None,
             None,
+            None,
             ToolBudgetConfig::for_primary(None),
+            None,
         )
     }
 
@@ -253,8 +461,10 @@ mod tests {
             enabled_tools,
             None,
             None,
+            None,
             Some(host),
             ToolBudgetConfig::for_primary(None),
+            None,
         )
     }
 
@@ -299,6 +509,37 @@ mod tests {
         assert!(!names.contains(&"bash".to_string()));
         assert!(!names.contains(&"bash_output".to_string()));
         assert!(!names.contains(&"kill_shell".to_string()));
+    }
+
+    #[test]
+    fn factory_registers_office_suite_with_risk_split() {
+        // 默认全量：read_xlsx/write_xlsx 随主会话注册。
+        let factory = make_factory(None);
+        let enabled: Vec<&str> = super::super::prompt::ALL_BUILTIN_TOOLS.to_vec();
+        let cwd = std::env::temp_dir();
+        let registry = factory.create_tool_registry(&enabled, &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(names.contains(&"read_xlsx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_xlsx".to_string()), "{names:?}");
+        assert!(names.contains(&"read_docx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_docx".to_string()), "{names:?}");
+        assert!(names.contains(&"read_pptx".to_string()), "{names:?}");
+        assert!(names.contains(&"write_pptx".to_string()), "{names:?}");
+        // 风险分型：读免审批、写走 Approval（Write fail-closed）。
+        assert!(!InteractionRisk::for_tool("read_xlsx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_xlsx").requires_approval());
+        assert!(!InteractionRisk::for_tool("read_docx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_docx").requires_approval());
+        assert!(!InteractionRisk::for_tool("read_pptx").requires_approval());
+        assert!(InteractionRisk::for_tool("write_pptx").requires_approval());
+
+        // 显式排除：enabled_tools 不含 office 项则不注册。
+        let without_office = vec!["read".to_string(), "grep".to_string()];
+        let factory = make_factory(Some(&without_office));
+        let registry = factory.create_tool_registry(&["read", "grep"], &cwd, &Config::default());
+        let names = tool_names(&registry);
+        assert!(!names.contains(&"read_xlsx".to_string()), "{names:?}");
+        assert!(!names.contains(&"write_xlsx".to_string()), "{names:?}");
     }
 
     #[test]

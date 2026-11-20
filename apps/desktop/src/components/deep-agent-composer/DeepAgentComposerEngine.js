@@ -4235,7 +4235,8 @@ function mountDeepAgentComposer(target, options = {}) {
         }
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          if (!busy) submitWithAttachments();
+          // busy + 有草稿 → 提交（上层入队）；busy + 空 → 不拦截，由停止按钮处理。
+          if (!busy || hasComposerContent) submitWithAttachments();
         }
       };
       return /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { ref: composerRef, className: "group/composer relative w-full", children: [
@@ -4544,23 +4545,30 @@ function mountDeepAgentComposer(target, options = {}) {
                       onChooseThinking: chooseThinking
                     }
                   ) }),
-                  /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(HoverInfo, { content: busy ? t2(stopping ? "composer.stopping" : "composer.stop") : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
+                  /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(HoverInfo, { content: busy && !hasComposerContent ? t2(stopping ? "composer.stopping" : "composer.stop") : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
                     "button",
                     {
                       onClick: () => {
-                        if (busy) {
+                        // 运行中有草稿 → 提交入队；仅空输入时才停止。
+                        if (busy && !hasComposerContent) {
                           onStop?.();
                         } else {
                           submitWithAttachments();
                         }
                       },
-                      disabled: busy ? !onStop || stopping : !hasComposerContent,
-                      "aria-label": busy ? t2(stopping ? "composer.stopping" : "composer.stop") : t2("composer.send"),
+                      disabled: stopping || (hasComposerContent ? false : busy ? !onStop : true),
+                      "aria-label": busy && !hasComposerContent ? t2(stopping ? "composer.stopping" : "composer.stop") : t2("composer.send"),
                       className: cn(
                         "composer-send-btn",
-                        busy ? onStop ? "composer-send-btn--stop" : "composer-send-btn--idle" : hasComposerContent ? planMode ? "composer-send-btn--plan" : "composer-send-btn--ready" : "composer-send-btn--idle"
+                        hasComposerContent
+                          ? planMode
+                            ? "composer-send-btn--plan"
+                            : "composer-send-btn--ready"
+                          : busy && onStop
+                            ? "composer-send-btn--stop"
+                            : "composer-send-btn--idle"
                       ),
-                      children: stopping ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(import_lucide_react4.Loader2, { className: "h-3.5 w-3.5 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(import_react_fontawesome4.FontAwesomeIcon, { icon: busy ? ["fas", "stop"] : ["fas", "arrow-up"], className: "text-[11px]" })
+                      children: stopping ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(import_lucide_react4.Loader2, { className: "h-3.5 w-3.5 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(import_react_fontawesome4.FontAwesomeIcon, { icon: busy && !hasComposerContent ? ["fas", "stop"] : ["fas", "arrow-up"], className: "text-[11px]" })
                     }
                   ) })
                 ] })

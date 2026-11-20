@@ -125,9 +125,17 @@ fn load_skills_options(cwd: &Path) -> LoadSkillsOptions {
     LoadSkillsOptions {
         cwd: cwd.to_path_buf(),
         agent_dir: PiConfig::global_dir(),
+        // 与 agent_dir 解耦的用户级 skills 根；桌面沿用系统 home。
+        home_dir: dirs_home(),
         skill_paths: vec![],
         include_defaults: true,
     }
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
 }
 
 /// pi `Skill.source` → 前端 scope。
@@ -141,7 +149,7 @@ fn pi_source_to_scope(source: &str) -> &'static str {
 /// 读取 pi 目录 skills 并格式化为 system prompt 注入块。
 ///
 /// 无可见 skill（全部被 `disable-model-invocation` 过滤或目录为空）时返回 `None`，
-/// 调用方据此保持 append_system_prompt 原样、不污染 prompt。
+/// 调用方据此保持 `SessionOptions.skills_prompt` 为 None、不污染 prompt。
 fn format_loaded_skills(options: LoadSkillsOptions) -> Option<String> {
     let result = load_skills(options);
     let prompt = format_skills_for_prompt(&result.skills);
@@ -152,7 +160,7 @@ fn format_loaded_skills(options: LoadSkillsOptions) -> Option<String> {
     }
 }
 
-/// 注入点入口（`service.rs::into_sdk_options` 调用）：返回 pi skills 提示块。
+/// 注入点入口（`service.rs::into_sdk_options` → `SessionOptions.skills_prompt`）。
 pub fn build_skills_prompt(repo_path: &Path) -> Option<String> {
     format_loaded_skills(load_skills_options(repo_path))
 }
@@ -546,6 +554,7 @@ mod tests {
         let options = LoadSkillsOptions {
             cwd: repo.clone(),
             agent_dir: agent.clone(),
+            home_dir: None,
             skill_paths: vec![],
             include_defaults: true,
         };
@@ -562,6 +571,7 @@ mod tests {
         let options = LoadSkillsOptions {
             cwd: repo.clone(),
             agent_dir: agent.clone(),
+            home_dir: None,
             skill_paths: vec![],
             include_defaults: true,
         };
@@ -581,6 +591,7 @@ mod tests {
         let options = LoadSkillsOptions {
             cwd: repo.clone(),
             agent_dir: agent.clone(),
+            home_dir: None,
             skill_paths: vec![],
             include_defaults: true,
         };

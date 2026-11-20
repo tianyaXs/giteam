@@ -126,6 +126,9 @@ impl ProviderCatalog {
         // baseUrl 后若仍保留 openai-codex-responses，会校验 chatgpt_account_id。
         // 此处原地把非官方端点的 api 修正为 openai-completions，保持原 provider id。
         let _ = self.repair_oauth_native_custom_endpoints();
+        // 自定义 openai-compatible.*：补 authHeader=true，避免 vault-only 密钥时
+        // pi stream 静默不带 Authorization（HTTP 401 Invalid token）。
+        let _ = self.repair_openai_compatible_auth_headers();
         let display_names = self.provider_display_names();
         let models_json_ids = self.models_json_provider_ids();
         let mut providers: Vec<AgentProviderInfo> = Vec::new();
@@ -487,12 +490,16 @@ impl ProviderCatalog {
             })
             .collect::<Vec<_>>();
         models.extend(kept);
+        // authHeader 必须显式 true：pi 对「无内置 defaults 的自定义 openai-compatible.*」
+        // 仅在 models.json 内嵌 apiKey 时才默认开 Bearer；giteam 密钥在 vault，
+        // 若不写 authHeader，stream 会静默不带 Authorization → 网关 401 Invalid token。
         providers.insert(
             provider_id.clone(),
             serde_json::json!({
                 "name": display_name,
                 "baseUrl": base_url,
                 "api": "openai-completions",
+                "authHeader": true,
                 "models": models,
             }),
         );
@@ -677,6 +684,56 @@ impl ProviderCatalog {
         }
         write_models_json(&path, &root)?;
         Ok(())
+    }
+
+    /// 为自定义 `openai-compatible.*` 补上 `authHeader: true`。
+    ///
+    /// pi 在无内置 routing defaults、且 models.json 不内嵌 apiKey 时，会把
+    /// `auth_header` 默认成 false；stream 于是不生成 Bearer，网关返回 401。
+    /// giteam 密钥只在 vault，必须显式声明 authHeader。
+    pub fn repair_openai_compatible_auth_headers(&self) -> Result<Vec<String>, PiAgentError> {
+        let path = self.models_json_path()?;
+        let mut root = read_models_json(&path)?;
+        let Some(providers) = root
+            .as_object_mut()
+            .and_then(|root| root.get_mut("providers"))
+            .and_then(|value| value.as_object_mut())
+        else {
+            return Ok(Vec::new());
+        };
+
+        let mut repaired = Vec::new();
+        for (provider_id, entry) in providers.iter_mut() {
+            if !provider_id.starts_with("openai-compatible.") {
+                continue;
+            }
+            let Some(obj) = entry.as_object_mut() else {
+                continue;
+            };
+            let api = obj
+                .get("api")
+                .and_then(|value| value.as_str())
+                .unwrap_or("openai-completions");
+            if !matches!(
+                api,
+                "openai-completions" | "openai-responses" | "openai-codex-responses"
+            ) {
+                continue;
+            }
+            let already = obj
+                .get("authHeader")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if already {
+                continue;
+            }
+            obj.insert("authHeader".to_string(), serde_json::Value::Bool(true));
+            repaired.push(provider_id.clone());
+        }
+        if !repaired.is_empty() {
+            write_models_json(&path, &root)?;
+        }
+        Ok(repaired)
     }
 
     /// 修复 OAuth 原生供应商上的错误端点覆盖：
@@ -1546,5 +1603,55 @@ mod tests {
         assert!(providers_equivalent("kimi-coding", "kimi-for-coding"));
         assert!(providers_equivalent("kimi-code", "kimi-coding"));
         assert!(!providers_equivalent("kimi-coding", "moonshotai"));
+    }
+
+    #[test]
+    fn repair_openai_compatible_auth_headers_sets_missing_flag() {
+        let (catalog, auth_path) = temp_catalog("auth-header");
+        let dir = auth_path.parent().expect("auth parent").to_path_buf();
+        let models_path = dir.join("models.json");
+        let catalog = catalog.with_models_path(models_path.clone());
+        std::fs::write(
+            &models_path,
+            r#"{
+  "providers": {
+    "openai-compatible.indemind": {
+      "name": "indemind",
+      "baseUrl": "http://127.0.0.1:3921/v1",
+      "api": "openai-completions",
+      "models": [{"id": "glm", "name": "glm"}]
+    },
+    "zai": {
+      "name": "zai",
+      "baseUrl": "https://api.z.ai/api/paas/v4",
+      "api": "openai-completions",
+      "models": [{"id": "glm", "name": "glm"}]
+    }
+  }
+}
+"#,
+        )
+        .expect("write models");
+
+        let repaired = catalog
+            .repair_openai_compatible_auth_headers()
+            .expect("repair");
+        assert_eq!(repaired, vec!["openai-compatible.indemind".to_string()]);
+
+        let root: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&models_path).expect("read")).expect("json");
+        assert_eq!(
+            root["providers"]["openai-compatible.indemind"]["authHeader"],
+            true
+        );
+        assert!(root["providers"]["zai"].get("authHeader").is_none());
+
+        let again = catalog
+            .repair_openai_compatible_auth_headers()
+            .expect("repair idempotent");
+        assert!(again.is_empty());
+
+        let _ = std::fs::remove_file(models_path);
+        let _ = std::fs::remove_file(auth_path);
     }
 }

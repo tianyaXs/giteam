@@ -24,7 +24,49 @@ mod workspace_guard;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use pi::sdk::{default_tool_registry, Config, Tool, ToolFactory, ToolRegistry};
+use pi::tools::ToolEffects;
+use serde_json::Value;
+
+/// pi 0.8 `into_tools` 交出 `Arc<dyn Tool>`；我们的审批/沙箱包装仍吃 `Box`。
+struct ArcTool(Arc<dyn Tool>);
+
+#[async_trait]
+impl Tool for ArcTool {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn label(&self) -> &str {
+        self.0.label()
+    }
+
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+
+    fn parameters(&self) -> Value {
+        self.0.parameters()
+    }
+
+    fn effects(&self) -> ToolEffects {
+        self.0.effects()
+    }
+
+    fn effects_for_input(&self, input: &Value) -> ToolEffects {
+        self.0.effects_for_input(input)
+    }
+
+    async fn execute(
+        &self,
+        tool_call_id: &str,
+        input: Value,
+        on_update: Option<Box<dyn Fn(pi::sdk::ToolUpdate) + Send + Sync>>,
+    ) -> pi::sdk::Result<pi::sdk::ToolOutput> {
+        self.0.execute(tool_call_id, input, on_update).await
+    }
+}
 
 use super::browser_controller::SharedBrowserController;
 use super::interactions::{InteractionHub, InteractionRisk};
@@ -239,6 +281,7 @@ impl ToolFactory for GiteamToolFactory {
         // 2) read → ReadRecorder；edit/write/hashline_edit → EditGuard
         // 3) 全工具 → ToolBudget（截断/落盘；read 还钳制 limit）
         // 4) 写/执行类 → ApprovalTool（最外）
+        // pi 0.8 into_tools 返回 Arc；先 ArcTool 转成 Box 再走同一 wrap。
         let wrap = |tool: Box<dyn Tool>| -> Box<dyn Tool> {
             let name = tool.name().to_string();
             let tool: Box<dyn Tool> = if matches!(
@@ -278,7 +321,10 @@ impl ToolFactory for GiteamToolFactory {
             }
         };
 
-        let wrapped: Vec<Box<dyn Tool>> = tools.into_iter().map(&wrap).collect();
+        let wrapped: Vec<Box<dyn Tool>> = tools
+            .into_iter()
+            .map(|tool| wrap(Box::new(ArcTool(tool))))
+            .collect();
         let mut registry = ToolRegistry::from_tools(wrapped);
 
         if bash_enabled {

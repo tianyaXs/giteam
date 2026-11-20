@@ -16,16 +16,16 @@ import type { NavigatorMarker, NavigatorRole } from "./AgentMessageNavigator";
  * 会话侧帆船概览标尺（聊天场景瘦身版）：
  * - 只保留航线 + 圆点 + 帆船，文案改 hover 预览，避免贴消息区拥挤
  * - 航线在船位弯向「外侧」（远离内容），船停在弯弧里，左右侧互不压内容
- * - 节点按最小间距限流；过多时按当前视口渐进窗口加载（带滞回，避免抖）
+ * - 节点按轨高限流并全量均匀采样；Y 按 originalIndex/total 落在进度轴上（与船同轴）
  * - 动画 DOM 直写；SVG 与容器像素 1:1
  */
 
 type AgentSailingNavigatorProps = {
   markers: NavigatorMarker[];
   totalCount: number;
-  /** 高亮最近节点用（由滚动进度推导，仅下标变化时才重渲染）。 */
+  /** 高亮最近节点用（与 progress 同轴：round(progress×count)，仅下标变化时才重渲染）。 */
   activeIndex: number | null;
-  /** 滚动进度 0..1 的 ref；动画环每帧读取，避免父级每帧 setState。 */
+  /** 滚动进度 0..1 的 ref；船 Y 每帧读它，与蓝点共用同一进度轴。 */
   progressRef: MutableRefObject<number>;
   onNavigate: (index: number, behavior: "smooth" | "auto") => void;
   text: AppText;
@@ -80,54 +80,19 @@ function maxSlotsForHeight(height: number) {
   return clamp(Math.floor(usable / MIN_DOT_GAP), MIN_VISIBLE_DOTS, MAX_VISIBLE_DOTS);
 }
 
-function focusMarkerIndex(markers: NavigatorMarker[], activeIndex: number | null) {
-  if (markers.length === 0) return 0;
-  if (activeIndex == null) return Math.floor(markers.length / 2);
-  let best = 0;
-  let bestDist = Infinity;
-  for (let i = 0; i < markers.length; i += 1) {
-    const d = Math.abs(markers[i].originalIndex - activeIndex);
-    if (d < bestDist) {
-      bestDist = d;
-      best = i;
+/** 消息过多时沿全量下标均匀采样，保证点落在整条进度轴上（与船同轴），避免局部切片被拉满整轨。 */
+function sampleSpreadMarkers(markers: NavigatorMarker[], maxSlots: number): NavigatorMarker[] {
+  if (markers.length <= maxSlots) return markers;
+  const out: NavigatorMarker[] = [];
+  const last = maxSlots - 1;
+  for (let i = 0; i < maxSlots; i += 1) {
+    const idx = Math.round((i / last) * (markers.length - 1));
+    const marker = markers[idx];
+    if (out.length === 0 || out[out.length - 1].key !== marker.key) {
+      out.push(marker);
     }
   }
-  return best;
-}
-
-/**
- * 渐进窗口：消息过多时只挂载 active 附近一段；窗口带滞回，
- * 焦点仍在中段时不挪窗，滑近边缘才平移（像虚拟列表）。
- */
-function selectProgressiveMarkers(
-  markers: NavigatorMarker[],
-  activeIndex: number | null,
-  maxSlots: number,
-  stickyStart: number | null
-): { items: NavigatorMarker[]; windowStart: number } {
-  if (markers.length <= maxSlots) {
-    return { items: markers, windowStart: 0 };
-  }
-  const focus = focusMarkerIndex(markers, activeIndex);
-  const maxStart = markers.length - maxSlots;
-  const edge = Math.max(2, Math.floor(maxSlots * 0.28));
-  let start: number;
-  if (stickyStart == null) {
-    start = clamp(focus - Math.floor(maxSlots / 2), 0, maxStart);
-  } else {
-    const local = focus - stickyStart;
-    if (local < edge) {
-      start = clamp(focus - edge, 0, maxStart);
-    } else if (local > maxSlots - 1 - edge) {
-      start = clamp(focus - (maxSlots - 1 - edge), 0, maxStart);
-    } else {
-      start = stickyStart;
-    }
-  }
-  return {
-    items: markers.slice(start, start + maxSlots),
-    windowStart: start
-  };
+  return out;
 }
 
 const SHIP_PATHS = [
@@ -170,8 +135,6 @@ export function AgentSailingNavigator({
 
   const [isDragging, setIsDragging] = useState(false);
   const [railHeight, setRailHeight] = useState(520);
-  /** 渐进窗口起点（marker 数组下标）；null 表示尚未锚定，按焦点居中。 */
-  const [windowStart, setWindowStart] = useState<number | null>(null);
   const [preview, setPreview] = useState<{
     x: number;
     y: number;
@@ -200,28 +163,12 @@ export function AgentSailingNavigator({
   const activeMarkerIndexRef = useRef(-1);
 
   const maxSlots = maxSlotsForHeight(railHeight);
-  const progressive = useMemo(
-    () => selectProgressiveMarkers(markers, activeIndex, maxSlots, windowStart),
-    [markers, activeIndex, maxSlots, windowStart]
+  const sampled = useMemo(
+    () => sampleSpreadMarkers(markers, maxSlots),
+    [markers, maxSlots]
   );
-  const sampled = progressive.items;
   const count = sampled.length;
   const onLeft = side === "left";
-
-  // 滞回窗口：仅在 select 算出新起点时写入，避免滚动中段反复 slice。
-  useEffect(() => {
-    if (progressive.windowStart === windowStart) return;
-    setWindowStart(progressive.windowStart);
-  }, [progressive.windowStart, windowStart]);
-
-  // 会话长度/首尾变化时重置窗口（避免父组件每帧新数组引用把窗口打回起点）。
-  const markersEpoch =
-    markers.length === 0
-      ? "0"
-      : `${markers.length}:${markers[0].key}:${markers[markers.length - 1].key}`;
-  useEffect(() => {
-    setWindowStart(null);
-  }, [markersEpoch]);
 
   const activeMarkerIndex = useMemo(() => {
     if (activeIndex == null || count === 0) return -1;
@@ -257,13 +204,17 @@ export function AgentSailingNavigator({
     return () => observer.disconnect();
   }, [hidden, markers.length]);
 
+  /** 点 Y = 消息下标 / 全量进度轴，与 shipTargetY(progress) 同坐标系。 */
   const markerCenterY = useCallback(
     (index: number, height: number) => {
       if (count <= 0) return height / 2;
       const usable = Math.max(1, height - RAIL_PAD * 2);
-      return RAIL_PAD + ((index + 0.5) / count) * usable;
+      const marker = sampled[index];
+      if (!marker || totalCount <= 1) return RAIL_PAD + usable / 2;
+      const ratio = clamp(marker.originalIndex / Math.max(1, totalCount - 1), 0, 1);
+      return RAIL_PAD + ratio * usable;
     },
-    [count]
+    [count, sampled, totalCount]
   );
 
   /** 船位 = 滚动进度映射到航线端点之间；每帧读 ref，不经 React state。 */
@@ -536,7 +487,7 @@ export function AgentSailingNavigator({
     [navigateFromPointer]
   );
 
-  // 用全量 markers 判断是否展示；可见点由渐进窗口决定，可能少于 MIN_MARKERS。
+  // 用全量 markers 判断是否展示；可见点由均匀采样决定，可能少于 MIN_MARKERS。
   if (hidden || markers.length < MIN_MARKERS) return null;
 
   const roleDotClass = (role: NavigatorRole) =>
@@ -606,12 +557,14 @@ export function AgentSailingNavigator({
 
         {sampled.map((marker, index) => {
           const isActive = activeMarkerIndex === index;
+          const yRatio =
+            totalCount <= 1 ? 0.5 : clamp(marker.originalIndex / Math.max(1, totalCount - 1), 0, 1);
           return (
             <div
               key={marker.key}
               className="absolute left-0 right-0"
               style={{
-                top: `calc(${RAIL_PAD}px + ${(index + 0.5) / Math.max(1, count)} * (100% - ${RAIL_PAD * 2}px) - 5px)`,
+                top: `calc(${RAIL_PAD}px + ${yRatio} * (100% - ${RAIL_PAD * 2}px) - 5px)`,
                 height: 10
               }}
               onMouseEnter={(event) => {

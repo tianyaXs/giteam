@@ -319,8 +319,21 @@ export type AgentQueuedFollowUp = {
   content: string;
 };
 
+/** 待发送入队：始终追加，不顶掉已有条目。 */
+export function appendQueuedFollowUp(
+  queue: AgentQueuedFollowUp[],
+  content: string,
+  makeId: () => string
+): AgentQueuedFollowUp[] {
+  const text = content.trim();
+  if (!text) return queue;
+  return [...queue, { id: makeId(), content: text }];
+}
+
 /**
- * 已提交的用户句进入时间线；若当前有未冻结的 live assistant，插在它前面。
+ * 已提交的用户句进入时间线。
+ * 只允许插到「当前最后一条」且仍是空占位的 live assistant 前面（发送时先建了回复泡）。
+ * 助手 id 若落在更早的回合里，必须追加到末尾——插回去会把新消息嵌进历史中间，时序错乱。
  * 待发送跟进不得走这条路径，应留在输入框上方队列。
  */
 export function commitUserBeforeLiveAssistant(
@@ -335,9 +348,44 @@ export function commitUserBeforeLiveAssistant(
         : row
     );
   }
+  const text = String(userMessage.content || "").trim();
+  if (text) {
+    let tailUser = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === "user") {
+        tailUser = i;
+        break;
+      }
+    }
+    const tail = tailUser >= 0 ? messages[tailUser] : undefined;
+    const afterTail = tailUser >= 0 ? messages.slice(tailUser + 1) : [];
+    // 只有「这句已经在末尾」才原地更新：后面没有实质回复。
+    // 再发一遍相同正文必须追加，不能改写更早的那条。
+    const tailIsUnanswered =
+      afterTail.length === 0
+      || (
+        afterTail.length === 1
+        && afterTail[0]?.role === "assistant"
+        && !String(afterTail[0].content || "").trim()
+      );
+    if (tail && tailIsUnanswered && String(tail.content || "").trim() === text) {
+      return messages.map((row, index) =>
+        index === tailUser
+          ? { ...row, ...userMessage, id: row.id, attachments: row.attachments || userMessage.attachments }
+          : row
+      );
+    }
+  }
   const liveId = String(liveAssistantId || "").trim();
   const liveIdx = liveId ? messages.findIndex((row) => row.id === liveId) : -1;
-  if (liveIdx >= 0) {
+  const live = liveIdx >= 0 ? messages[liveIdx] : undefined;
+  // 只有末尾、且还是空占位的回复泡，才把用户句插到它前面。
+  // 已有正文的助手是上一轮回复：新消息必须排在它后面。
+  const liveIsOpenTail =
+    liveIdx === messages.length - 1
+    && live?.role === "assistant"
+    && !String(live.content || "").trim();
+  if (liveIsOpenTail) {
     return [...messages.slice(0, liveIdx), userMessage, ...messages.slice(liveIdx)];
   }
   return [...messages, userMessage];
@@ -394,23 +442,21 @@ export function dropQueuedFollowUpsAlreadyInTranscript(
 }
 
 /**
- * history 与 live（本地时间线）归并，以 live 顺序为骨架输出。
+ * history 与 live（本地时间线）归并。history 顺序是已落盘消息的时间脊柱；
+ * live 里尚未落盘的行插在相邻锚点之间，不能整段甩到末尾，也不能跟着错误的
+ * live 插入点把新用户句留在历史中间。
  *
  * history 比 live 短时（JSONL write-behind 未落盘 / 暂停回滚），服务端缺失的
- * assistant 必须保留在它在本地时间线中的原位——尾部追加会把「暂停保留的行」
- * 挪到暂停后新发消息之后，时序错乱（2026-11-12 实证：暂停后发「继续」，重进
- * 会话后保留行跑到两条「继续」后面）。
+ * assistant 必须留在它相对前后锚点的原位——尾部追加会把「暂停保留的行」
+ * 挪到暂停后新发消息之后（2026-11-12）。
  *
  * 规则：
- * - live 行有 history 对应（id 直接匹配或 serverIdByLocalId 映射）→ 输出
- *   history 版本；assistant 正文经 pickContent 取更长方（保护流式已见内容）；
- *   error 是本地通道字段（服务端历史不回传失败事件），history 无而 live 有时补上；
- *   **id 保留 live 行的本地 id**——输出行即将替换本地数组，若改用 history 的
- *   服务端 id，Virtuoso computeItemKey 视为换行 → 卸载重挂（列表闪动）；
- *   local→server 对应关系由 serverIdByLocalId 持续承担；
- * - live assistant 无对应 → 原位保留（需内容或 hasLiveParts 可见）；
- * - live user 等其他 role 无对应 → 丢弃（防与 history 版本成双气泡）；
- * - history 未被消费的行（映射断裂的新行）按 history 顺序尾随兜底。
+ * - 按 history 顺序输出；live 能配对的行（id 或 serverIdByLocalId）用 history
+ *   正文，assistant 经 pickContent 取更长方；error 是本地字段，history 无则补上；
+ *   **id 保留 live 本地 id**（换 id 会让列表卸载重挂）；
+ * - 两个 history 锚点之间的 live-only 行原位保留：assistant 需内容或 hasLiveParts，
+ *   尚未落盘的 user 也保留；
+ * - history 有、live 没有的行留在 history 的原位，不追加到末尾。
  */
 export function mergeHistoryWithLiveTimeline(
   history: AgentChatMessage[],
@@ -431,41 +477,73 @@ export function mergeHistoryWithLiveTimeline(
 
   const historyById = new Map(history.map((row) => [row.id, row]));
   const serverIdByLocalId = options?.serverIdByLocalId || {};
-  const consumed = new Set<string>();
+  const historyIdForLive = (row: AgentChatMessage): string => {
+    if (historyById.has(row.id)) return row.id;
+    const mapped = String(serverIdByLocalId[row.id] || "").trim();
+    if (mapped && historyById.has(mapped)) return mapped;
+    return "";
+  };
+  const liveIndexByHistoryId = new Map<string, number>();
+  live.forEach((row, index) => {
+    const historyId = historyIdForLive(row);
+    if (historyId && !liveIndexByHistoryId.has(historyId)) liveIndexByHistoryId.set(historyId, index);
+  });
+
+  const mergeAnchored = (historyRow: AgentChatMessage, liveRow?: AgentChatMessage): AgentChatMessage => {
+    if (!liveRow) return historyRow;
+    let merged = historyRow;
+    if (
+      liveRow.role === "assistant"
+      && String(liveRow.content || "").length > String(historyRow.content || "").length
+    ) {
+      const content = options?.pickContent?.(historyRow.content || "", liveRow.content || "")
+        || liveRow.content;
+      merged = { ...historyRow, content };
+    }
+    // error 是本地通道字段（服务端历史不回传失败事件）。
+    if (liveRow.error && !merged.error) merged = { ...merged, error: liveRow.error };
+    if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
+    return merged;
+  };
+
+  const keepLiveOnly = (row: AgentChatMessage) => {
+    if (historyIdForLive(row)) return false;
+    if (row.role === "user") return true;
+    if (row.role !== "assistant") return false;
+    return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+  };
+
   const out: AgentChatMessage[] = [];
-  for (const liveRow of live) {
-    const mappedId = String(serverIdByLocalId[liveRow.id] || "").trim();
-    const historyRow = historyById.get(liveRow.id)
-      || (mappedId ? historyById.get(mappedId) : undefined);
-    if (historyRow) {
-      consumed.add(historyRow.id);
-      let merged = historyRow;
-      if (
-        liveRow.role === "assistant"
-        && String(liveRow.content || "").length > String(historyRow.content || "").length
-      ) {
-        const content = options?.pickContent?.(historyRow.content || "", liveRow.content || "")
-          || liveRow.content;
-        merged = { ...historyRow, content };
-      }
-      // error 是本地通道字段（服务端历史不回传失败事件）：finalize 已写入的
-      // 「已暂停」等终态若被 history 版本冲掉，暂停标记会闪现后消失（抖动感）。
-      if (liveRow.error && !merged.error) merged = { ...merged, error: liveRow.error };
-      // id 保留 live 行的本地 id：输出将整表替换本地数组，换 id 即换 stableKey
-      // → Virtuoso 卸载重挂（高度重测整列跳动 + 动画重播 = 消息闪动）。
-      if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
-      out.push(merged);
+  const pendingHistory: AgentChatMessage[] = [];
+  let liveCursor = 0;
+  const emitLiveOnlyUntil = (stopIndex: number) => {
+    while (liveCursor < stopIndex && liveCursor < live.length) {
+      const row = live[liveCursor];
+      liveCursor += 1;
+      if (keepLiveOnly(row)) out.push(row);
+    }
+  };
+  const flushPendingHistory = () => {
+    if (pendingHistory.length === 0) return;
+    out.push(...pendingHistory);
+    pendingHistory.length = 0;
+  };
+
+  for (const historyRow of history) {
+    const liveIndex = liveIndexByHistoryId.get(historyRow.id);
+    if (liveIndex == null) {
+      pendingHistory.push(historyRow);
       continue;
     }
-    if (liveRow.role !== "assistant") continue;
-    const visible =
-      Boolean(String(liveRow.content || "").trim())
-      || Boolean(options?.hasLiveParts?.(liveRow.id));
-    if (visible) out.push(liveRow);
+    // live 把这行插到了更早的位置：不跟着倒退，按 history 顺序在当前位置输出。
+    if (liveIndex >= liveCursor) emitLiveOnlyUntil(liveIndex);
+    flushPendingHistory();
+    out.push(mergeAnchored(historyRow, live[liveIndex]));
+    if (liveIndex >= liveCursor) liveCursor = liveIndex + 1;
   }
-  for (const row of history) {
-    if (!consumed.has(row.id)) out.push(row);
-  }
+  // 尚未落盘的尾部（新用户句）必须留在已落盘 history 之后。
+  flushPendingHistory();
+  emitLiveOnlyUntil(live.length);
   return out;
 }
 
