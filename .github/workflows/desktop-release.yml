@@ -45,19 +45,16 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.3.0）
+            const body = `## 本版重点（0.3.1）
 
-            - 跟进队列累计 + 插队（Send Now）不丢；停止只中止当前回合并冲刷队列
-            - 修复新消息插进历史中间的时序错乱
-            - 帆船蓝点与船位同轴；流式结束后停在输出完位置
-            - 升级 pi_agent_rust / asupersync 0.5；提高 rustc recursion_limit（修复 0.2.60 全平台编译失败）
-            - 桌面宠物窗口
+            - 修复 Windows 发布编译失败：恢复 pi_agent_rust win_job 所需的 nightly feature gate（上游 #257 未合前临时 fork）
+            - 继承 0.3.0：跟进队列 / Send Now、消息时序、帆船同轴、recursion_limit、宠物窗口
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.3.0.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.3.1.md\``;
 
             let release;
             try {
