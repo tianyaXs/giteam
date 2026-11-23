@@ -1,4 +1,5 @@
 import type { ContextBreakdown } from "./agent/client";
+import { shouldKeepLiveAssistant, canInsertUserBeforeAssistant, isPauseFailureText } from "./agentParts.ts";
 
 export type { ContextBreakdown, ContextCategoryId, ContextCategoryUsage } from "./agent/client";
 
@@ -86,6 +87,11 @@ export type AgentChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /**
+   * 本地回合锚：同一次发送的 user + assistants 共享。
+   * 归并对账按 turn 成组，禁止同文「继续」跨回合错配。
+   */
+  turnId?: string;
   /** 本地保留的运行失败信息；服务端历史不一定返回失败事件。 */
   error?: string;
   attachments?: Array<{ id: string; kind: "image" | "file"; uri: string; mime?: string; filename?: string }>;
@@ -98,6 +104,41 @@ export type AgentChatMessage = {
   /** 上下文分类占用（chars÷4 估计）。 */
   contextBreakdown?: ContextBreakdown;
 };
+
+/** 一条 user 及其后紧随的 assistants；无前导 user 的 leading assistants 单独成组。 */
+export type AgentTimelineTurn = {
+  turnId?: string;
+  user?: AgentChatMessage;
+  assistants: AgentChatMessage[];
+};
+
+/** 按 user 边界切回合；assistant 归入最近一条 user。 */
+export function splitMessagesIntoTurns(messages: AgentChatMessage[]): AgentTimelineTurn[] {
+  const turns: AgentTimelineTurn[] = [];
+  let current: AgentTimelineTurn | null = null;
+  for (const row of messages) {
+    if (row.role === "user") {
+      if (current) turns.push(current);
+      const turnId = String(row.turnId || "").trim() || undefined;
+      current = { turnId, user: row, assistants: [] };
+      continue;
+    }
+    if (row.role !== "assistant") continue;
+    const rowTurnId = String(row.turnId || "").trim() || undefined;
+    if (!current) {
+      current = { turnId: rowTurnId, assistants: [row] };
+      continue;
+    }
+    if (!current.turnId && rowTurnId) current.turnId = rowTurnId;
+    current.assistants.push(row);
+  }
+  if (current) turns.push(current);
+  return turns;
+}
+
+function flattenTimelineTurn(turn: AgentTimelineTurn): AgentChatMessage[] {
+  return turn.user ? [turn.user, ...turn.assistants] : [...turn.assistants];
+}
 
 export type AgentChatSession = {
   id: string;
@@ -331,6 +372,20 @@ export function appendQueuedFollowUp(
 }
 
 /**
+ * DSH：是否仍是 phase===open 的助手占位（可把新 user 插到前面）。
+ * active/settled（含进行中或已收口的 runtime.retry）必须收口，新 user 只能 append。
+ */
+export function isOpenAssistantPlaceholder(
+  row: AgentChatMessage | undefined,
+  isStillOpen?: (messageId: string) => boolean
+): boolean {
+  if (!row || row.role !== "assistant") return false;
+  // isStillOpen=false ⇒ live parts 已非 open；与 canInsertUserBeforeAssistant 同相。
+  if (isStillOpen && !isStillOpen(row.id)) return false;
+  return canInsertUserBeforeAssistant(row, null);
+}
+
+/**
  * 已提交的用户句进入时间线。
  * 只允许插到「当前最后一条」且仍是空占位的 live assistant 前面（发送时先建了回复泡）。
  * 助手 id 若落在更早的回合里，必须追加到末尾——插回去会把新消息嵌进历史中间，时序错乱。
@@ -339,7 +394,8 @@ export function appendQueuedFollowUp(
 export function commitUserBeforeLiveAssistant(
   messages: AgentChatMessage[],
   userMessage: AgentChatMessage,
-  liveAssistantId = ""
+  liveAssistantId = "",
+  options?: { isStillOpenAssistant?: (messageId: string) => boolean }
 ): AgentChatMessage[] {
   if (messages.some((row) => row.id === userMessage.id)) {
     return messages.map((row) =>
@@ -348,6 +404,7 @@ export function commitUserBeforeLiveAssistant(
         : row
     );
   }
+  const isStillOpen = options?.isStillOpenAssistant;
   const text = String(userMessage.content || "").trim();
   if (text) {
     let tailUser = -1;
@@ -361,12 +418,12 @@ export function commitUserBeforeLiveAssistant(
     const afterTail = tailUser >= 0 ? messages.slice(tailUser + 1) : [];
     // 只有「这句已经在末尾」才原地更新：后面没有实质回复。
     // 再发一遍相同正文必须追加，不能改写更早的那条。
+    // DSH：active/settled 助手不算未答复占位。
     const tailIsUnanswered =
       afterTail.length === 0
       || (
         afterTail.length === 1
-        && afterTail[0]?.role === "assistant"
-        && !String(afterTail[0].content || "").trim()
+        && isOpenAssistantPlaceholder(afterTail[0], isStillOpen)
       );
     if (tail && tailIsUnanswered && String(tail.content || "").trim() === text) {
       return messages.map((row, index) =>
@@ -379,12 +436,10 @@ export function commitUserBeforeLiveAssistant(
   const liveId = String(liveAssistantId || "").trim();
   const liveIdx = liveId ? messages.findIndex((row) => row.id === liveId) : -1;
   const live = liveIdx >= 0 ? messages[liveIdx] : undefined;
-  // 只有末尾、且还是空占位的回复泡，才把用户句插到它前面。
-  // 已有正文的助手是上一轮回复：新消息必须排在它后面。
+  // 只有末尾且 phase===open 的回复泡，才把用户句插到它前面。
   const liveIsOpenTail =
     liveIdx === messages.length - 1
-    && live?.role === "assistant"
-    && !String(live.content || "").trim();
+    && isOpenAssistantPlaceholder(live, isStillOpen);
   if (liveIsOpenTail) {
     return [...messages.slice(0, liveIdx), userMessage, ...messages.slice(liveIdx)];
   }
@@ -442,22 +497,279 @@ export function dropQueuedFollowUpsAlreadyInTranscript(
 }
 
 /**
- * history 与 live（本地时间线）归并。history 顺序是已落盘消息的时间脊柱；
- * live 里尚未落盘的行插在相邻锚点之间，不能整段甩到末尾，也不能跟着错误的
- * live 插入点把新用户句留在历史中间。
+ * history 与 live（本地时间线）按 **回合（turn）** 归并（DSH）。
  *
- * history 比 live 短时（JSONL write-behind 未落盘 / 暂停回滚），服务端缺失的
- * assistant 必须留在它相对前后锚点的原位——尾部追加会把「暂停保留的行」
- * 挪到暂停后新发消息之后（2026-11-12）。
- *
- * 规则：
- * - 按 history 顺序输出；live 能配对的行（id 或 serverIdByLocalId）用 history
- *   正文，assistant 经 pickContent 取更长方；error 是本地字段，history 无则补上；
- *   **id 保留 live 本地 id**（换 id 会让列表卸载重挂）；
- * - 两个 history 锚点之间的 live-only 行原位保留：assistant 需内容或 hasLiveParts，
- *   尚未落盘的 user 也保留；
- * - history 有、live 没有的行留在 history 的原位，不追加到末尾。
+ * 不变量：一个 turn = 一条 user + 紧随 assistants；整 turn 写出，禁止交叉 flush。
+ * 配对优先级：turnId → user id / serverIdByLocalId；**不做同文 content 配对**。
+ * 行级是否保留 live 助手：phase !== open（见 shouldKeepLiveAssistant）。
  */
+function keepLiveAssistantRow(
+  row: AgentChatMessage,
+  hasLiveParts?: (messageId: string) => boolean
+): boolean {
+  // hasLiveParts 语义 = phase !== open（App：livePartsHaveVisibleContent）。
+  if (hasLiveParts?.(row.id)) return true;
+  return shouldKeepLiveAssistant(row, null);
+}
+
+function filterLiveTimelineRows(
+  rows: AgentChatMessage[],
+  hasLiveParts?: (messageId: string) => boolean
+): AgentChatMessage[] {
+  return rows.filter((row) => {
+    if (row.role === "user") return true;
+    if (row.role !== "assistant") return false;
+    return keepLiveAssistantRow(row, hasLiveParts);
+  });
+}
+
+function mergeAnchoredMessage(
+  historyRow: AgentChatMessage,
+  liveRow: AgentChatMessage | undefined,
+  pickContent?: (historyContent: string, liveContent: string) => string
+): AgentChatMessage {
+  if (!liveRow) return historyRow;
+  let merged = historyRow;
+  if (
+    liveRow.role === "assistant"
+    && String(liveRow.content || "").length > String(historyRow.content || "").length
+  ) {
+    const content = pickContent?.(historyRow.content || "", liveRow.content || "")
+      || liveRow.content;
+    merged = { ...historyRow, content };
+  }
+  // error / turnId 是本地通道字段（服务端历史不回传）。
+  if (liveRow.error && !merged.error) merged = { ...merged, error: liveRow.error };
+  const liveTurnId = String(liveRow.turnId || "").trim();
+  if (liveTurnId && !String(merged.turnId || "").trim()) {
+    merged = { ...merged, turnId: liveTurnId };
+  }
+  // id 保留 live 本地 id（换 id 会让列表卸载重挂）。
+  if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
+  return merged;
+}
+
+function historyIdForLiveRow(
+  row: AgentChatMessage,
+  historyById: Map<string, AgentChatMessage>,
+  serverIdByLocalId: Record<string, string>
+): string {
+  if (historyById.has(row.id)) return row.id;
+  const mapped = String(serverIdByLocalId[row.id] || "").trim();
+  if (mapped && historyById.has(mapped)) return mapped;
+  return "";
+}
+
+function turnsMatchByAnchor(
+  historyTurn: AgentTimelineTurn,
+  liveTurn: AgentTimelineTurn,
+  historyById: Map<string, AgentChatMessage>,
+  serverIdByLocalId: Record<string, string>
+): boolean {
+  const historyTurnId = String(
+    historyTurn.turnId
+    || historyTurn.user?.turnId
+    || historyTurn.assistants[0]?.turnId
+    || ""
+  ).trim();
+  const liveTurnId = String(
+    liveTurn.turnId
+    || liveTurn.user?.turnId
+    || liveTurn.assistants[0]?.turnId
+    || ""
+  ).trim();
+  if (historyTurnId && liveTurnId && historyTurnId === liveTurnId) return true;
+
+  const historyUser = historyTurn.user;
+  const liveUser = liveTurn.user;
+  if (historyUser && liveUser) {
+    if (historyUser.id === liveUser.id) return true;
+    if (historyIdForLiveRow(liveUser, historyById, serverIdByLocalId) === historyUser.id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mergeTimelineTurns(
+  historyTurn: AgentTimelineTurn,
+  liveTurn: AgentTimelineTurn | undefined,
+  options: {
+    hasLiveParts?: (messageId: string) => boolean;
+    pickContent?: (historyContent: string, liveContent: string) => string;
+    historyById: Map<string, AgentChatMessage>;
+    serverIdByLocalId: Record<string, string>;
+    /** assistant id → 它在 live 里所属的回合下标。不属于当前 history 回合则推迟写出。 */
+    assistantOwner?: Map<string, number>;
+    liveTurnIndex?: number;
+  }
+): AgentChatMessage[] {
+  const { hasLiveParts, pickContent, historyById, serverIdByLocalId, assistantOwner, liveTurnIndex } = options;
+  const isDeferredAssistant = (id: string) => {
+    const owned = assistantOwner?.get(id);
+    if (owned == null) return false;
+    if (liveTurnIndex == null) return true;
+    return owned !== liveTurnIndex;
+  };
+  const ownedByThisLiveTurn = (id: string) =>
+    liveTurnIndex != null && assistantOwner?.get(id) === liveTurnIndex;
+  const liveAssistants = liveTurn?.assistants || [];
+  const liveByHistoryId = new Map<string, AgentChatMessage>();
+  for (const row of liveAssistants) {
+    const historyId = historyIdForLiveRow(row, historyById, serverIdByLocalId) || row.id;
+    if (!liveByHistoryId.has(historyId)) liveByHistoryId.set(historyId, row);
+    if (!liveByHistoryId.has(row.id)) liveByHistoryId.set(row.id, row);
+  }
+
+  const out: AgentChatMessage[] = [];
+  const turnId =
+    String(liveTurn?.turnId || historyTurn.turnId || "").trim()
+    || String(liveTurn?.user?.turnId || historyTurn.user?.turnId || "").trim()
+    || undefined;
+
+  if (historyTurn.user || liveTurn?.user) {
+    const mergedUser = historyTurn.user
+      ? mergeAnchoredMessage(historyTurn.user, liveTurn?.user, pickContent)
+      : liveTurn!.user!;
+    out.push(turnId && !mergedUser.turnId ? { ...mergedUser, turnId } : mergedUser);
+  }
+
+  const claimedLiveIds = new Set<string>();
+  const mergedAssistants: AgentChatMessage[] = new Array(historyTurn.assistants.length);
+
+  // 1) 先按 id / serverIdByLocalId 配对。
+  for (let hi = 0; hi < historyTurn.assistants.length; hi += 1) {
+    const historyAss = historyTurn.assistants[hi];
+    // 属于更晚的 live 回合（同 turnId 的「继续」，或暂停标签）：不要提前写到上一回合。
+    if (isDeferredAssistant(historyAss.id)) continue;
+    let liveAss = liveByHistoryId.get(historyAss.id);
+    if (!liveAss) {
+      for (const [localId, serverId] of Object.entries(serverIdByLocalId)) {
+        if (serverId === historyAss.id) {
+          liveAss = liveByHistoryId.get(localId);
+          break;
+        }
+      }
+    }
+    if (!liveAss || claimedLiveIds.has(liveAss.id)) continue;
+    claimedLiveIds.add(liveAss.id);
+    mergedAssistants[hi] = mergeAnchoredMessage(historyAss, liveAss, pickContent);
+  }
+
+  // 2) 同 turn 内剩余助手按位置配对（turnId 已对齐但 id 尚未 remap 的乐观行）。
+  let livePos = 0;
+  for (let hi = 0; hi < historyTurn.assistants.length; hi += 1) {
+    if (mergedAssistants[hi]) continue;
+    while (livePos < liveAssistants.length && claimedLiveIds.has(liveAssistants[livePos].id)) {
+      livePos += 1;
+    }
+    const historyAss = historyTurn.assistants[hi];
+    if (isDeferredAssistant(historyAss.id)) continue;
+    const liveAss = livePos < liveAssistants.length ? liveAssistants[livePos] : undefined;
+    if (
+      liveAss
+      && !historyIdForLiveRow(liveAss, historyById, serverIdByLocalId)
+    ) {
+      claimedLiveIds.add(liveAss.id);
+      livePos += 1;
+      mergedAssistants[hi] = mergeAnchoredMessage(historyAss, liveAss, pickContent);
+    } else {
+      mergedAssistants[hi] = turnId && !historyAss.turnId
+        ? { ...historyAss, turnId }
+        : historyAss;
+    }
+  }
+  out.push(...mergedAssistants.filter((row): row is AgentChatMessage => Boolean(row)));
+
+  for (const liveAss of liveAssistants) {
+    if (claimedLiveIds.has(liveAss.id)) continue;
+    const historyId = historyIdForLiveRow(liveAss, historyById, serverIdByLocalId);
+    // 已在其它 history 回合出现的助手留给那边；本回合锚点上的暂停/重试标签必须留在这里。
+    if (
+      historyId
+      && !ownedByThisLiveTurn(liveAss.id)
+      && !ownedByThisLiveTurn(historyId)
+    ) continue;
+    if (!keepLiveAssistantRow(liveAss, hasLiveParts)) continue;
+    out.push(turnId && !liveAss.turnId ? { ...liveAss, turnId } : liveAss);
+  }
+
+  return out;
+}
+
+function filterLiveOnlyTurn(
+  turn: AgentTimelineTurn,
+  historyById: Map<string, AgentChatMessage>,
+  serverIdByLocalId: Record<string, string>,
+  hasLiveParts: ((messageId: string) => boolean) | undefined,
+  assistantOwner: Map<string, number> | undefined,
+  liveTurnIndex: number
+): AgentChatMessage[] {
+  const rows = flattenTimelineTurn(turn).filter((row) => {
+    const historyId = historyIdForLiveRow(row, historyById, serverIdByLocalId);
+    if (historyId) {
+      const ownedHere =
+        assistantOwner?.get(row.id) === liveTurnIndex
+        || assistantOwner?.get(historyId) === liveTurnIndex;
+      if (row.role === "assistant" && ownedHere) {
+        return keepLiveAssistantRow(row, hasLiveParts);
+      }
+      return false;
+    }
+    if (row.role === "user") return true;
+    return keepLiveAssistantRow(row, hasLiveParts);
+  });
+  return filterLiveTimelineRows(rows, hasLiveParts);
+}
+
+/**
+ * 只锁定「暂停/重试标签」所在的 live 回合。
+ * 普通助手（正文、工具、思考）不进这张表：按 turnId 改归属会把过程消息挪走或丢掉。
+ */
+function assistantOwnerById(
+  liveTurns: AgentTimelineTurn[],
+  historyById: Map<string, AgentChatMessage>,
+  serverIdByLocalId: Record<string, string>
+): Map<string, number> {
+  const owner = new Map<string, number>();
+  const claim = (id: string, index: number) => {
+    const key = String(id || "").trim();
+    if (!key || owner.has(key)) return;
+    owner.set(key, index);
+  };
+  liveTurns.forEach((turn, index) => {
+    for (const row of turn.assistants) {
+      if (!isPauseFailureText(String(row.error || ""))) continue;
+      claim(row.id, index);
+      const historyId = historyIdForLiveRow(row, historyById, serverIdByLocalId);
+      if (historyId) claim(historyId, index);
+    }
+  });
+  return owner;
+}
+
+/** 把属于本回合的助手挪进来，把属于别的回合的助手挪出去。 */
+function liveTurnForEmit(
+  liveTurns: AgentTimelineTurn[],
+  index: number,
+  assistantOwner: Map<string, number>
+): AgentTimelineTurn {
+  const turn = liveTurns[index];
+  const assistants = turn.assistants.filter((row) => {
+    const owned = assistantOwner.get(row.id);
+    return owned == null || owned === index;
+  });
+  for (let i = 0; i < liveTurns.length; i += 1) {
+    if (i === index) continue;
+    for (const row of liveTurns[i].assistants) {
+      if (assistantOwner.get(row.id) !== index) continue;
+      if (assistants.some((item) => item.id === row.id)) continue;
+      assistants.push(row);
+    }
+  }
+  return { ...turn, assistants };
+}
+
 export function mergeHistoryWithLiveTimeline(
   history: AgentChatMessage[],
   live: AgentChatMessage[],
@@ -469,81 +781,85 @@ export function mergeHistoryWithLiveTimeline(
 ): AgentChatMessage[] {
   if (!Array.isArray(live) || live.length === 0) return history;
   if (!Array.isArray(history) || history.length === 0) {
-    return live.filter((row) => {
-      if (row.role !== "assistant") return false;
-      return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
-    });
+    // 完整保留 live turns（含 user），只滤掉无实质的空 assistant 占位。
+    return filterLiveTimelineRows(live, options?.hasLiveParts);
   }
 
   const historyById = new Map(history.map((row) => [row.id, row]));
   const serverIdByLocalId = options?.serverIdByLocalId || {};
-  const historyIdForLive = (row: AgentChatMessage): string => {
-    if (historyById.has(row.id)) return row.id;
-    const mapped = String(serverIdByLocalId[row.id] || "").trim();
-    if (mapped && historyById.has(mapped)) return mapped;
-    return "";
-  };
-  const liveIndexByHistoryId = new Map<string, number>();
-  live.forEach((row, index) => {
-    const historyId = historyIdForLive(row);
-    if (historyId && !liveIndexByHistoryId.has(historyId)) liveIndexByHistoryId.set(historyId, index);
-  });
+  const historyTurns = splitMessagesIntoTurns(history);
+  const liveTurns = splitMessagesIntoTurns(live);
+  const assistantOwner = assistantOwnerById(liveTurns, historyById, serverIdByLocalId);
 
-  const mergeAnchored = (historyRow: AgentChatMessage, liveRow?: AgentChatMessage): AgentChatMessage => {
-    if (!liveRow) return historyRow;
-    let merged = historyRow;
-    if (
-      liveRow.role === "assistant"
-      && String(liveRow.content || "").length > String(historyRow.content || "").length
-    ) {
-      const content = options?.pickContent?.(historyRow.content || "", liveRow.content || "")
-        || liveRow.content;
-      merged = { ...historyRow, content };
+  const liveTurnIndexByHistoryIndex = new Map<number, number>();
+  const usedLiveTurn = new Set<number>();
+  for (let hi = 0; hi < historyTurns.length; hi += 1) {
+    const historyTurn = historyTurns[hi];
+    let matched = -1;
+    for (let li = 0; li < liveTurns.length; li += 1) {
+      if (usedLiveTurn.has(li)) continue;
+      if (turnsMatchByAnchor(historyTurn, liveTurns[li], historyById, serverIdByLocalId)) {
+        matched = li;
+        break;
+      }
     }
-    // error 是本地通道字段（服务端历史不回传失败事件）。
-    if (liveRow.error && !merged.error) merged = { ...merged, error: liveRow.error };
-    if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
-    return merged;
-  };
-
-  const keepLiveOnly = (row: AgentChatMessage) => {
-    if (historyIdForLive(row)) return false;
-    if (row.role === "user") return true;
-    if (row.role !== "assistant") return false;
-    return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
-  };
+    if (matched >= 0) {
+      liveTurnIndexByHistoryIndex.set(hi, matched);
+      usedLiveTurn.add(matched);
+    }
+  }
 
   const out: AgentChatMessage[] = [];
-  const pendingHistory: AgentChatMessage[] = [];
-  let liveCursor = 0;
-  const emitLiveOnlyUntil = (stopIndex: number) => {
-    while (liveCursor < stopIndex && liveCursor < live.length) {
-      const row = live[liveCursor];
-      liveCursor += 1;
-      if (keepLiveOnly(row)) out.push(row);
+  let liveTurnCursor = 0;
+  const emitLiveOnlyUntil = (stopLiveIndex: number) => {
+    while (liveTurnCursor < stopLiveIndex && liveTurnCursor < liveTurns.length) {
+      if (!usedLiveTurn.has(liveTurnCursor)) {
+        out.push(
+          ...filterLiveOnlyTurn(
+            liveTurnForEmit(liveTurns, liveTurnCursor, assistantOwner),
+            historyById,
+            serverIdByLocalId,
+            options?.hasLiveParts,
+            assistantOwner,
+            liveTurnCursor
+          )
+        );
+      }
+      liveTurnCursor += 1;
     }
-  };
-  const flushPendingHistory = () => {
-    if (pendingHistory.length === 0) return;
-    out.push(...pendingHistory);
-    pendingHistory.length = 0;
   };
 
-  for (const historyRow of history) {
-    const liveIndex = liveIndexByHistoryId.get(historyRow.id);
+  for (let hi = 0; hi < historyTurns.length; hi += 1) {
+    const liveIndex = liveTurnIndexByHistoryIndex.get(hi);
     if (liveIndex == null) {
-      pendingHistory.push(historyRow);
+      // history-only turn 留在 history 脊柱当前位置；其后的 live-only 在末尾排放。
+      // 不再把未配对 history user 攒进 pending 再一次性 dump（那是跨回合交错的根因）。
+      out.push(
+        ...mergeTimelineTurns(historyTurns[hi], undefined, {
+          hasLiveParts: options?.hasLiveParts,
+          pickContent: options?.pickContent,
+          historyById,
+          serverIdByLocalId,
+          assistantOwner
+        })
+      );
       continue;
     }
-    // live 把这行插到了更早的位置：不跟着倒退，按 history 顺序在当前位置输出。
-    if (liveIndex >= liveCursor) emitLiveOnlyUntil(liveIndex);
-    flushPendingHistory();
-    out.push(mergeAnchored(historyRow, live[liveIndex]));
-    if (liveIndex >= liveCursor) liveCursor = liveIndex + 1;
+    // 配对 turn 之前的 live-only（尚未落盘的中间回合）原位保留。
+    if (liveIndex >= liveTurnCursor) emitLiveOnlyUntil(liveIndex);
+    out.push(
+      ...mergeTimelineTurns(historyTurns[hi], liveTurnForEmit(liveTurns, liveIndex, assistantOwner), {
+        hasLiveParts: options?.hasLiveParts,
+        pickContent: options?.pickContent,
+        historyById,
+        serverIdByLocalId,
+        assistantOwner,
+        liveTurnIndex: liveIndex
+      })
+    );
+    if (liveIndex >= liveTurnCursor) liveTurnCursor = liveIndex + 1;
   }
-  // 尚未落盘的尾部（新用户句）必须留在已落盘 history 之后。
-  flushPendingHistory();
-  emitLiveOnlyUntil(live.length);
+  emitLiveOnlyUntil(liveTurns.length);
   return out;
 }
 
@@ -561,10 +877,7 @@ export function mergeHistoryMessagesPreservingLive(
 ): AgentChatMessage[] {
   if (!Array.isArray(live) || live.length === 0) return history;
   if (!Array.isArray(history) || history.length === 0) {
-    return live.filter((row) => {
-      if (row.role !== "assistant") return false;
-      return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
-    });
+    return filterLiveTimelineRows(live, options?.hasLiveParts);
   }
 
   const historyIds = new Set(history.map((row) => row.id));
@@ -588,7 +901,7 @@ export function mergeHistoryMessagesPreservingLive(
   const trailing = live.slice(lastSharedLiveIndex + 1).filter((row) => {
     if (historyIds.has(row.id)) return false;
     if (row.role !== "assistant") return false;
-    return Boolean(String(row.content || "").trim()) || Boolean(options?.hasLiveParts?.(row.id));
+    return keepLiveAssistantRow(row, options?.hasLiveParts);
   });
   return trailing.length > 0 ? [...enriched, ...trailing] : enriched;
 }
@@ -604,19 +917,32 @@ function assistantTailAfterUser(messages: AgentChatMessage[], userIndex: number)
   return tail;
 }
 
+/**
+ * 定位 history 中与当前 user 对应的锚点。
+ * 只认 turnId / id / serverIdByLocalId——禁止同文「继续」跨回合错锚。
+ */
 function findHistoryUserAnchor(
   history: AgentChatMessage[],
-  currentUser: AgentChatMessage | undefined
+  currentUser: AgentChatMessage | undefined,
+  serverIdByLocalId?: Record<string, string>
 ): number {
   if (!currentUser) return -1;
   const byId = history.findIndex((row) => row.id === currentUser.id);
   if (byId >= 0) return byId;
-  const content = String(currentUser.content || "").trim();
-  if (!content) return -1;
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const row = history[i];
-    if (row.role !== "user") continue;
-    if (String(row.content || "").trim() === content) return i;
+
+  const mapped = String(serverIdByLocalId?.[currentUser.id] || "").trim();
+  if (mapped) {
+    const byMapped = history.findIndex((row) => row.id === mapped);
+    if (byMapped >= 0) return byMapped;
+  }
+
+  const turnId = String(currentUser.turnId || "").trim();
+  if (turnId) {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const row = history[i];
+      if (row.role !== "user") continue;
+      if (String(row.turnId || "").trim() === turnId) return i;
+    }
   }
   return -1;
 }
@@ -631,6 +957,7 @@ export function reconcilePromptTailFromHistory(
   options?: {
     pickContent?: (historyContent: string, currentContent: string) => string;
     hasLiveParts?: (messageId: string) => boolean;
+    serverIdByLocalId?: Record<string, string>;
   }
 ): { messages: AgentChatMessage[]; changed: boolean; touchedAssistantIds: string[] } {
   if (!Array.isArray(current) || current.length === 0 || !Array.isArray(history) || history.length === 0) {
@@ -646,7 +973,11 @@ export function reconcilePromptTailFromHistory(
   if (lastUserIdx < 0) {
     return { messages: current, changed: false, touchedAssistantIds: [] };
   }
-  const historyUserIdx = findHistoryUserAnchor(history, current[lastUserIdx]);
+  const historyUserIdx = findHistoryUserAnchor(
+    history,
+    current[lastUserIdx],
+    options?.serverIdByLocalId
+  );
   if (historyUserIdx < 0) {
     return { messages: current, changed: false, touchedAssistantIds: [] };
   }
@@ -692,10 +1023,7 @@ export function reconcilePromptTailFromHistory(
 
   for (const row of currentTail) {
     if (historyIds.has(row.id)) continue;
-    const keep =
-      Boolean(String(row.content || "").trim())
-      || Boolean(options?.hasLiveParts?.(row.id));
-    if (keep) mergedTail.push(row);
+    if (keepLiveAssistantRow(row, options?.hasLiveParts)) mergedTail.push(row);
   }
 
   const prefix = current.slice(0, lastUserIdx + 1);

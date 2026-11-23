@@ -29,11 +29,31 @@ describe("livePartsHaveVisibleContent", () => {
     expect(livePartsHaveVisibleContent(parts)).toBe(false);
   });
 
-  it("tool parts alone are not visible", () => {
+  it("toolCall alone is settled (visible for keepLive / block settled remap)", () => {
     const parts: AgentDetailedPart[] = [
       { id: "toolCall:0", type: "toolCall", toolName: "bash", status: "completed" } as AgentDetailedPart
     ];
-    expect(livePartsHaveVisibleContent(parts)).toBe(false);
+    expect(livePartsHaveVisibleContent(parts)).toBe(true);
+  });
+
+  it("runtime.retry / failure alone count as visible (stop during provider retry)", () => {
+    expect(
+      livePartsHaveVisibleContent([
+        {
+          id: "runtime.retry",
+          type: "runtime.retry",
+          phase: "started",
+          attempt: 1,
+          maxAttempts: 10,
+          error: "HTTP 500"
+        } as AgentDetailedPart
+      ])
+    ).toBe(true);
+    expect(
+      livePartsHaveVisibleContent([
+        { id: "runtime.failure", type: "runtime.failure", error: "已暂停", status: "error" } as AgentDetailedPart
+      ])
+    ).toBe(true);
   });
 
   it("handles null and undefined input", () => {

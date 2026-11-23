@@ -144,4 +144,41 @@ describe("reconcilePromptTailFromHistory", () => {
     expect(agentCacheHitRate(result.messages[1].sessionUsage)).toBe(73);
     expect(reconcilePromptTailFromHistory(result.messages, history).changed).toBe(false);
   });
+
+  /**
+   * 回归（2026-11-23）：多条同文「继续」时禁止按 content 从后往前错锚，
+   * 否则会把 history 尾助手并到错误的 user 回合。
+   */
+  it("does not anchor the latest continue by content alone", () => {
+    const current: AgentChatMessage[] = [
+      { id: "u-old", role: "user", content: "继续", turnId: "t1" },
+      { id: "a-retry", role: "assistant", content: "", error: "已暂停", turnId: "t1" },
+      { id: "u-new", role: "user", content: "继续", turnId: "t2" },
+      { id: "a-new", role: "assistant", content: "", turnId: "t2" }
+    ];
+    const history: AgentChatMessage[] = [
+      { id: "srv-old", role: "user", content: "继续" },
+      { id: "srv-a-old", role: "assistant", content: "旧轮总结" },
+      { id: "srv-new", role: "user", content: "继续" },
+      { id: "srv-a-new", role: "assistant", content: "新轮总结" }
+    ];
+    // 无 id/turnId/映射时不得靠同文命中 srv-new，应原样返回。
+    const withoutMap = reconcilePromptTailFromHistory(current, history);
+    expect(withoutMap.changed).toBe(false);
+    expect(withoutMap.messages.map((m) => m.id)).toEqual(["u-old", "a-retry", "u-new", "a-new"]);
+
+    // 有映射时只对账当前轮（u-new → srv-new）的 tail。
+    const withMap = reconcilePromptTailFromHistory(current, history, {
+      pickContent: (h, l) => (l.length > h.length ? l : h),
+      serverIdByLocalId: { "u-new": "srv-new" }
+    });
+    expect(withMap.changed).toBe(true);
+    expect(withMap.messages.map((m) => m.id)).toEqual([
+      "u-old",
+      "a-retry",
+      "u-new",
+      "srv-a-new"
+    ]);
+    expect(withMap.messages.at(-1)?.content).toBe("新轮总结");
+  });
 });

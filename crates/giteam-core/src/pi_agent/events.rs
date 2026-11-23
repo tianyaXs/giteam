@@ -138,9 +138,9 @@ pub enum AgentEvent {
     Retry {
         phase: String,
         attempt: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, rename = "maxAttempts", skip_serializing_if = "Option::is_none")]
         max_attempts: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, rename = "delayMs", skip_serializing_if = "Option::is_none")]
         delay_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         success: Option<bool>,

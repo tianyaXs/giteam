@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { coalesceRuntimeParts } from "./agentParts";
+import {
+  coalesceRuntimeParts,
+  livePartsBlockAssistantRemap,
+  type AgentDetailedPart
+} from "./agentParts";
 
 describe("coalesceRuntimeParts", () => {
   it("drops successful runtime.retry so it does not stick under latest text", () => {
@@ -36,5 +40,60 @@ describe("coalesceRuntimeParts", () => {
       }
     ] as any[]);
     expect(failed.at(-1)).toMatchObject({ type: "runtime.retry", success: false });
+  });
+
+  it("prefers the higher attempt when multiple retries are coalesced", () => {
+    const next = coalesceRuntimeParts([
+      {
+        id: "runtime.retry",
+        type: "runtime.retry",
+        phase: "completed",
+        success: false,
+        attempt: 3,
+        maxAttempts: 10,
+        error: "重试已中止"
+      },
+      {
+        id: "runtime.retry",
+        type: "runtime.retry",
+        phase: "completed",
+        success: false,
+        attempt: 2,
+        maxAttempts: 10,
+        error: "重试已中止"
+      }
+    ] as any[]);
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({ type: "runtime.retry", attempt: 3 });
+  });
+});
+
+describe("livePartsBlockAssistantRemap", () => {
+  it("does not block remap for in-progress retry", () => {
+    const parts = [
+      {
+        id: "runtime.retry",
+        type: "runtime.retry",
+        phase: "started",
+        status: "running",
+        attempt: 3
+      } as AgentDetailedPart
+    ];
+    expect(livePartsBlockAssistantRemap(parts)).toBe(false);
+  });
+
+  it("blocks remap for settled aborted retry", () => {
+    const parts = [
+      {
+        id: "runtime.retry",
+        type: "runtime.retry",
+        phase: "completed",
+        success: false,
+        status: "error",
+        attempt: 7,
+        error: "重试已中止"
+      } as AgentDetailedPart
+    ];
+    expect(livePartsBlockAssistantRemap(parts)).toBe(true);
   });
 });

@@ -370,23 +370,150 @@ export function livePartsHaveTextPart(parts: AgentDetailedPart[] | undefined | n
   });
 }
 
+/** 已收口的失败/中止重试（进行中的 phase=started 不算）。 */
+export function isSettledRetryPart(part: AgentDetailedPart): boolean {
+  const type = String((part as { type?: string }).type || "");
+  if (type !== "runtime.retry") return false;
+  const phase = String((part as { phase?: string }).phase || "").trim();
+  const status = String((part as { status?: string }).status || "").trim().toLowerCase();
+  const success = (part as { success?: boolean | null }).success;
+  if (phase === "started" || status === "running") return false;
+  if (phase === "completed" && success === true) return false;
+  return true;
+}
+
 /**
- * live parts 是否含用户可见内容：正文或思考流任一非空即算。
+ * DSH 回合相位：一回合一助手气泡的开放/进行中/已收口。
+ * remap / 插 user / 对账保留 / UI 合并都只问这一处，禁止再叠两套「retry 算不算实质」。
  *
- * history 对账的「保留 live 末尾气泡」判据若只认 text，会把「长思考后暂停」
- * 的行判空抹掉（2026-11-12 实证：思考 75s 零正文点停止，轮询触发的 history
- * 重载把只有 reasoning 的 live 行全部判无 → 整表替换只剩 user）。与
- * isEmptyAssistantPlaceholder 的 reasoning 判据同源对齐。
+ * - open：可 remap 占位、可把新 user 插到前面
+ * - active：同 turn 仍可 remap（含进行中 runtime.retry）；新 user 必须 append
+ * - settled：禁 remap、禁 insert-before、对账必须保留
+ */
+export type AssistantTurnPhase = "open" | "active" | "settled";
+
+export type AssistantTurnPhaseMessage = {
+  id?: string;
+  content?: string;
+  error?: string;
+};
+
+function partTurnContribution(
+  part: AgentDetailedPart
+): AssistantTurnPhase | null {
+  const type = String((part as { type?: string }).type || "");
+  if (type === "text" || type === "reasoning") {
+    return String((part as { text?: string }).text || "").trim() ? "settled" : null;
+  }
+  if (type === "toolCall") return "settled";
+  if (type === "runtime.failure" || type === "runtime.memory") return "settled";
+  if (type === "runtime.retry") {
+    return isSettledRetryPart(part) ? "settled" : "active";
+  }
+  return null;
+}
+
+export function assistantTurnPhase(
+  msg: AssistantTurnPhaseMessage | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null
+): AssistantTurnPhase {
+  if (String(msg?.error || "").trim()) return "settled";
+  if (String(msg?.content || "").trim()) return "settled";
+  let sawActive = false;
+  if (Array.isArray(parts)) {
+    for (const part of parts) {
+      const hit = partTurnContribution(part);
+      if (hit === "settled") return "settled";
+      if (hit === "active") sawActive = true;
+    }
+  }
+  return sawActive ? "active" : "open";
+}
+
+/** 本地 assistant-* 占位是否仍可 remap 到 server id（open|active；settled 禁止）。 */
+export function canRemapAssistantPlaceholder(
+  msg: AssistantTurnPhaseMessage | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null,
+  options?: { frozen?: boolean }
+): boolean {
+  const id = String(msg?.id || "").trim();
+  if (!id.startsWith("assistant-")) return false;
+  if (options?.frozen) return false;
+  return assistantTurnPhase(msg, parts) !== "settled";
+}
+
+/** 新 user 是否可插到该助手前面（仅 open）。 */
+export function canInsertUserBeforeAssistant(
+  msg: AssistantTurnPhaseMessage | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null
+): boolean {
+  return assistantTurnPhase(msg, parts) === "open";
+}
+
+/** 对账是否保留该 live 助手行（非 open）。 */
+export function shouldKeepLiveAssistant(
+  msg: AssistantTurnPhaseMessage | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null
+): boolean {
+  return assistantTurnPhase(msg, parts) !== "open";
+}
+
+/** UI：相邻助手是否可合并——只认同 turnId，跨 turn 一律不并。 */
+export function mayMergeAdjacentAssistants(
+  turnIdA: string | undefined | null,
+  turnIdB: string | undefined | null
+): boolean {
+  const a = String(turnIdA || "").trim();
+  const b = String(turnIdB || "").trim();
+  return Boolean(a && b && a === b);
+}
+
+/** 这条助手只有重试/失败标签，没有正文、思考或工具。 */
+function isRetryOnlyAssistant(
+  msg: AssistantTurnPhaseMessage | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null
+): boolean {
+  if (String(msg?.content || "").trim()) return false;
+  if (!Array.isArray(parts) || parts.length === 0) return false;
+  return parts.every((part) => {
+    const type = String((part as { type?: string }).type || "");
+    return type === "runtime.retry" || type === "runtime.failure" || type === "runtime.memory";
+  });
+}
+
+/**
+ * 同一次 run 里，只有「还没写出正文/工具」或「只剩重试标签」的尾气泡可以复用。
+ * 已经出现过的工具、思考、正文必须留在原气泡：再 remap 会把它们收成下一条 message id，
+ * message.completed 按单条重建 live 时过程内容就没了。
+ * 跨 turn 仍只允许 open|active 的 assistant-* 占位。
+ */
+export function canRemapAssistantForTurn(
+  last: (AssistantTurnPhaseMessage & { role?: string; turnId?: string }) | undefined | null,
+  turnId: string | undefined | null,
+  parts: AgentDetailedPart[] | undefined | null,
+  options?: { frozen?: boolean; pendingTools?: boolean }
+): boolean {
+  if (!last || last.role !== "assistant") return false;
+  const currentTurn = String(turnId || "").trim();
+  const rowTurn = String(last.turnId || "").trim();
+  const sameTurn = Boolean(currentTurn && rowTurn && currentTurn === rowTurn);
+  if (sameTurn) {
+    const phase = assistantTurnPhase(last, parts);
+    if (phase !== "settled") return true;
+    return isRetryOnlyAssistant(last, parts);
+  }
+  if (options?.frozen || options?.pendingTools) return false;
+  return canRemapAssistantPlaceholder(last, parts);
+}
+
+/**
+ * live parts 是否含用户可见内容（= phase !== open）。
+ * history 对账保留 live 行、commitUser 开放占位等读路径复用。
  */
 export function livePartsHaveVisibleContent(
   parts: AgentDetailedPart[] | undefined | null
 ): boolean {
-  if (!Array.isArray(parts)) return false;
-  return parts.some((part) => {
-    const type = String((part as { type?: string }).type || "");
-    if (type !== "text" && type !== "reasoning") return false;
-    return Boolean(String((part as { text?: string }).text || "").trim());
-  });
+  return assistantTurnPhase(null, parts) !== "open";
 }
 
 export function appendMissingTextPartsToLive(
@@ -521,6 +648,13 @@ export function buildAgentReplyMarkdownFromParts(parts: AgentDetailedPart[] | un
 /** 暂停/中止类错误标记（App 与消息流共用判定）。 */
 export function isPauseFailureText(text: string): boolean {
   return /^(已暂停|已中止|aborted)$/i.test(String(text || "").trim());
+}
+
+/** @deprecated 用 assistantTurnPhase !== "open" && !== 仅 active；保留薄包装兼容旧调用。 */
+export function livePartsBlockAssistantRemap(
+  parts: AgentDetailedPart[] | undefined | null
+): boolean {
+  return assistantTurnPhase(null, parts) === "settled";
 }
 
 export function hasVisibleTimelineGroups(groups: AgentAssistantRenderGroup[]): boolean {
@@ -734,7 +868,15 @@ export function coalesceRuntimeParts(parts: AgentDetailedPart[]): AgentDetailedP
       const success = (part as { success?: boolean | null }).success;
       // 成功重试对用户已无信息量，丢弃以免黏在正文下方。
       if (phase === "completed" && success === true) continue;
-      latestRetry = part;
+      // 相邻 assistant 合并时可能叠到多条 retry：取 attempt 更大的，避免
+      // 「重试中 3/10」收口后被旧的 2/10 盖掉。
+      if (!latestRetry) {
+        latestRetry = part;
+      } else {
+        const prevAttempt = Number((latestRetry as { attempt?: number }).attempt) || 0;
+        const nextAttempt = Number((part as { attempt?: number }).attempt) || 0;
+        if (nextAttempt >= prevAttempt) latestRetry = part;
+      }
       continue;
     }
     if (type === "runtime.failure") {

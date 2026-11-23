@@ -57,6 +57,40 @@ describe("commitUserBeforeLiveAssistant", () => {
     expect(next.map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
   });
 
+  /**
+   * 回归（2026-11-23）：终止重试后 assistant 无正文但有 error / retry live。
+   * 若仍当开放占位，后续「继续」会插到重试行前面 → 回复跑到发送消息上面。
+   */
+  it("appends after an aborted retry assistant instead of inserting in front", () => {
+    const rows = [
+      msg("u1", "user", "继续"),
+      { id: "a-retry", role: "assistant" as const, content: "", error: "已暂停" }
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("u2", "user", "继续"), "a-retry");
+    expect(next.map((m) => m.id)).toEqual(["u1", "a-retry", "u2"]);
+  });
+
+  it("appends after a retry-only live assistant when isStillOpenAssistant says closed", () => {
+    const rows = [
+      msg("u1", "user", "继续"),
+      msg("a-retry", "assistant", "")
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("u2", "user", "继续"), "a-retry", {
+      isStillOpenAssistant: (id) => id !== "a-retry"
+    });
+    expect(next.map((m) => m.id)).toEqual(["u1", "a-retry", "u2"]);
+  });
+
+  it("does not treat aborted retry as unanswered when re-sending the same text", () => {
+    const rows = [
+      msg("u1", "user", "继续"),
+      { id: "a-retry", role: "assistant" as const, content: "", error: "已暂停" }
+    ];
+    const next = commitUserBeforeLiveAssistant(rows, msg("u2", "user", "继续"), "a-retry");
+    expect(next.map((m) => m.id)).toEqual(["u1", "a-retry", "u2"]);
+    expect(next[0]?.id).toBe("u1");
+  });
+
   it("does not duplicate an already-committed user id", () => {
     const rows = [msg("u1", "user", "北京"), msg("a-live", "assistant", "")];
     const next = commitUserBeforeLiveAssistant(rows, msg("u1", "user", "北京天气如何"), "a-live");

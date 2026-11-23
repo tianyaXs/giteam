@@ -123,6 +123,32 @@ describe("mergeHistoryWithLiveTimeline", () => {
   });
 
   /**
+   * 回归：Provider 自动重试期间停止——assistant 无正文，仅有 runtime.retry live /
+   * 本地 error「已暂停」。history 对账不得抹掉该行，否则「重试中」瞬间消失。
+   */
+  it("keeps retry-only and error-only live assistants after abort", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" }
+    ];
+    const liveRetry: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "a-retry", role: "assistant", content: "" }
+    ];
+    const withRetryParts = mergeHistoryWithLiveTimeline(history, liveRetry, {
+      hasLiveParts: (id) => id === "a-retry"
+    });
+    expect(withRetryParts.map((m) => m.id)).toEqual(["u1", "a-retry"]);
+
+    const liveError: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "a-err", role: "assistant", content: "", error: "已暂停" }
+    ];
+    const withError = mergeHistoryWithLiveTimeline(history, liveError);
+    expect(withError.map((m) => m.id)).toEqual(["u1", "a-err"]);
+    expect(withError[1].error).toBe("已暂停");
+  });
+
+  /**
    * 回归（2026-11-12）：finalize 写入本地的「已暂停」终态是本地通道字段
    * （服务端历史不回传失败事件），merge 输出 history 版本时不能冲掉，
    * 否则暂停标记闪现后消失（用户观感 = 标记抖动）。
@@ -172,5 +198,126 @@ describe("mergeHistoryWithLiveTimeline", () => {
       serverIdByLocalId: { "u-new-local": "u-new" }
     });
     expect(merged.map((m) => m.id)).toEqual(["u1", "a1", "a2", "u-new-local", "a-new"]);
+  });
+
+  /**
+   * 回归（2026-11-23）：行级 pendingHistory 会把 history-only「继续」一次性 dump
+   * 到 live retry 之前 → 跨回合交错。turn 级归并必须让 a-retry 留在 u1 之后。
+   */
+  it("does not cross-turn-interleave history continues ahead of live retry", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "u2srv", role: "user", content: "继续" },
+      { id: "u3srv", role: "user", content: "继续" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi", turnId: "t1" },
+      { id: "a-retry", role: "assistant", content: "", error: "已暂停", turnId: "t1" },
+      { id: "u2local", role: "user", content: "继续", turnId: "t2" },
+      { id: "a2", role: "assistant", content: "", turnId: "t2" },
+      { id: "u3local", role: "user", content: "继续", turnId: "t3" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live, {
+      hasLiveParts: (id) => id === "a-retry",
+      serverIdByLocalId: { u2local: "u2srv", u3local: "u3srv" }
+    });
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a-retry", "u2local", "u3local"]);
+    const retryIdx = merged.findIndex((m) => m.id === "a-retry");
+    const u2Idx = merged.findIndex((m) => m.id === "u2local");
+    expect(retryIdx).toBeGreaterThan(merged.findIndex((m) => m.id === "u1"));
+    expect(retryIdx).toBeLessThan(u2Idx);
+  });
+
+  it("keeps retry with its user when later history continues lack mapping", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "u2srv", role: "user", content: "继续" },
+      { id: "u3srv", role: "user", content: "继续" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi", turnId: "t1" },
+      { id: "a-retry", role: "assistant", content: "", error: "已暂停", turnId: "t1" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live);
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a-retry", "u2srv", "u3srv"]);
+  });
+
+  it("matches turns by turnId even when user ids differ", () => {
+    const history: AgentChatMessage[] = [
+      { id: "srv-u", role: "user", content: "继续", turnId: "t9" },
+      { id: "srv-a", role: "assistant", content: "ok", turnId: "t9" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "local-u", role: "user", content: "继续", turnId: "t9" },
+      { id: "local-a", role: "assistant", content: "ok", turnId: "t9" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live);
+    expect(merged.map((m) => m.id)).toEqual(["local-u", "local-a"]);
+  });
+
+  it("keeps an unpersisted 继续 ahead of the retry assistant history attached to the previous turn", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "a1", role: "assistant", content: "ok" },
+      { id: "a-retry", role: "assistant", content: "" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi", turnId: "t1" },
+      { id: "a1", role: "assistant", content: "ok", turnId: "t1" },
+      { id: "u-cont", role: "user", content: "继续", turnId: "t2" },
+      { id: "a-retry", role: "assistant", content: "", error: "已暂停", turnId: "t2" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live, {
+      hasLiveParts: (id) => id === "a-retry"
+    });
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a1", "u-cont", "a-retry"]);
+    const retryIdx = merged.findIndex((m) => m.id === "a-retry");
+    expect(retryIdx).toBeGreaterThan(merged.findIndex((m) => m.id === "u-cont"));
+  });
+
+  it("does not lift a paused retry above the later 继续 it belongs to", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "继续" },
+      { id: "a-retry", role: "assistant", content: "" },
+      { id: "u2", role: "user", content: "继续" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "继续", turnId: "t1" },
+      { id: "u2", role: "user", content: "继续", turnId: "t2" },
+      { id: "a-retry", role: "assistant", content: "", error: "已暂停", turnId: "t2" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live, {
+      hasLiveParts: (id) => id === "a-retry"
+    });
+    expect(merged.map((m) => m.id)).toEqual(["u1", "u2", "a-retry"]);
+  });
+
+  it("keeps a normal multi-step turn in order without dropping process assistants", () => {
+    const history: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "做一下" },
+      { id: "a1", role: "assistant", content: "先看目录" },
+      { id: "a2", role: "assistant", content: "再改文件" },
+      { id: "u2", role: "user", content: "继续" },
+      { id: "a3", role: "assistant", content: "改完了" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "做一下", turnId: "t1" },
+      { id: "a1", role: "assistant", content: "先看目录", turnId: "t1" },
+      { id: "a2", role: "assistant", content: "再改文件", turnId: "t1" },
+      { id: "u2", role: "user", content: "继续", turnId: "t2" },
+      { id: "a3", role: "assistant", content: "改完了", turnId: "t2" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live);
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a1", "a2", "u2", "a3"]);
+    expect(merged.map((m) => m.content)).toEqual(["做一下", "先看目录", "再改文件", "继续", "改完了"]);
+  });
+
+  it("preserves full live turns when history is empty", () => {
+    const live: AgentChatMessage[] = [
+      { id: "u1", role: "user", content: "hi", turnId: "t1" },
+      { id: "a1", role: "assistant", content: "", error: "已暂停", turnId: "t1" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline([], live);
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a1"]);
   });
 });

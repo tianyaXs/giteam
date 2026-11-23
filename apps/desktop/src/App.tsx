@@ -286,6 +286,9 @@ import {
   appendMissingTextPartsToLive,
   livePartsHaveTextPart,
   livePartsHaveVisibleContent,
+  canRemapAssistantPlaceholder,
+  canRemapAssistantForTurn,
+  canInsertUserBeforeAssistant,
   unionAgentParts,
   dedupeAgentDuplicateTextParts,
   hasVisibleTimelineGroups,
@@ -637,6 +640,7 @@ function mergeCompletedUserChatMessage(
   previous?: AgentChatMessage
 ): AgentChatMessage {
   const display = normalizeUserMessageForDisplay(mapped, previous);
+  const turnId = previous?.turnId || mapped.turnId;
   return {
     ...mapped,
     // 替换乐观行时保留本地 id：服务端确认会把行 id 从 local 换成 server id，
@@ -645,6 +649,8 @@ function mergeCompletedUserChatMessage(
     // 词级淡入重播）= 用户观感「每次发消息其他消息闪一下后变正常」。
     // local→server 映射已由 serverIdByLocalId 承担，归并/对账路径不依赖行内 id。
     id: previous?.id || mapped.id,
+    // 回合锚必须沿用乐观行：对账按 turn 成组，丢了会回落到同文「继续」错配。
+    ...(turnId ? { turnId } : {}),
     content: display.content,
     graphRefs: display.graphRefs,
     attachments: previous?.attachments || mapped.attachments
@@ -3283,10 +3289,9 @@ export function App() {
               existing.messages,
               {
                 serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
-                // 与 loadAgentSessionMessages 同判据：reasoning-only 保留行
-                // （长思考期间暂停）不算空白，不能被对账过滤掉。
-                hasLiveParts: (messageId) =>
-                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
+                // 与 loadAgentSessionMessages 同判据：reasoning-only / retry / failure
+                // 保留行不算空白，不能被对账过滤掉（含 retry-pending 映射键）。
+                hasLiveParts: messageHasVisibleLiveParts
               }
             );
             appendAgentDebugLog(
@@ -3326,26 +3331,47 @@ export function App() {
     }
   }
 
-  /** 远程 assistant 是否已有工具时间线（空 content 的 tool-only 回合也算）。 */
-  function remoteAssistantHasToolTimeline(messageId: string): boolean {
+  /** 收集 message id + mapped（含 retry-pending）上的 live/details parts，供 phase 判定。 */
+  function collectAssistantPartsForPhase(messageId: string): AgentDetailedPart[] {
     const mid = String(messageId || "").trim();
-    if (!mid) return false;
-    const live = agentLivePartsByServerMessageIdRef.current[mid] || [];
-    if (
-      live.some((part) => {
-        const type = String((part as { type?: string }).type || "");
-        const toolName = String((part as { toolName?: string }).toolName || "").trim();
-        const toolCallId = String((part as { toolCallId?: string }).toolCallId || "").trim();
-        return type === "toolCall" || !!toolName || !!toolCallId;
-      })
-    ) {
-      return true;
+    if (!mid) return [];
+    const ids = [mid];
+    const mapped = String(agentServerMessageIdByLocalIdRef.current[mid] || "").trim();
+    if (mapped && mapped !== mid) ids.push(mapped);
+    const out: AgentDetailedPart[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      for (const part of agentLivePartsByServerMessageIdRef.current[id] || []) {
+        const pid = String((part as { id?: string }).id || "").trim() || `${id}:${out.length}`;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        out.push(part);
+      }
+      for (const part of agentDetailsByMessageIdRef.current[id]?.parts || []) {
+        const pid = String((part as { id?: string }).id || "").trim() || `detail:${id}:${out.length}`;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        out.push(part);
+      }
     }
-    const detailParts = agentDetailsByMessageIdRef.current[mid]?.parts || [];
-    return detailParts.some((part) => {
-      const type = String((part as { type?: string }).type || "");
-      return type === "toolCall" || !!String((part as { toolCallId?: string }).toolCallId || "").trim();
-    });
+    return out;
+  }
+
+  /** DSH：末尾 assistant 是否仍可 remap（phase !== settled）。 */
+  function canRemapOpenAssistantPlaceholder(last: AgentChatMessage | undefined): boolean {
+    if (!last || last.role !== "assistant") return false;
+    return canRemapAssistantPlaceholder(last, collectAssistantPartsForPhase(last.id));
+  }
+
+  /** DSH：新 user 是否可插到该助手前（phase === open）。 */
+  function canInsertBeforeAssistantMessage(messageId: string): boolean {
+    const mid = String(messageId || "").trim();
+    if (!mid) return true;
+    const session = agentSessionsRef.current.find((row) =>
+      row.messages.some((msg) => msg.id === mid)
+    );
+    const msg = session?.messages.find((row) => row.id === mid);
+    return canInsertUserBeforeAssistant(msg || { id: mid }, collectAssistantPartsForPhase(mid));
   }
 
   function migrateRemoteLiveParts(fromId: string, toId: string) {
@@ -3441,14 +3467,11 @@ export function App() {
         }
         const last = session.messages[session.messages.length - 1];
         const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
-        // 仅复用真正的空占位；已 completed / 已有工具时间线的 tool-only 气泡绝不能改 id，
-        // 否则 details/live 孤儿化 → 工具数 1↔2 抖动。
+        // 仅复用真正的空占位；已 completed / 工具 / 中止重试行绝不能改 id，
+        // 否则 details/live 孤儿化，或把「已重试」吞进下一回合 → 时序错乱。
         const canRemap =
-          last?.role === "assistant" &&
-          last.id.startsWith("assistant-") &&
-          !String(last.content || "").trim() &&
-          !frozen?.has(last.id) &&
-          !remoteAssistantHasToolTimeline(last.id);
+          canRemapOpenAssistantPlaceholder(last) &&
+          !frozen?.has(last.id);
         if (canRemap) {
           if (last.id !== messageId) migrateRemoteLiveParts(last.id, messageId);
           return {
@@ -3602,7 +3625,9 @@ export function App() {
             messages = commitUserBeforeLiveAssistant(
               messages,
               mergeCompletedUserChatMessage(mapped),
-              liveActive ? streamingId : ""
+              liveActive ? streamingId : "",
+              // DSH：仅 phase===open 可插 user；active/settled（含重试）必须 append。
+              { isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id) }
             );
             // 原地更新会保留 user-/steer- 本地 id：补写 local→server 映射。
             let tailUser = -1;
@@ -4308,8 +4333,7 @@ export function App() {
         // 时间线为骨架归并，保留行留在原位——尾部追加会把它们挪到暂停后新发消息
         // 之后，时序错乱（2026-11-12 实证）。
         mapped = mergeHistoryWithLiveTimeline(mapped, currentSession.messages, {
-          hasLiveParts: (messageId) =>
-            livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId]),
+          hasLiveParts: messageHasVisibleLiveParts,
           pickContent: (historyContent, liveContent) =>
             pickPreferredAgentContent(historyContent, liveContent),
           serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
@@ -4607,6 +4631,20 @@ export function App() {
       agentServerMessageIdByLocalIdRef.current = next;
       return next;
     });
+  }
+
+  /** 对账时：local id 与 mapped server id（含 retry-pending）任一有可见 live 即保留。 */
+  function messageHasVisibleLiveParts(messageId: string): boolean {
+    const mid = String(messageId || "").trim();
+    if (!mid) return false;
+    if (livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[mid])) {
+      return true;
+    }
+    const mapped = String(agentServerMessageIdByLocalIdRef.current[mid] || "").trim();
+    if (mapped && mapped !== mid) {
+      return livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[mapped]);
+    }
+    return false;
   }
 
   function upsertAgentLivePart(serverMessageId: string, incomingPart: unknown) {
@@ -6597,6 +6635,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       setAgentStickResetSignal((n) => n + 1);
     };
 
+    // 同一 run 的 user + assistant 共享 turnId，归并对账按回合成组。
+    const turnId = `turn-${runId}`;
     updateAgentSessionById(sessionId, (session) => {
       const nextMessages: AgentChatMessage[] = [
         ...session.messages,
@@ -6604,10 +6644,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           id: userId,
           role: "user",
           content: prompt,
+          turnId,
           graphRefs: graphRefs.length > 0 ? graphRefs : undefined,
           attachments: displayAttachments
         },
-        { id: assistantId, role: "assistant", content: "" }
+        { id: assistantId, role: "assistant", content: "", turnId }
       ];
       return {
         ...session,
@@ -6730,7 +6771,11 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       if (messages.some((item) => item.id === toId)) {
         return messages.filter((item) => item.id !== fromId);
       }
-      return messages.map((item) => (item.id === fromId ? { ...item, id: toId } : item));
+      return messages.map((item) => {
+        if (item.id !== fromId) return item;
+        // remap 只换 id，turnId 必须留下，否则回合锚断裂。
+        return { ...item, id: toId };
+      });
     };
 
     /**
@@ -6768,24 +6813,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       updateAgentSessionById(sessionId, (session) => {
         if (session.messages.some((message) => message.id === id)) return session;
         const last = session.messages[session.messages.length - 1];
-        const lastLive = last?.id ? (agentLivePartsByServerMessageIdRef.current[last.id] || []) : [];
-        const lastHasSubstance = lastLive.some((part) => {
-          const type = String((part as { type?: string }).type || "");
-          if (type === "text" || type === "reasoning") {
-            return Boolean(String((part as { text?: string }).text || "").trim());
+        // 同 turn（含 provider 重试的下一次 message.started）复用这一条气泡。
+        // 跨 turn 仍只允许 open 占位 remap；settled 不能被下一回合吞掉。
+        const canRemap = canRemapAssistantForTurn(
+          last,
+          turnId,
+          last ? collectAssistantPartsForPhase(last.id) : null,
+          {
+            frozen: Boolean(last && frozenAssistantMessageIds.has(last.id)),
+            pendingTools: pendingToolsBeforeMessage.length > 0
           }
-          return type === "toolCall" || type === "runtime.failure" || type === "runtime.retry" || type === "runtime.memory";
-        });
-        // 只 remap 本地 assistant-* 占位。工具轮完成态常无 content（正文在下一轮），
-        // 若把已有服务端 id 的空泡 remap 成下一条 text assistant，completed 还会在末尾
-        // 再 push 一条工具卡 → 「已查询」跑到最终回复下面。
-        const canRemap =
-          last?.role === "assistant"
-          && last.id.startsWith("assistant-")
-          && !String(last.content || "").trim()
-          && !lastHasSubstance
-          && !frozenAssistantMessageIds.has(last.id)
-          && pendingToolsBeforeMessage.length === 0;
+        );
         if (canRemap) {
           remappedFrom = last.id;
           migrateLivePartsKey(last.id, id);
@@ -6800,7 +6838,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           messages: appendAssistantMessage(session.messages, {
             id,
             role: "assistant",
-            content: ""
+            content: "",
+            turnId
           }),
           updatedAt: Date.now()
         };
@@ -6843,6 +6882,9 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         const current = session.messages.find((item) => item.id === localId);
         // 手动暂停后 history replace 常不带 error；保留本地已写入的「已暂停」，避免被冲掉后又由 finalize 再塞一条。
         const preservedError = String(current?.error || mapped.error || "").trim();
+        // message.completed 的 mapped 没有 turnId；丢掉后同 turn 无法复用/合并，
+        // 下一次重试 message.started 会再 append 一行。
+        const preservedTurnId = String(current?.turnId || turnId || "").trim();
         // 完成态若暂时没有 text block，不要用空/更短 content 盖掉已流式正文。
         // 但若 live 因 merge 拼出「双份假更长」，优先折叠后的完成态/单份正文。
         const nextContent = pickPreferredAgentContent(mapped.content, current?.content);
@@ -6853,6 +6895,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               ...mapped,
               id: localId,
               content: nextContent,
+              ...(preservedTurnId ? { turnId: preservedTurnId } : {}),
               ...(preservedError ? { error: preservedError } : {})
             }),
             updatedAt: Date.now()
@@ -6864,6 +6907,15 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           && agentChatUsageEquals(current.usage, mapped.usage)
           && agentChatUsageEquals(current.sessionUsage, mapped.sessionUsage)
         ) {
+          if (preservedTurnId && String(current.turnId || "") !== preservedTurnId) {
+            return {
+              ...session,
+              messages: session.messages.map((item) =>
+                item.id === localId ? { ...item, turnId: preservedTurnId } : item
+              ),
+              updatedAt: Date.now()
+            };
+          }
           return session;
         }
         return {
@@ -6874,6 +6926,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   ...mapped,
                   id: localId,
                   content: nextContent,
+                  ...(preservedTurnId ? { turnId: preservedTurnId } : {}),
                   ...(preservedError ? { error: preservedError } : {})
                 }
               : item
@@ -7350,7 +7403,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                     next = commitUserBeforeLiveAssistant(
                       next,
                       mergeCompletedUserChatMessage(mappedUser),
-                      liveActive ? liveId : ""
+                      liveActive ? liveId : "",
+                      { isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id) }
                     );
                   }
                   const seen = new Set<string>();
@@ -7481,8 +7535,17 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           break;
         }
         case "runtime.retry": {
+          // 兼容 camelCase / snake_case（旧事件曾漏 rename）。
+          const rawMax =
+            Number((event as { maxAttempts?: number }).maxAttempts)
+            || Number((event as { max_attempts?: number }).max_attempts)
+            || 0;
+          const rawDelay =
+            (event as { delayMs?: number | null }).delayMs
+            ?? (event as { delay_ms?: number | null }).delay_ms
+            ?? null;
           const attempt = Number(event.attempt) || 0;
-          const maxAttempts = Number(event.maxAttempts) || 10;
+          const maxAttempts = rawMax > 0 ? rawMax : 10;
           const phase = String(event.phase || "started");
           // 尚无 server messageId（首包即失败）时，用本地 assistant 占位键，流式映射建立后仍可读。
           if (!currentServerAssistantId && currentLocalAssistantId) {
@@ -7495,21 +7558,31 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           }
           if (currentServerAssistantId) {
             // 固定 id：同一条重试行原地更新，避免每次 attempt 堆一行「重试中」。
+            // attempt 只升不降：abort 收口若带上较小 attempt（竞态/重复 End）不得把
+            // 已展示的「重试中 3/10」落地成 2/10。
+            const prevRetry = (agentLivePartsByServerMessageIdRef.current[currentServerAssistantId] || [])
+              .find((part) => String((part as { id?: string }).id || "").trim() === "runtime.retry") as
+              | { attempt?: number; maxAttempts?: number }
+              | undefined;
+            const prevAttempt = Number(prevRetry?.attempt) || 0;
+            const settledAttempt = Math.max(prevAttempt, attempt);
             const retryPart: Record<string, unknown> = {
               id: "runtime.retry",
               type: "runtime.retry",
               phase,
-              attempt,
-              delayMs: event.delayMs ?? null,
+              attempt: settledAttempt,
+              delayMs: rawDelay,
               success: event.success ?? null,
               error: event.error || "",
               status: phase === "started" ? "running" : event.success ? "completed" : "error"
             };
             // completed 事件常不带 maxAttempts，缺省不覆盖已写入值。
-            if (Number(event.maxAttempts) > 0) {
-              retryPart.maxAttempts = Number(event.maxAttempts);
+            if (rawMax > 0) {
+              retryPart.maxAttempts = rawMax;
             } else if (phase === "started") {
               retryPart.maxAttempts = maxAttempts;
+            } else if (Number(prevRetry?.maxAttempts) > 0) {
+              retryPart.maxAttempts = Number(prevRetry?.maxAttempts);
             }
             // 成功重试对用户已无信息量：直接移除，避免「已重试」永久挂在最新正文下方。
             if (phase === "completed" && event.success) {
@@ -8181,8 +8254,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             updateAgentSessionById(sessionId, (session) => {
               const result = reconcilePromptTailFromHistory(session.messages, historyChat, {
                 pickContent: pickPreferredAgentContent,
-                hasLiveParts: (messageId) =>
-                  livePartsHaveVisibleContent(agentLivePartsByServerMessageIdRef.current[messageId])
+                hasLiveParts: messageHasVisibleLiveParts,
+                serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
               });
               touchedAssistantIds = result.touchedAssistantIds;
               if (!result.changed) return session;

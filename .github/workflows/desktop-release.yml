@@ -45,16 +45,17 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.3.1）
+            const body = `## 本版重点（0.3.2）
 
-            - 修复 Windows 发布编译失败：恢复 pi_agent_rust win_job 所需的 nightly feature gate（上游 #257 未合前临时 fork）
-            - 继承 0.3.0：跟进队列 / Send Now、消息时序、帆船同轴、recursion_limit、宠物窗口
+            - 助手回合按 open / active / settled 收口：同一次重试只留一行，暂停后的「已重试」留在对应「继续」后面
+            - 已有正文或工具的回合不再被下一条 message 收掉，过程时间线保持原序
+            - 继承 0.3.1：Windows 仍钉 pi_agent_rust win_job feature gate（上游 #257 未合前）
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.3.1.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.3.2.md\``;
 
             let release;
             try {

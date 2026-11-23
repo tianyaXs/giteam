@@ -17,6 +17,7 @@ import {
   hasVisibleTimelineGroups,
   isPauseFailureText,
   isAgentRenderablePart,
+  mayMergeAdjacentAssistants,
   readAgentTodosFromPart,
   summarizeAgentContextProgress,
   summarizeAgentContextToolCounts,
@@ -493,41 +494,85 @@ function buildBatchedTimelineGroups(groups: AgentAssistantRenderGroup[]): AgentD
  * 对应官方「已运行 4 个步骤」一层折叠列表；kind 不同的批（探索→运行）保留为
  * 相邻两步，通过 batchKind 语义区分工作类型。
  */
+function isRuntimeStatusPart(part: AgentDetailedPart | undefined | null): boolean {
+  const type = String((part as { type?: string } | null | undefined)?.type || "");
+  return type === "runtime.retry" || type === "runtime.failure";
+}
+
+function appendWorkParts(
+  out: AgentDisplayTimelineGroup[],
+  key: string,
+  batchKind: Extract<AgentDisplayTimelineGroup, { kind: "tool-batch" }>["batchKind"],
+  parts: AgentDetailedPart[]
+) {
+  if (parts.length === 0) return;
+  const last = out[out.length - 1];
+  if (last?.kind === "tool-batch") {
+    out[out.length - 1] = {
+      kind: "tool-batch",
+      key: last.key,
+      batchKind: batchKind || last.batchKind,
+      parts: [...last.parts, ...parts]
+    };
+    return;
+  }
+  out.push({
+    kind: "tool-batch",
+    key,
+    batchKind,
+    parts
+  });
+}
+
 function mergeAdjacentWorkSteps(
   steps: AgentDisplayTimelineGroup[]
 ): AgentDisplayTimelineGroup[] {
   const out: AgentDisplayTimelineGroup[] = [];
   for (const step of steps) {
-    const last = out[out.length - 1];
-    // 相邻工作步骤一律并入同一个 tool-batch：段落内不允许并列多张段卡
-    // （旧实现只合并同 kind，会留出 探索→运行→运行→探索 的多张并列卡）。
-    const nextKind = step.kind === "tool-batch" ? step.batchKind : "";
-    const lastParts = last?.kind === "tool-batch" ? last.parts : [];
-    const incoming = step.kind === "tool-batch"
-      ? step.parts
-      : step.kind === "context"
-        ? step.parts
-        : step.kind === "part"
-          ? [step.part]
-          : [];
-    if (last?.kind === "tool-batch" && incoming.length > 0) {
-      out[out.length - 1] = {
-        kind: "tool-batch",
-        key: last.key,
-        batchKind: nextKind || last.batchKind,
-        parts: [...lastParts, ...incoming]
-      };
+    // runtime.retry / failure 必须保持独立 part 行：
+    // 若并入 tool-batch，会走 AgentExecutionPartView（只认 toolCall）→ return null，
+    // 段头仍计步数，展开却是空的（Provider 重试时空「运行中 N 个步骤」）。
+    if (step.kind === "part" && isRuntimeStatusPart(step.part)) {
+      out.push(step);
       continue;
     }
-    // 非批组步骤（reasoning 等）不丢弃：转成普通 tool-batch 行，保证全部
-    // 穿插操作都收进同一张段卡；后面遇到第一个工作步骤时继续并入。
-    if (incoming.length > 0) {
-      out.push({
-        kind: "tool-batch",
-        key: step.key,
-        batchKind: nextKind || "shell",
-        parts: incoming
-      });
+
+    if (step.kind === "tool-batch" || step.kind === "context" || step.kind === "part") {
+      const batchKind =
+        step.kind === "tool-batch"
+          ? step.batchKind
+          : step.kind === "context"
+            ? "shell"
+            : "shell";
+      const sourceParts =
+        step.kind === "part"
+          ? [step.part]
+          : step.parts;
+      let pending: AgentDetailedPart[] = [];
+      const flushPending = () => {
+        if (pending.length === 0) return;
+        appendWorkParts(out, step.key, batchKind, pending);
+        pending = [];
+      };
+      for (const part of sourceParts) {
+        if (isRuntimeStatusPart(part)) {
+          flushPending();
+          out.push({
+            kind: "part",
+            key: `${step.key}:${String((part as { id?: string }).id || "runtime")}`,
+            part
+          });
+          continue;
+        }
+        pending.push(part);
+      }
+      flushPending();
+      continue;
+    }
+
+    // reasoning 等：转成 tool-batch 行，保证穿插操作仍在同一张段卡内。
+    if (step.kind === "reasoning") {
+      appendWorkParts(out, step.key, "shell", step.parts);
       continue;
     }
     out.push(step);
@@ -940,12 +985,19 @@ function ActivitySegment({
   renderMarkdown: RenderMarkdown;
 }) {
   const anyRunning = !forceInactive;
-  const retryParts = steps.flatMap((step) =>
-    step.kind === "part"
-    && String((step.part as { type?: string }).type || "") === "runtime.retry"
-      ? [step.part]
-      : []
-  );
+  const retryParts = steps.flatMap((step) => {
+    if (step.kind === "part") {
+      return String((step.part as { type?: string }).type || "") === "runtime.retry"
+        ? [step.part]
+        : [];
+    }
+    if (step.kind === "tool-batch" || step.kind === "context") {
+      return step.parts.filter(
+        (part) => String((part as { type?: string }).type || "") === "runtime.retry"
+      );
+    }
+    return [] as AgentDetailedPart[];
+  });
   const hasRetry = retryParts.length > 0;
   const retryRunning = retryParts.some((part) => {
     const phase = String((part as { phase?: string }).phase || "").trim();
@@ -957,14 +1009,16 @@ function ActivitySegment({
       (step.kind === "part" && isTaskToolPart(step.part))
       || (step.kind === "tool-batch" && step.batchKind === "task")
   );
-  // 子任务/重试行默认展开，避免只看到「运行中 1 个步骤」却看不到重试原因。
-  const autoOpenRunning = hasTask || (anyRunning && retryRunning);
+  // 子任务默认展开；重试只留外层闪动「重试中」，错误摘要已在段头，不默认展开。
+  const autoOpenRunning = hasTask;
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
   const resolvedOpen = userOpen ?? (anyRunning && autoOpenRunning);
-  const setError = steps.some((step) =>
-    step.kind === "part"
-    && String((step.part as { error?: string }).error || "").trim()
-  );
+  const setError =
+    !retryRunning
+    && steps.some((step) =>
+      step.kind === "part"
+      && String((step.part as { error?: string }).error || "").trim()
+    );
   const openKey = `${timelineKey}:segment`;
   const isOpen = timelineOpenState[openKey] ?? resolvedOpen;
   const setOpen = (open: boolean) => setTimelineOpenState((prev) => ({ ...prev, [openKey]: open }));
@@ -1076,7 +1130,12 @@ function ActivitySegment({
                 <CircleCheckIcon />
               )}
             </TraceIcon>
-            <TraceTitle className="text-sm">{anyRunning ? titles.active : titles.done}</TraceTitle>
+            <TraceTitle
+              className={cn("text-sm", anyRunning && "t-shimmer")}
+              data-text={anyRunning ? titles.active : undefined}
+            >
+              {anyRunning ? titles.active : titles.done}
+            </TraceTitle>
             <TraceDescription className="max-w-[240px] shrink truncate">
               {retrySummary || `${stepCount} 个步骤`}
             </TraceDescription>
@@ -1168,6 +1227,18 @@ function ActivitySegment({
                       const itemKey = `${stepKey}:${String((part as { id?: string }).id || partIndex)}`;
                       if (isMemoryBatch || partType === "runtime.memory") {
                         return <MemoryExtractionPart key={itemKey} part={part} listItem />;
+                      }
+                      // 防御：即便漏网并进 batch，也不能丢进只认 toolCall 的执行卡。
+                      if (partType === "runtime.retry") {
+                        return <RuntimeRetryPart key={itemKey} part={part} />;
+                      }
+                      if (partType === "runtime.failure") {
+                        const message = String(
+                          (part as { error?: string; text?: string }).error
+                          || (part as { error?: string; text?: string }).text
+                          || "任务未能完成。"
+                        ).trim();
+                        return <AgentErrorMessage key={itemKey} message={message} />;
                       }
                       return renderTimelineToolPart({
                         timelineKey: itemKey,
@@ -1999,7 +2070,13 @@ function isFailureOnlyAssistantRow(row: AgentMessageRenderRow): boolean {
   return Boolean(row.errorMessage.trim() || renderPartsHasFailure(row.renderParts));
 }
 
-/** 同一次暂停产生的多条「运行失败/已暂停」空气泡并入上一条 assistant，只留一条终态。 */
+function rowTurnId(row: AgentMessageRenderRow): string {
+  return String((row.msg as { turnId?: string }).turnId || "").trim();
+}
+
+/**
+ * 同 turn 内多条「运行失败/已暂停」空气泡并入上一条；跨 turn 一律不并（DSH）。
+ */
 function collapseDuplicateFailureRows(
   rows: AgentMessageRenderRow[],
   showReasoningSummaries: boolean
@@ -2008,6 +2085,10 @@ function collapseDuplicateFailureRows(
   for (const row of rows) {
     const last = out[out.length - 1];
     if (!row.isAssistant || !last?.isAssistant) {
+      out.push(row);
+      continue;
+    }
+    if (!mayMergeAdjacentAssistants(rowTurnId(last), rowTurnId(row))) {
       out.push(row);
       continue;
     }
@@ -2033,7 +2114,7 @@ function collapseDuplicateFailureRows(
       }
     };
 
-    if (rowFailureOnly && last.isAssistant) {
+    if (rowFailureOnly && lastFailureOnly) {
       const failureText = row.errorMessage || last.errorMessage || "已暂停";
       last.renderParts = coalesceRuntimeParts(
         dedupeAgentToolParts([...last.renderParts, ...row.renderParts])
@@ -2043,28 +2124,6 @@ function collapseDuplicateFailureRows(
         last.errorMessage = last.errorMessage || failureText;
       }
       rebuild(last);
-      continue;
-    }
-
-    if (lastFailureOnly && (row.hasTimeline || row.fallbackReply || rowFailureOnly)) {
-      const failureText = last.errorMessage || row.errorMessage || "已暂停";
-      row.renderParts = coalesceRuntimeParts(
-        dedupeAgentToolParts([...last.renderParts, ...row.renderParts])
-      );
-      row.liveParts = dedupeAgentToolParts([...last.liveParts, ...row.liveParts]);
-      row.isStreaming = last.isStreaming || row.isStreaming;
-      row.todoItems = row.todoItems.length > 0 ? row.todoItems : last.todoItems;
-      row.stableKey = last.stableKey;
-      row.msg = {
-        ...row.msg,
-        id: `${last.msg.id}:${row.msg.id}`,
-        error: row.msg.error || last.msg.error
-      };
-      if (!renderPartsHasFailure(row.renderParts) && failureText) {
-        row.errorMessage = row.errorMessage || failureText;
-      }
-      rebuild(row);
-      out[out.length - 1] = row;
       continue;
     }
 
@@ -2692,16 +2751,20 @@ export function AgentMessageStream({
   });
   const mergedRenderRows = renderRows.reduce<AgentMessageRenderRow[]>((out, row) => {
     const last = out[out.length - 1];
+    // DSH：相邻助手合并只认同 turnId；跨 turn 一律不并（不再特判 retry）。
+    const sameTurn =
+      Boolean(last?.isAssistant && row.isAssistant)
+      && mayMergeAdjacentAssistants(rowTurnId(last!), rowTurnId(row));
+    // 同 turn 的 settled 空气泡 / 暂停终态去重；不同 turn 不走 pause 例外。
     const pauseMerge =
-      row.isAssistant
-      && last?.isAssistant
+      sameTurn
       && (
-        isPauseFailureText(last.errorMessage)
+        isPauseFailureText(last!.errorMessage)
         || isPauseFailureText(row.errorMessage)
-        || isFailureOnlyAssistantRow(last)
+        || isFailureOnlyAssistantRow(last!)
         || isFailureOnlyAssistantRow(row)
       );
-    if (row.isAssistant && last?.isAssistant && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
+    if (row.isAssistant && last?.isAssistant && sameTurn && ((!last.errorMessage && !row.errorMessage) || pauseMerge)) {
       const rebuildTimeline = (target: AgentMessageRenderRow) => {
         target.renderParts = dedupeAgentDuplicateTextParts(
           dedupeAgentChunkedTextParts(
