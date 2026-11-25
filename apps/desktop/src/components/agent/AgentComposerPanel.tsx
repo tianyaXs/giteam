@@ -5,10 +5,6 @@ import {
   useRef,
   useState,
   type ChangeEventHandler,
-  type ClipboardEventHandler,
-  type DragEventHandler,
-  type KeyboardEventHandler,
-  type MouseEventHandler,
   type RefObject
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -16,7 +12,10 @@ import {
   type AgentThinkingLevel,
   type ComposerAgentName
 } from "../../lib/agentComposerSettings";
-import { getAttachmentBadgeLabel, isImageAttachment, type AgentAttachment } from "../../lib/imageAttachments";
+import {
+  resolveAttachmentTextForPrompt,
+  type AgentAttachment
+} from "../../lib/imageAttachments";
 import type { GraphContextRef } from "../../lib/graphContextRefs";
 import {
   agentPromptTokens,
@@ -28,11 +27,11 @@ import type { QuestionAnswer, QuestionRequest } from "../../lib/types";
 import { QuestionDock } from "../QuestionDock";
 import { DeepAgentComposer } from "../deep-agent-composer/DeepAgentComposer";
 import {
-  deepAgentAttachmentsToGiteam,
   fromDeepAgentPermission,
   fromDeepAgentPermissionPreset,
   fromDeepAgentThinking,
   readHostThemeTokens,
+  toDeepAgentAttachmentItems,
   toDeepAgentContextUsage,
   toDeepAgentPermission,
   toDeepAgentThinking
@@ -43,6 +42,8 @@ import {
   type AgentPermissionPreset
 } from "../../lib/agentPermissionPresets";
 import type { DeepAgentComposerOptions } from "../deep-agent-composer/DeepAgentComposerEngine";
+import { renderDocumentThumbnail } from "../../lib/documentThumbnail";
+import { invoke } from "../../lib/platform";
 import { FullAccessRiskDialog } from "./FullAccessRiskDialog";
 import { Suggestion, Suggestions } from "../ai-elements/suggestion";
 import { Button } from "../ui/button";
@@ -99,16 +100,7 @@ type AgentComposerPanelProps = {
   slashActiveIndex: number;
   onHoverSlashSuggestion: (index: number) => void;
   onActivateSlashCommand: (command: SlashCommandOption) => void;
-  promptInputRef: RefObject<HTMLTextAreaElement | null>;
-  promptInput: string;
-  onPromptCompositionStart: () => void;
-  onPromptCompositionEnd: () => void;
-  onPromptChange: ChangeEventHandler<HTMLTextAreaElement>;
-  onPromptKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
-  onPromptPaste: ClipboardEventHandler<HTMLTextAreaElement>;
-  onPromptContextMenu?: MouseEventHandler<HTMLTextAreaElement>;
-  onPromptDragOver: DragEventHandler<HTMLTextAreaElement>;
-  onPromptDrop: DragEventHandler<HTMLTextAreaElement>;
+  onDraftChange: (text: string) => void;
   attachmentMenuOpen: boolean;
   onToggleAttachmentMenu: () => void;
   attachmentInputRef: RefObject<HTMLInputElement | null>;
@@ -139,6 +131,10 @@ type AgentComposerPanelProps = {
   activeSessionBusy: boolean;
   canSubmit: boolean;
   onPrimaryAction: () => void;
+  /** 引擎受理粘贴/拖入附件后交给宿主统一渲染。 */
+  onAddEngineAttachments: (attachments: AgentAttachment[]) => void;
+  /** 引擎内编辑器文本变化同步宿主草稿/斜杠状态。 */
+  captureDraft: (text: string) => void;
   /** Deep Agent Composer 提交（文本 + 附件）。 */
   onComposerSubmit: (payload: {
     text: string;
@@ -175,6 +171,7 @@ function permissionToolIcon(tool: string): LucideIcon {
   if (tool === "web_search" || tool === "web_fetch") return Globe;
   return Wrench;
 }
+
 
 function permissionRiskLabel(risk: string): string {
   const key = risk.trim().toUpperCase();
@@ -217,6 +214,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     labels,
     activeSessionBusy,
     onPrimaryAction,
+    captureDraft,
+    onAddEngineAttachments,
     onComposerSubmit,
     queuedFollowUps = [],
     onRemoveQueuedFollowUp,
@@ -228,7 +227,7 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     contextWindow
   } = props;
 
-  const hasComposerPreviews = attachments.length > 0 || graphRefs.length > 0;
+  const hasComposerPreviews = graphRefs.length > 0;
   const composerPlaceholder = showEmptyState ? "尽管问..." : "继续跟进";
   const visiblePermissions = permissions.slice(0, 2);
   const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
@@ -250,6 +249,49 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       fullAccessResolverRef.current = resolve;
       setFullAccessConfirmOpen(true);
     });
+
+  // Composer 在 Shadow DOM 内自持附件状态；这里把宿主的抽取链路注入进去，
+  // 预览正文与发送 prompt 复用同一次抽取结果，避免两套解析实现。
+  const extractComposerAttachmentText = async (attachment: {
+    id: string;
+    name: string;
+    kind: string;
+    mime?: string;
+    sourcePath?: string;
+    dataUrl?: string;
+  }) => {
+    const mapped: AgentAttachment = {
+      id: attachment.id,
+      kind: attachment.kind === "image" ? "image" : "file",
+      filename: attachment.name || "attachment",
+      mime: attachment.mime || "application/octet-stream",
+      dataUrl: attachment.dataUrl || "",
+      ...(attachment.sourcePath ? { sourcePath: attachment.sourcePath } : {})
+    };
+    return resolveAttachmentTextForPrompt(mapped);
+  };
+  // Composer chip 里的文档缩略图同源注入：QuickLook 优先，引擎自带文本行兜底。
+  const resolveComposerAttachmentThumbnail = async (attachment: {
+    id: string;
+    name: string;
+    kind: string;
+    mime?: string;
+    sourcePath?: string;
+    dataUrl?: string;
+  }) => {
+    const mapped: AgentAttachment = {
+      id: attachment.id,
+      kind: attachment.kind === "image" ? "image" : "file",
+      filename: attachment.name || "attachment",
+      mime: attachment.mime || "application/octet-stream",
+      dataUrl: attachment.dataUrl || "",
+      ...(attachment.sourcePath ? { sourcePath: attachment.sourcePath } : {})
+    };
+    // 与 composer 文档卡白色内衬窗（184×104 @2x）匹配，QuickLook 按最长边出图。
+    return renderDocumentThumbnail(mapped, { maxWidth: 368, maxHeight: 208, pixelRatio: 2 })
+      .then((result) => result?.dataUrl ?? null)
+      .catch(() => null);
+  };
   const [emptyGrowUpOffset, setEmptyGrowUpOffset] = useState(0);
   const [draftSeed, setDraftSeed] = useState<{ text: string; key: number } | null>(null);
   const [themeTokens, setThemeTokens] = useState<Record<string, string>>(() => readHostThemeTokens());
@@ -305,6 +347,9 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     placeholder: composerPlaceholder,
     draftText: draftSeed?.text,
     draftTextKey: draftSeed?.key,
+    onDraftChange: (text: string) => {
+      captureDraft(text);
+    },
     themeTokens,
     reducedMotion: Boolean(reduceMotion),
     permission: toDeepAgentPermission(
@@ -334,10 +379,28 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
       if (nextAuto !== autoAcceptPermissions) onToggleAutoAcceptPermissions();
     },
     requestFullAccessConfirm,
+    extractAttachmentText: extractComposerAttachmentText,
+    resolveAttachmentThumbnail: resolveComposerAttachmentThumbnail,
+    attachments: toDeepAgentAttachmentItems(attachments),
+    onAttachmentsAdded: (items) => {
+      // 单一渲染源：引擎只负责受理/落盘，卡片展示交给引擎内官方附件条。
+      onAddEngineAttachments(items.map((item) => ({
+        id: item.id,
+        kind: item.kind === "image" ? "image" : "file" as const,
+        filename: item.name,
+        mime: item.mime || (item.kind === "image" ? "image/png" : "application/octet-stream"),
+        dataUrl: item.dataUrl || ""
+      })));
+    },
+    onAttachmentFailed: (id) => {
+      onRemoveAttachment(id);
+    },
+    onAttachmentRemove: (id) => {
+      onRemoveAttachment(id);
+    },
     onStop: () => onPrimaryAction(),
     onSubmit: (message) => {
       const text = String(message.text || "").trim();
-      const mapped = deepAgentAttachmentsToGiteam(message.attachments || []);
       if (message.model && message.model !== activeModel) onApplyModel(message.model);
       if (message.thinking) {
         onApplyThinkingLevel(fromDeepAgentThinking(message.thinking, thinkingLevelOptions));
@@ -350,8 +413,8 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
           onToggleAutoAcceptPermissions();
         }
       }
-      if (!text && mapped.length === 0 && graphRefs.length === 0) return;
-      onComposerSubmit({ text, attachments: mapped });
+      if (!text && attachments.length === 0 && graphRefs.length === 0) return;
+      onComposerSubmit({ text, attachments });
     }
   }), [
     activeModel,
@@ -365,8 +428,11 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
     contextUsage,
     contextWindow,
     draftSeed,
+    attachments,
     graphRefs.length,
     models,
+    captureDraft,
+    onAddEngineAttachments,
     onApplyModel,
     onApplyThinkingLevel,
     onComposerSubmit,
@@ -411,40 +477,6 @@ export function AgentComposerPanel(props: AgentComposerPanelProps) {
                         <CloseIcon width={10} height={10} />
                       </button>
                     ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {attachments.length > 0 ? (
-              <div className="flex min-w-0 flex-wrap items-start gap-1.5">
-                {attachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className="group relative size-14 overflow-hidden rounded-2xl border border-border/60 bg-background p-0.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
-                    title={attachment.filename}
-                  >
-                    {isImageAttachment(attachment) ? (
-                      <img
-                        src={attachment.dataUrl}
-                        alt={attachment.filename}
-                        className="size-full rounded-[13px] border border-border/35 bg-background object-cover"
-                      />
-                    ) : (
-                      <div className="flex size-full items-center justify-center rounded-[13px] border border-border/35 bg-muted/45">
-                        <span className="max-w-[44px] truncate rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-semibold text-foreground/85">
-                          {getAttachmentBadgeLabel(attachment)}
-                        </span>
-                      </div>
-                    )}
-                    <Button
-                      className="absolute right-0.5 top-0.5 size-5 rounded-full bg-foreground/90 p-0 text-background shadow-sm hover:bg-foreground hover:text-background"
-                      onClick={() => onRemoveAttachment(attachment.id)}
-                      aria-label={`移除 ${attachment.filename}`}
-                      variant="ghost"
-                      size="icon"
-                    >
-                      <CloseIcon width={12} height={12} />
-                    </Button>
                   </div>
                 ))}
               </div>

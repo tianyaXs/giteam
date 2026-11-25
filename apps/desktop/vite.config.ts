@@ -32,6 +32,11 @@ export default defineConfig({
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
       react: fileURLToPath(new URL("./node_modules/react", import.meta.url)),
+      // 目录别名会绕过 react-dom 的 package exports 条件导出：
+      // "react-dom/server" 必须落 browser 版本，否则 CJS server.js 引到
+      // server.node.js，浏览器里 util.TextEncoder 不存在，
+      // @extend-ai/react-docx 的 renderToString 预构建会直接失败。
+      "react-dom/server": fileURLToPath(new URL("./node_modules/react-dom/server.browser.js", import.meta.url)),
       "react-dom": fileURLToPath(new URL("./node_modules/react-dom", import.meta.url))
     },
     dedupe: ["react", "react-dom"]

@@ -1,13 +1,86 @@
-//! 运行时上下文快照：动态段（sandbox / digest / mode policy）以可 supersede 的
-//! Custom 消息注入模型，不写入用户正文，避免历史膨胀与 UI/抽取污染。
+//! 运行时上下文快照：动态段（sandbox / digest / mode policy）以 append-only 的
+//! Custom 消息注入模型，不写入用户正文，避免 UI/抽取污染。
 //!
-//! 对齐 dsh RuntimeContextProjection：仅内容变化时写入；旧快照 display=false
-//! 退出模型上下文；用户可见路径统一剥离遗留的 `# Runtime Context` 文本。
+//! 会话条目是持久事实，pi 会按持久化/内存指纹校验，禁止回改旧快照的 display。
+//! 这里只做内容变化去重；sandbox/digest/mode 属低频状态，少量追加可接受。
+//! 用户可见路径统一剥离遗留的 `# Runtime Context` 文本。
 
 use pi::sdk::{CustomMessage, Message};
 
 /// 持久 Custom 消息的类型标记（事件/历史可识别并过滤）。
 pub const RUNTIME_CONTEXT_CUSTOM_TYPE: &str = "giteam.runtime_context";
+
+/// 标题派生时跳过的附件注入提示（与桌面 `formatLocalFileAttachmentHint` /
+/// `formatUiOnlyFileAttachmentHint` 文案保持同源；标题只应来自用户真实输入）。
+pub(crate) const ATTACHMENT_HINT_TITLE_MARKER: &str = "The user attached a file named \"";
+const ATTACHMENT_HINT_LINE_PATTERNS: [&str; 2] = [
+  "The user attached a local file named \"",
+  "The user attached a file named \"",
+];
+
+/// 标题派生用：在 `strip_runtime_context` 之上再剥附件注入段。
+///
+/// 这些段与用户输入拼在同一条 user text 里（桌面发送组装），可能是「仅说明
+/// 不携带正文」的 hint，也可能是 `<attachment_content>` 内联正文块。标题只
+/// 应来自用户真实输入，因此按行扫描并用状态机整段跳过，而不是逐行匹配。
+#[must_use]
+pub fn strip_runtime_context_for_title(text: &str) -> String {
+  let stripped = strip_runtime_context(text);
+  let mut kept: Vec<&str> = Vec::new();
+  let mut title_from_attachment: Option<String> = None;
+  // attachment 标签内的正文属于注入文档，不是用户输入，整块跳过。
+  let mut in_attachment_body = false;
+  for line in stripped.lines() {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("<attachment_content") {
+      in_attachment_body = true;
+      continue;
+    }
+    if in_attachment_body {
+      if trimmed == "</attachment_content>" {
+        in_attachment_body = false;
+      }
+      continue;
+    }
+    if let Some(name) = attachment_hint_filename(trimmed) {
+      if title_from_attachment.is_none() {
+        title_from_attachment = Some(name.to_string());
+      }
+      continue;
+    }
+    // hint 的后续说明行（Embedded…/Local path/Use the appropriate…/不可用提示）。
+    if trimmed.starts_with("Embedded attachment contents follow:")
+      || trimmed.starts_with("Local path: ")
+      || trimmed.starts_with("Use the appropriate Pi tool ")
+      || trimmed.starts_with(
+        "The attachment was selected in the desktop UI but is not available",
+      )
+    {
+      continue;
+    }
+    kept.push(line);
+  }
+  // 仅附件消息没有正文可作标题：回退第一个 hint 文件名，
+  // 否则重启后 derive_* 返回 None，列表只能退化成 `Session <id前缀>`。
+  if kept.iter().all(|line| line.trim().is_empty()) {
+    return title_from_attachment.unwrap_or_default();
+  }
+  kept.join("\n")
+}
+
+/// 匹配附件 hint 行并返回其中的文件名；不匹配时返回 None。
+fn attachment_hint_filename(line: &str) -> Option<&str> {
+  let trimmed = line.trim_start();
+  for prefix in ATTACHMENT_HINT_LINE_PATTERNS {
+    let Some(rest) = trimmed.strip_prefix(prefix) else {
+      continue;
+    };
+    let end = rest.find('"')?;
+    let name = rest[..end].trim();
+    return if name.is_empty() { None } else { Some(name) };
+  }
+  None
+}
 
 /// 清空标记：曾有快照、现为空时写入，声明旧上下文失效。
 pub const RUNTIME_CONTEXT_CLEARED: &str =

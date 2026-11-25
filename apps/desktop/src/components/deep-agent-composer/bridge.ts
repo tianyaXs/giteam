@@ -1,5 +1,5 @@
 import type { AgentThinkingLevel } from "../../lib/agentComposerSettings";
-import type { AgentAttachment } from "../../lib/imageAttachments";
+import { isImageAttachment, type AgentAttachment } from "../../lib/imageAttachments";
 import {
   autoAcceptFromPermissionPreset,
   parseAgentPermissionPreset,
@@ -12,12 +12,27 @@ import {
   type ContextBreakdown
 } from "../../lib/agentSessions";
 import type {
+  DeepAgentComposerAttachmentItem,
   DeepAgentComposerOptions,
   DeepAgentContextUsage,
   DeepAgentThinkingValue
 } from "./DeepAgentComposerEngine";
 
 export type { AgentPermissionPreset };
+
+/** 宿主附件 → 引擎内附件条投影（单一渲染源，仅派生展示字段）。 */
+export function toDeepAgentAttachmentItems(
+  attachments: AgentAttachment[]
+): DeepAgentComposerAttachmentItem[] {
+  return attachments.map((item) => ({
+    id: item.id,
+    name: item.filename,
+    kind: isImageAttachment(item) ? "image" : "file",
+    mime: item.mime,
+    dataUrl: item.dataUrl,
+    sourcePath: item.sourcePath
+  }));
+}
 
 /** Giteam 多档 → Deep Agent 三档。 */
 export function toDeepAgentThinking(level: AgentThinkingLevel): DeepAgentThinkingValue {
@@ -97,21 +112,58 @@ export function toDeepAgentContextUsage(
   };
 }
 
+/** 从 dataUrl 解码文本正文；给 composer 预览与提交兜底共用，保持同一份实现。 */
+export function decodeTextAttachmentDataUrl(dataUrl: string): string | null {
+  const match = /^data:[^;,]*(?:;charset=[^;,]*)?;base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(dataUrl || "").trim());
+  if (!match) return null;
+  try {
+    const binary = atob(match[1].replace(/\s/g, ""));
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    if (bytes.length === 0) return null;
+    // pdf/office 等二进制只看首字节魔数，避免把垃圾解码成“预览正文”。
+    if (bytes[0] === 0x25 && bytes[1] === 0x50) return null;
+    if (bytes[0] === 0x50 && bytes[1] === 0x4b) return null;
+    if (bytes[0] === 0xd0 && bytes[1] === 0xcf) return null;
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function encodeTextAttachmentDataUrl(text: string, mime = "text/plain"): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `data:${mime || "text/plain"};base64,${btoa(binary)}`;
+}
+
 export function deepAgentAttachmentsToGiteam(
   attachments: NonNullable<Parameters<NonNullable<DeepAgentComposerOptions["onSubmit"]>>[0]["attachments"]>
 ): AgentAttachment[] {
   const out: AgentAttachment[] = [];
   for (const item of attachments) {
     if (item.status && item.status !== "ready") continue;
-    const dataUrl = item.dataUrl;
-    if (!dataUrl) continue;
     const kind = item.kind === "image" ? "image" : "file";
+    const mime = item.mime || (kind === "image" ? "image/png" : "application/octet-stream");
+    const sourcePath = String(item.originalPath || "").trim();
+    let dataUrl = String(item.dataUrl || "").trim();
+    let dataText: string | null = null;
+    if (dataUrl) {
+      dataText = decodeTextAttachmentDataUrl(dataUrl);
+    } else if (item.extractedText) {
+      // 文本附件常只有 extractedText；没有 dataUrl 时编成 text data URL，避免提交时静默丢弃。
+      dataUrl = encodeTextAttachmentDataUrl(item.extractedText, mime.startsWith("text/") ? mime : "text/plain");
+      dataText = item.extractedText;
+    }
+    if (!dataUrl && !sourcePath) continue;
     out.push({
       id: item.id,
       kind,
       filename: item.name || (kind === "image" ? "image.png" : "attachment"),
-      mime: item.mime || (kind === "image" ? "image/png" : "application/octet-stream"),
-      dataUrl
+      mime,
+      dataUrl,
+      ...(dataText != null && dataText.trim() ? { dataText } : {}),
+      ...(sourcePath ? { sourcePath } : {})
     });
   }
   return out;

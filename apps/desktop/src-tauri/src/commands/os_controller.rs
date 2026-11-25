@@ -208,13 +208,7 @@ impl DesktopOsController {
         }
         let cli = resolve_ad_cli().await?;
         let output = tokio::process::Command::new(&cli)
-            .args([
-                "session",
-                "start",
-                "--no-trace",
-                "--name",
-                "giteam",
-            ])
+            .args(["session", "start", "--no-trace", "--name", "giteam"])
             .output()
             .await
             .map_err(|e| format!("agent-desktop session start 失败：{e}"))?;

@@ -37,8 +37,6 @@ import { BrowserPanel } from "./components/agent/BrowserPanel";
 import { AssetGraphPanel } from "./components/agent/AssetGraphPanel";
 import {
   formatGraphContextBlock,
-  formatLocalFileAttachmentHint,
-  formatUiOnlyFileAttachmentHint,
   IMAGE_ONLY_USER_PROMPT,
   isCompactionSummaryUserText,
   normalizeUserMessageForDisplay,
@@ -226,15 +224,15 @@ import {
   getAttachmentDataUrlMime,
   hasClipboardFileReference,
   hasPlainClipboardText,
-  isOfficeAttachment,
-  isAgentSupportedAttachmentMedia,
   mergeUniqueAttachments,
   isImageAttachment,
+  buildAgentFileAttachmentPromptParts,
   pickDesktopAttachments,
   readBrowserClipboardAttachments,
   readDesktopClipboardFilePaths,
   readDesktopClipboardImageAttachment,
   readFileAsAttachment,
+  dataUrlToBase64Payload,
   readLocalAttachmentPreview,
   resolveAgentPromptImages,
   type AgentAttachment
@@ -335,7 +333,14 @@ import {
   modelRefFromChatSession,
   sortAgentSessionSummaries,
   appendAssistantMessage,
-  commitUserBeforeLiveAssistant,
+  applyTurnIdReconciliation,
+  beginOpenUserTurn,
+  bindOpenUserTurn,
+  closeOpenUserTurn,
+  reconcilePendingUserTurns,
+  resolveBindLocalUserIdForCommit,
+  upsertCommittedUserMessage,
+  type OpenUserTurn,
   appendQueuedFollowUp,
   removeQueuedFollowUpById,
   type AgentChatMessage,
@@ -347,7 +352,8 @@ import {
   type ChatSessionSummary,
   type AgentTodoItem,
   mergeHistoryWithLiveTimeline,
-  reconcilePromptTailFromHistory
+  reconcilePromptTailFromHistory,
+  reconcileLiveTimelineFromHistory
 } from "./lib/agentSessions";
 import {
   type AgentSkillInfo,
@@ -654,6 +660,97 @@ function mergeCompletedUserChatMessage(
     content: display.content,
     graphRefs: display.graphRefs,
     attachments: previous?.attachments || mapped.attachments
+  };
+}
+
+/**
+ * 本地 / 远程 user completed 共用的唯一落地入口：
+ * pending 消费 → 身份解析 → 已存在检查 → upsert → 映射回写 → 锚收口。
+ * 调用方只负责会话容器更新；禁止在别处再 append 用户行。
+ *
+ * 返回三件套：messages（新列表）/ 已锚定的映射（可能为空）/ 最新身份锚。
+ * 取消投递（anchorUpdate 为 null）时行 id 是服务端 id 且时间线已有该行，
+ * 调用方必须放弃本次状态写入，防止把服务端行 id 注入列表形成双行。
+ */
+function commitUserCompletedIntoMessages(input: {
+  sessionId: string;
+  messages: AgentChatMessage[];
+  mapped: AgentChatMessage;
+  pendingBySession: Record<string, string[]>;
+  openTurnBySession: Record<string, OpenUserTurn | null>;
+  serverIdByLocalId: Record<string, string>;
+  liveAssistantId: string;
+  isStillOpenAssistant: (id: string) => boolean;
+  onMapLocalToServer: (localUserId: string, serverUserId: string) => void;
+}): {
+  messages: AgentChatMessage[];
+  anchorUpdate: { localUserId: string; serverUserId: string } | null;
+  openTurnBySession: Record<string, OpenUserTurn | null>;
+} {
+  const {
+    sessionId,
+    messages,
+    mapped,
+    pendingBySession,
+    openTurnBySession,
+    serverIdByLocalId,
+    liveAssistantId,
+    isStillOpenAssistant,
+    onMapLocalToServer
+  } = input;
+
+  const bag = pendingBySession[sessionId] || [];
+  const pendingHead = bag[0] || "";
+  const bindLocalUserId = resolveBindLocalUserIdForCommit({
+    sessionId,
+    serverUserId: mapped.id,
+    pendingLocalId: pendingHead,
+    openTurnBySession,
+    serverIdByLocalId
+  });
+  const pendingConsumed = Boolean(pendingHead) && bindLocalUserId === pendingHead;
+  if (pendingConsumed) {
+    bag.shift();
+    pendingBySession[sessionId] = bag;
+  }
+
+  const anchor = bindOpenUserTurn(
+    openTurnBySession,
+    sessionId,
+    mapped.id,
+    bindLocalUserId
+  );
+  // 未绑定任何本地身份 + 服务端行已在时间线：本次 completed 只是迟到重播，
+  // 放弃投递。行 id 是服务端 id，继续走 upsert/插入必然造出双行。
+  if (!anchor.localUserId && messages.some((item) => item.id === mapped.id)) {
+    return { messages, anchorUpdate: null, openTurnBySession: anchor.openTurnBySession };
+  }
+
+  const previous = anchor.localUserId
+    ? messages.find((item) => item.id === anchor.localUserId)
+    : messages.find((item) => item.id === mapped.id);
+  const turnId = previous?.turnId || anchor.openTurnBySession[sessionId]?.turnId || mapped.turnId;
+  const incoming = mergeCompletedUserChatMessage(
+    turnId ? { ...mapped, turnId } : mapped,
+    previous
+  );
+  const upserted = upsertCommittedUserMessage(messages, incoming, {
+    bindLocalUserId: anchor.localUserId || undefined,
+    serverIdByLocalId,
+    liveAssistantId,
+    isStillOpenAssistant
+  });
+  const nextOpenTurnBySession =
+    upserted.inserted
+      ? closeOpenUserTurn(anchor.openTurnBySession, sessionId)
+      : anchor.openTurnBySession;
+  if (!upserted.inserted && upserted.localUserId && mapped.id && upserted.localUserId !== mapped.id) {
+    onMapLocalToServer(upserted.localUserId, mapped.id);
+  }
+  return {
+    messages: upserted.messages,
+    anchorUpdate: upserted.inserted ? null : { localUserId: upserted.localUserId, serverUserId: mapped.id },
+    openTurnBySession: nextOpenTurnBySession
   };
 }
 
@@ -1454,6 +1551,8 @@ export function App() {
   const [agentDebugLogs, setAgentDebugLogs] = useState<string[]>([]);
   const [agentServerMessageIdByLocalId, setAgentServerMessageIdByLocalId] = useState<Record<string, string>>({});
   const agentServerMessageIdByLocalIdRef = useRef<Record<string, string>>({});
+  /** 当前未完成 remap 的用户回合：本地 user 身份唯一来源，禁止 completed 再 append。 */
+  const agentOpenUserTurnBySessionRef = useRef<Record<string, OpenUserTurn | null>>({});
   const [agentLivePartsByServerMessageId, setAgentLivePartsByServerMessageId] = useState<Record<string, AgentDetailedPart[]>>({});
   const agentLivePartsByServerMessageIdRef = useRef<Record<string, AgentDetailedPart[]>>({});
   const agentDetailsByMessageIdRef = useRef<Record<string, AgentDetailedMessage | null>>({});
@@ -1661,6 +1760,15 @@ export function App() {
       if (!next) return;
       void runAgentPrompt({ promptOverride: next.content, fromQueue: true });
     }, delayMs);
+  }
+
+  function setAgentDraftText(text: string, options?: { focus?: boolean }) {
+    captureAgentPromptHistoryDraft(text);
+    setAgentPromptInput(text);
+    const isSlash = /^\/\S*$/.test(text);
+    setAgentSlashOpen(isSlash);
+    if (isSlash) setAgentSlashActiveIndex(0);
+    if (options?.focus) requestAnimationFrame(() => agentInputRef.current?.focus({ preventScroll: true }));
   }
 
   function focusAgentComposer() {
@@ -3255,6 +3363,7 @@ export function App() {
         clipAgentSessionTitle(firstUser?.content) ||
         `Session ${sid.slice(0, 8)}`;
       const currentSession = agentSessionsRef.current.find((session) => session.id === sid);
+      const coldStart = !(currentSession?.loaded || (currentSession?.messages?.length || 0) > 0);
       if (currentSession && currentSession.messages.length > 0 && page.items.length === 0) {
         // 服务端拉空但本地有消息：几乎必然是读取异常而非会话真空。空表替换会
         // 把本地 user 消息全清掉（回补只保 assistant），表现为「暂停后只剩
@@ -3284,16 +3393,23 @@ export function App() {
             // assistant 原位保留（正文同 id 取更长方），否则 run.failed 对账会把
             // 已输出内容清空、或把保留行挪到暂停后新发消息之后造成时序错乱
             // （2026-11-10 / 2026-11-12 实证）。
-            const nextMessages = mergeHistoryWithLiveTimeline(
-              page.items,
-              existing.messages,
-              {
-                serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
-                // 与 loadAgentSessionMessages 同判据：reasoning-only / retry / failure
-                // 保留行不算空白，不能被对账过滤掉（含 retry-pending 映射键）。
-                hasLiveParts: messageHasVisibleLiveParts
-              }
-            );
+            // DSH 语义：冷启动才整表归并；会话中途保持 live 为事实源，只尾部对账，
+            // history 的 user 行永不并排进时间线（2026-11-24 暂停双 user 根修）。
+            const nextMessages = coldStart
+              ? mergeHistoryWithLiveTimeline(
+                  page.items,
+                  existing.messages,
+                  {
+                    serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+                    // 与 loadAgentSessionMessages 同判据：reasoning-only / retry / failure
+                    // 保留行不算空白，不能被对账过滤掉（含 retry-pending 映射键）。
+                    hasLiveParts: messageHasVisibleLiveParts
+                  }
+                )
+              : reconcileLiveTimelineFromHistory(existing.messages, page.items, {
+                  serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+                  hasLiveParts: messageHasVisibleLiveParts
+                }).messages;
             appendAgentDebugLog(
               `session.remote.snapshot sid=${sid} reason=${opts?.reason || "event"} ` +
               `server=${page.items.length} local=${existing.messages.length} merged=${nextMessages.length}`
@@ -3554,115 +3670,41 @@ export function App() {
           return next;
         });
         patchRemoteSession(mapped.content, (session) => {
-          if (session.messages.some((item) => item.id === mapped.id)) {
-            return {
-              ...session,
-              title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
-              messages: session.messages.map((item) => (
-                item.id === mapped.id
-                  ? mergeCompletedUserChatMessage({ ...item, ...mapped }, item)
-                  : item
-              )),
-              loaded: true,
-              updatedAt: Date.now()
-            };
-          }
-          // 与本地路径一致：同一服务端 user 只消费一次 pending，避免连发乐观气泡被吃掉。
           const done = agentCompletedRemoteUserIdsBySessionRef.current[sid] || new Set<string>();
-          if (done.has(mapped.id)) {
-            return session;
-          }
+          if (done.has(mapped.id)) return session;
           done.add(mapped.id);
           agentCompletedRemoteUserIdsBySessionRef.current[sid] = done;
-          const userText = String(mapped.content || "").trim();
-          // 按会话 pending 队列 FIFO remap（与本地 prompt 路径一致），禁止同文匹配。
-          const bag = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
-          const pendingId = bag.shift() || "";
-          agentPendingLocalUserIdsBySessionRef.current[sid] = bag;
-          // 替换乐观行保留本地 id 后，必须补写 local→server 映射：归并对账
-          // （mergeHistoryWithLiveTimeline）按「行内 id 直配或映射」配对——user 行
-          // 没有 ensureLocalAssistant 式的常驻映射通道，漏写会让 load/snapshot 把
-          // user 行判「无对应」丢弃、history 版本尾随追加到保留行后面（时序错乱）。
-          if (pendingId && mapped.id) {
-            commitAgentServerMessageIdByLocalId((prev) => (
-              prev[pendingId] === mapped.id ? prev : { ...prev, [pendingId]: mapped.id }
-            ));
-          }
-          let replacedOptimistic = false;
-          let fallbackReplacedLocalId = "";
-          let messages = session.messages.flatMap((item) => {
-            if (item.id === mapped.id) {
-              replacedOptimistic = true;
-              return [mergeCompletedUserChatMessage(
-                { ...mapped, attachments: item.attachments || mapped.attachments },
-                item
-              )];
+
+          const streamingId = String(
+            remoteAgentServerAssistantIdBySessionRef.current[sid]
+            || agentStreamingAssistantIdBySession[sid]
+            || ""
+          ).trim();
+          const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
+          const liveActive = Boolean(streamingId) && !frozen?.has(streamingId);
+          const committed = commitUserCompletedIntoMessages({
+            sessionId: sid,
+            messages: session.messages,
+            mapped,
+            pendingBySession: agentPendingLocalUserIdsBySessionRef.current,
+            openTurnBySession: agentOpenUserTurnBySessionRef.current,
+            serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+            liveAssistantId: liveActive ? streamingId : "",
+            isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id),
+            onMapLocalToServer: (localUserId, serverUserId) => {
+              commitAgentServerMessageIdByLocalId((prev) => (
+                prev[localUserId] === serverUserId
+                  ? prev
+                  : { ...prev, [localUserId]: serverUserId }
+              ));
             }
-            if (pendingId && item.id === pendingId) {
-              replacedOptimistic = true;
-              return [mergeCompletedUserChatMessage(
-                { ...mapped, attachments: item.attachments || mapped.attachments },
-                item
-              )];
-            }
-            return [item];
           });
-          if (!replacedOptimistic) {
-            if (pendingId) {
-              const restore = agentPendingLocalUserIdsBySessionRef.current[sid] || [];
-              restore.unshift(pendingId);
-              agentPendingLocalUserIdsBySessionRef.current[sid] = restore;
-            }
-            // 队列丢失时的正文/末尾规则统一走 commitUserBeforeLiveAssistant，
-            // 禁止再按「最早同文」改历史中间行。
-            const streamingId = String(
-              remoteAgentServerAssistantIdBySessionRef.current[sid]
-              || agentStreamingAssistantIdBySession[sid]
-              || ""
-            ).trim();
-            const frozen = remoteFrozenAssistantIdsBySessionRef.current[sid];
-            const liveActive = Boolean(streamingId) && !frozen?.has(streamingId);
-            messages = commitUserBeforeLiveAssistant(
-              messages,
-              mergeCompletedUserChatMessage(mapped),
-              liveActive ? streamingId : "",
-              // DSH：仅 phase===open 可插 user；active/settled（含重试）必须 append。
-              { isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id) }
-            );
-            // 原地更新会保留 user-/steer- 本地 id：补写 local→server 映射。
-            let tailUser = -1;
-            for (let index = messages.length - 1; index >= 0; index -= 1) {
-              if (messages[index]?.role === "user") {
-                tailUser = index;
-                break;
-              }
-            }
-            const tail = tailUser >= 0 ? messages[tailUser] : undefined;
-            if (
-              tail
-              && (tail.id.startsWith("user-") || tail.id.startsWith("steer-"))
-              && String(tail.content || "").trim() === userText
-            ) {
-              fallbackReplacedLocalId = tail.id;
-            }
-          }
-          // 兜底替换同样保留本地 id → 必须补映射（归并对账配对依据）。
-          if (fallbackReplacedLocalId && mapped.id) {
-            commitAgentServerMessageIdByLocalId((prev) => (
-              prev[fallbackReplacedLocalId] === mapped.id ? prev : { ...prev, [fallbackReplacedLocalId]: mapped.id }
-            ));
-          }
-          const seen = new Set<string>();
-          messages = messages.filter((item) => {
-            if (item.id !== mapped.id) return true;
-            if (seen.has(item.id)) return false;
-            seen.add(item.id);
-            return true;
-          });
+          // 迟到重播（服务端行已在时间线且锚已收口）：放弃投递，保持现状。
+          if (!committed.anchorUpdate) return session;
           return {
             ...session,
             title: session.title.trim() || clipAgentSessionTitle(mapped.content) || session.title,
-            messages,
+            messages: committed.messages,
             loaded: true,
             updatedAt: Date.now()
           };
@@ -4276,10 +4318,19 @@ export function App() {
         return next;
       });
       const currentSession = agentSessionsRef.current.find((s) => s.id === id);
+      const coldStart = !(currentSession?.loaded || (currentSession?.messages?.length || 0) > 0);
       // 运行中：事件流是消息列表事实来源。history 整表替换会把尚未 remap 的 user-/assistant-
       // 与服务端 id 并排（同文连发必现双气泡）。只更新 details，不动 messages。
       if (String(agentRunIdBySessionRef.current[id] || "").trim()) {
         appendAgentDebugLog(`session.messages load ${id} skipped (run active, details only)`);
+        return;
+      }
+      // 手动暂停后 runId 可能已清，但乐观 user-* 尚未 remap：此时拉 history 会与本地行并排。
+      const pendingLocalUsers = agentPendingLocalUserIdsBySessionRef.current[id] || [];
+      if (pendingLocalUsers.length > 0) {
+        appendAgentDebugLog(
+          `session.messages load ${id} skipped (pending local users=${pendingLocalUsers.length}, details only)`
+        );
         return;
       }
       const baseMapped = agentMessages
@@ -4332,12 +4383,24 @@ export function App() {
         // history 可能缺 assistant（JSONL write-behind 未落盘 / 暂停回滚）：以本地
         // 时间线为骨架归并，保留行留在原位——尾部追加会把它们挪到暂停后新发消息
         // 之后，时序错乱（2026-11-12 实证）。
-        mapped = mergeHistoryWithLiveTimeline(mapped, currentSession.messages, {
-          hasLiveParts: messageHasVisibleLiveParts,
-          pickContent: (historyContent, liveContent) =>
-            pickPreferredAgentContent(historyContent, liveContent),
-          serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
-        });
+        // DSH 语义：只有冷启动才做整表归并；会话中途一律尾部对账。暂停竞态下
+        // 三类配对键可能全缺失，整表归并会把 history 回合与 live 回合并排放
+        // （2026-11-24 实证），尾部对账结构上不可能产出第二条 user。
+        if (coldStart) {
+          mapped = mergeHistoryWithLiveTimeline(mapped, currentSession.messages, {
+            hasLiveParts: messageHasVisibleLiveParts,
+            pickContent: (historyContent, liveContent) =>
+              pickPreferredAgentContent(historyContent, liveContent),
+            serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
+          });
+        } else {
+          mapped = reconcileLiveTimelineFromHistory(currentSession.messages, mapped, {
+            hasLiveParts: messageHasVisibleLiveParts,
+            pickContent: (historyContent, liveContent) =>
+              pickPreferredAgentContent(historyContent, liveContent),
+            serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
+          }).messages;
+        }
       }
       // 如果消息内容没有实际变化，避免替换数组引用导致重新渲染
       if (currentSession && currentSession.loaded && currentSession.messages.length > 0) {
@@ -4631,6 +4694,66 @@ export function App() {
       agentServerMessageIdByLocalIdRef.current = next;
       return next;
     });
+  }
+
+/**
+ * 回合终止后的权威身份对账：history（JSONL / 快照）是完成态事实来源。
+ *
+ * completed 丢失（超时 / 手动暂停）时 local→server 映射缺失，同一回合会在
+ * history 与 live 时间线各有一行。这里按 FIFO 显式配对并回填 turnId，
+ * 归并对账只认显式身份（id / 映射 / turnId），因此补齐映射后自然只出一行。
+ */
+function reconcileAuthoritativeUserTurns(sessionId: string, history: AgentMessage[]) {
+  const localUsers = (
+    agentSessionsRef.current.find((session) => session.id === sessionId)?.messages || []
+  ).filter((row) => row.role === "user");
+  const liveUserIds = new Set(localUsers.map((row) => row.id));
+  const historyUsers = history
+    .map((message) => agentMessageToChatMessage(message))
+    .filter((row): row is AgentChatMessage => Boolean(row))
+    .filter((row) => row.role === "user");
+  const pending = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
+  const reconcile = reconcilePendingUserTurns({
+    historyUsers,
+    liveUserIds,
+    pendingLocalUserIds: pending,
+    serverIdByLocalId: agentServerMessageIdByLocalIdRef.current
+  });
+  if (reconcile.matchedCount > 0) {
+    // 回合终止后唯一回填点：只补缺失映射，不覆盖已有的显式身份。
+    const base = agentServerMessageIdByLocalIdRef.current;
+    const additions: Record<string, string> = {};
+    for (const [localId, serverId] of Object.entries(reconcile.serverIdByLocalId)) {
+      if (!base[localId]) additions[localId] = serverId;
+    }
+    if (Object.keys(additions).length > 0) {
+      commitAgentServerMessageIdByLocalId((prev) => ({ ...prev, ...additions }));
+    }
+  }
+  const historyTurnIdByServerUserId = new Map(
+    historyUsers.map((row) => [row.id, String(row.turnId || "").trim()])
+  );
+  updateAgentSessionById(sessionId, (session) => {
+    const patch = applyTurnIdReconciliation(
+      session.messages,
+      reconcile.serverIdByLocalId,
+      historyTurnIdByServerUserId
+    );
+    if (!patch.changed) return session;
+    return { ...session, messages: patch.messages, updatedAt: Date.now() };
+  });
+  // 每个回合只清自己登记的乐观 id：并发/排队回合的 pending 互不越权。
+  const remaining = pending.filter(
+    (id) => reconcile.pendingLocalUserIds.includes(id)
+      && agentPendingLocalUserIdsBySessionRef.current[sessionId]?.includes(id)
+  );
+  if (remaining.length !== pending.length) {
+    agentPendingLocalUserIdsBySessionRef.current = {
+      ...agentPendingLocalUserIdsBySessionRef.current,
+      [sessionId]: remaining
+    };
+  }
+  return { matchedCount: reconcile.matchedCount, remainingPending: remaining.length };
   }
 
   /** 对账时：local id 与 mapped server id（含 retry-pending）任一有可见 live 即保留。 */
@@ -6468,7 +6591,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     let sessionId = earlySessionId;
     const shouldCreate = !sessionId || draftAgentSessionRef.current;
     if (shouldCreate) {
-      sessionId = await createPersistedAgentSession(prompt || "(attachment)");
+      const attachmentOnlySeedTitle = attachments.find(
+        (attachment) => !isImageAttachment(attachment)
+      )?.filename || attachments[0]?.filename || "";
+      sessionId = await createPersistedAgentSession(prompt || attachmentOnlySeedTitle);
     }
     if (!sessionId) {
       bailSendNowToQueue(earlySessionId);
@@ -6567,14 +6693,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       return;
     }
     const multimodalImages = promptImages;
-    const fileHints = attachments.flatMap((attachment) => {
-      if (isImageAttachment(attachment)) return [];
-      const filename = attachment.filename || "unnamed attachment";
-      if (attachment.sourcePath) {
-        return [formatLocalFileAttachmentHint(filename, attachment.sourcePath)];
-      }
-      return [formatUiOnlyFileAttachmentHint(filename, attachment.mime || "unknown MIME type")];
-    });
+    const fileHints = await buildAgentFileAttachmentPromptParts(attachments, repoPath);
     const graphContextBlock = formatGraphContextBlock(graphRefs);
     const sessionPrompt = [prompt, graphContextBlock, ...fileHints].filter(Boolean).join("\n\n").trim();
     if (!sessionPrompt && multimodalImages.length === 0) {
@@ -6589,14 +6708,19 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       }
       return;
     }
-    const displayAttachments = attachments.map((attachment) => ({
-      id: attachment.id,
-      kind: attachment.kind,
-      // 预览优先 dataUrl；file:// 临时路径在 WebView 里经常加载失败
-      uri: attachment.dataUrl || (attachment.sourcePath ? "file://" + encodeFilePathForUrl(attachment.sourcePath) : ""),
-      mime: attachment.mime,
-      filename: attachment.filename
-    }));
+    const displayAttachments = attachments.map((attachment) => {
+      const sourcePath = String(attachment.sourcePath || "").trim();
+      return {
+        id: attachment.id,
+        kind: attachment.kind,
+        // 有源路径优先 file://（右侧面板/系统打开都依赖它）；否则退回 dataUrl 预览。
+        uri: sourcePath
+          ? `file://${encodeFilePathForUrl(sourcePath)}`
+          : attachment.dataUrl,
+        mime: attachment.mime,
+        filename: attachment.filename
+      };
+    });
 
     agentMessageCache.invalidate(repoPath, sessionId);
     setAgentStreamingAssistantIdBySession((prev) => ({ ...prev, [sessionId]: assistantId }));
@@ -6669,6 +6793,12 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     const pendingUsers = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
     pendingUsers.push(userId);
     agentPendingLocalUserIdsBySessionRef.current[sessionId] = pendingUsers;
+    // 本回合用户身份锚：后续一切 user completed（本地/远程/暂停后）只能 upsert 到这一行。
+    agentOpenUserTurnBySessionRef.current = beginOpenUserTurn(
+      agentOpenUserTurnBySessionRef.current,
+      sessionId,
+      { localUserId: userId, turnId }
+    );
     releaseSubmitLock();
 
     const localAssistantByMessageId = new Map<string, string>();
@@ -7343,79 +7473,38 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
             for (const key of [...pendingReasoningStream.keys()]) {
               if (key === completedId || key.startsWith(`${completedId}::`)) pendingReasoningStream.delete(key);
             }
-            // 用户消息正式落地：乐观 user-* 按 bag remap。跟进已在 flush 时从预览队列摘掉，这里不再 pop。
+            // 用户消息正式落地：与远程路径共用 commitUserCompletedIntoMessages。
             if (event.message.role === "user") {
               const mappedUser = agentMessageToChatMessage(event.message);
               if (mappedUser) {
-                if (completedUserMessageIds.has(mappedUser.id)) {
-                  break;
-                }
-                const sessionNow = agentSessionsRef.current.find((item) => item.id === sessionId);
-                if (sessionNow?.messages.some((item) => item.id === mappedUser.id)) {
-                  completedUserMessageIds.add(mappedUser.id);
-                  break;
-                }
+                if (completedUserMessageIds.has(mappedUser.id)) break;
                 completedUserMessageIds.add(mappedUser.id);
-                const bag = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
-                const pendingId = bag.shift() || "";
-                agentPendingLocalUserIdsBySessionRef.current[sessionId] = bag;
-                // 同 3269 区：替换保留本地 id 后必须补写 local→server 映射，
-                // 否则归并对账配不上对，user 行被丢、history 版本尾随错序。
-                if (pendingId && mappedUser.id) {
-                  commitAgentServerMessageIdByLocalId((prev) => (
-                    prev[pendingId] === mappedUser.id ? prev : { ...prev, [pendingId]: mappedUser.id }
-                  ));
-                }
+
                 const liveId = currentServerAssistantId || currentLocalAssistantId;
                 const liveActive = Boolean(liveId) && !frozenAssistantMessageIds.has(liveId);
                 updateAgentSessionById(sessionId, (session) => {
-                  let replaced = false;
-                  let next = session.messages.flatMap((candidate) => {
-                    if (candidate.id === mappedUser.id) {
-                      replaced = true;
-                      return [mergeCompletedUserChatMessage(
-                        {
-                          ...candidate,
-                          ...mappedUser,
-                          attachments: candidate.attachments || mappedUser.attachments
-                        },
-                        candidate
-                      )];
+                  const committed = commitUserCompletedIntoMessages({
+                    sessionId,
+                    messages: session.messages,
+                    mapped: mappedUser,
+                    pendingBySession: agentPendingLocalUserIdsBySessionRef.current,
+                    openTurnBySession: agentOpenUserTurnBySessionRef.current,
+                    serverIdByLocalId: agentServerMessageIdByLocalIdRef.current,
+                    liveAssistantId: liveActive ? liveId : "",
+                    isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id),
+                    onMapLocalToServer: (localUserId, serverUserId) => {
+                      commitAgentServerMessageIdByLocalId((prev) => (
+                        prev[localUserId] === serverUserId
+                          ? prev
+                          : { ...prev, [localUserId]: serverUserId }
+                      ));
                     }
-                    if (pendingId && candidate.id === pendingId) {
-                      replaced = true;
-                      return [mergeCompletedUserChatMessage(
-                        {
-                          ...mappedUser,
-                          attachments: candidate.attachments || mappedUser.attachments
-                        },
-                        candidate
-                      )];
-                    }
-                    return [candidate];
                   });
-                  if (!replaced) {
-                    if (pendingId) {
-                      const restore = agentPendingLocalUserIdsBySessionRef.current[sessionId] || [];
-                      restore.unshift(pendingId);
-                      agentPendingLocalUserIdsBySessionRef.current[sessionId] = restore;
-                    }
-                    next = commitUserBeforeLiveAssistant(
-                      next,
-                      mergeCompletedUserChatMessage(mappedUser),
-                      liveActive ? liveId : "",
-                      { isStillOpenAssistant: (id) => canInsertBeforeAssistantMessage(id) }
-                    );
-                  }
-                  const seen = new Set<string>();
+                  // 迟到重播（服务端行已在时间线且锚已收口）：放弃投递，保持现状。
+                  if (!committed.anchorUpdate) return session;
                   return {
                     ...session,
-                    messages: next.filter((item) => {
-                      if (item.id !== mappedUser.id) return true;
-                      if (seen.has(item.id)) return false;
-                      seen.add(item.id);
-                      return true;
-                    }),
+                    messages: committed.messages,
                     updatedAt: Date.now()
                   };
                 });
@@ -8102,6 +8191,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         if (agentRunIdBySessionRef.current[sessionId] === runId) {
           delete agentRunIdBySessionRef.current[sessionId];
         }
+        // 权威身份对账（含失败/暂停）：completed 丢失时用 history 回填映射，补齐后归并对账只出一行。
+        let authorityMessages: AgentMessage[] = [];
+        try {
+          authorityMessages = await agentClient.getMessages(sessionId);
+          const reconciled = reconcileAuthoritativeUserTurns(sessionId, authorityMessages);
+          appendAgentDebugLog(
+            `agent.prompt.identityReconcile session=${sessionId} matched=${reconciled.matchedCount} pending=${reconciled.remainingPending}`
+          );
+        } catch (error) {
+          appendAgentDebugLog(
+            `agent.prompt.identityReconcile.error session=${sessionId} ${String(error)}`
+          );
+        }
+        // 回合身份锚收口（唯一清理点）：此后迟到的 user completed 不再被本回合误绑；
+        // 已补齐映射的服务端行会经归并对账与本地行合并，不会另起一行。
+        agentOpenUserTurnBySessionRef.current = closeOpenUserTurn(
+          agentOpenUserTurnBySessionRef.current,
+          sessionId
+        );
         const sendNow = peekSendNowIntent(sessionId);
         const aborted = isAgentAbortFailure(failure);
         // 停止/插队：保留待发送队列并在文末冲刷。硬失败才清空。
@@ -8245,7 +8353,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
         // Pi 式兜底：JSONL/history 已有最终总结但 live 漏事件时，只 patch 当前轮 tail，禁止整表 reload。
         if (!failure) {
           try {
-            const agentMessages = await agentClient.getMessages(sessionId);
+            // 与身份对账共用同一次权威拉取，成功收口不做第二次 IPC。
+            const agentMessages = authorityMessages.length > 0
+              ? authorityMessages
+              : await agentClient.getMessages(sessionId);
             const toolResults = agentToolResultsByCallId(agentMessages);
             const historyChat = agentMessages
               .map(agentMessageToChatMessage)
@@ -8503,6 +8614,25 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       }
     } catch (e) {
       appendAgentDebugLog("agent.prompt.abort.error session=" + sid + " " + String(e));
+    } finally {
+      // 手动暂停即回合终止：先做权威身份对账，再收口锚。暂停后的下一次 history
+      // 对账因此有了显式 local→server 身份，同一回合不会再各出一行。
+      try {
+        const authority = await agentClient.getMessages(sid);
+        const reconciled = reconcileAuthoritativeUserTurns(sid, authority);
+        appendAgentDebugLog(
+          `agent.prompt.abortIdentityReconcile session=${sid} matched=${reconciled.matchedCount} pending=${reconciled.remainingPending}`
+        );
+      } catch (error) {
+        appendAgentDebugLog(
+          `agent.prompt.abortIdentityReconcile.error session=${sid} ${String(error)}`
+        );
+      } finally {
+        agentOpenUserTurnBySessionRef.current = closeOpenUserTurn(
+          agentOpenUserTurnBySessionRef.current,
+          sid
+        );
+      }
     }
   }
 
@@ -9164,9 +9294,23 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
     }
   }
 
-  async function openAttachmentInRightPane(uri: string, filename?: string, _mime?: string) {
+  async function openAttachmentInRightPane(uri: string, filename?: string, mime?: string) {
     const absolutePath = fileUrlToPath(uri);
     if (!absolutePath) {
+      // 粘贴附件没有源路径（仅 base64 dataUrl）时：临时落盘后走同一条右侧预览管线，
+      // 不再 window.open 静默失败；解码失败才退回系统打开。
+      const payload = dataUrlToBase64Payload(uri);
+      if (payload) {
+        const staged = await invoke<Array<{ path: string }>>("stage_agent_prompt_images", {
+          repoPath: repoPath || ".",
+          images: [{ mime: mime || payload.mimeType, dataBase64: payload.data, filename }]
+        }).catch(() => []);
+        const stagedPath = String(staged?.[0]?.path || "").trim();
+        if (stagedPath) {
+          await openAttachmentInRightPane(`file://${encodeFilePathForUrl(stagedPath)}`, filename, mime);
+          return;
+        }
+      }
       if (!uri) return;
       window.open(uri, "_blank", "noopener,noreferrer");
       return;
@@ -9197,6 +9341,26 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       setError(String(error));
       setMessage("打开附件预览失败");
     }
+  }
+
+  function downloadAttachmentCopy(base64: string, filename: string, mime?: string) {
+    const payload = base64 || "";
+    if (!payload) return;
+    void (async () => {
+      try {
+        const staged = await invoke<Array<{ path: string }>>("stage_agent_prompt_images", {
+          repoPath: repoPath || ".",
+          images: [{ mime: mime || "application/octet-stream", dataBase64: payload, filename }]
+        });
+        const stagedPath = String(staged?.[0]?.path || "").trim();
+        if (!stagedPath) return;
+        await invoke("open_local_path", { path: stagedPath });
+        setMessage(`已导出 ${filename}`);
+      } catch (error) {
+        setError(String(error));
+        setMessage("下载附件失败");
+      }
+    })();
   }
 
   function closeRightFileView() {
@@ -10127,6 +10291,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       const localRun = String(agentRunIdBySessionRef.current[sid] || "").trim();
       // 桌面自己发起的 prompt 由本地 finalize 负责，避免双写打架。
       if (localRun) return;
+      // 暂停收口窗口：乐观 user 未 remap 前不要远程灌泡，否则同文双气泡。
+      if ((agentPendingLocalUserIdsBySessionRef.current[sid] || []).length > 0) return;
       void applyRemoteAgentSessionSnapshotRef.current(sid, {
         repoPath: repoPathHint,
         reason
@@ -10161,6 +10327,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       // 本机 prompt 订阅是唯一事实来源。只要本地挂着 run，就不要再走远程灌泡路径
       // （双写会叠出同文气泡）。
       if (localRun) return;
+      if ((agentPendingLocalUserIdsBySessionRef.current[sid] || []).length > 0) return;
       // 插队意图未落地前仍属本机收口窗口：abort 第二终态不得再走远程清队列。
       if (peekSendNowIntent(sid)) return;
 
@@ -10441,6 +10608,10 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
       // 本机正在跑的 prompt：事件流是事实来源。此时拉 history 会把服务端 user id
       // 与乐观 `user-`/`assistant-` 并排合并，叠出重复气泡。
       if (String(agentRunIdBySessionRef.current[sessionId] || "").trim()) {
+        return;
+      }
+      // 暂停后 runId 已清、但 pending 乐观 user 尚未 remap 时同样跳过。
+      if ((agentPendingLocalUserIdsBySessionRef.current[sessionId] || []).length > 0) {
         return;
       }
       try {
@@ -11447,116 +11618,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
               slashActiveIndex={agentSlashActiveIndex}
               onHoverSlashSuggestion={setAgentSlashActiveIndex}
               onActivateSlashCommand={activateAgentSlashCommand}
-              promptInputRef={agentInputRef}
-              promptInput={agentPromptInput}
-              onFillPrompt={(text) => {
-                captureAgentPromptHistoryDraft(text);
-                setAgentPromptInput(text);
-                agentInputRef.current?.focus();
-              }}
-              onPromptCompositionStart={() => {
-                agentInputComposingRef.current = true;
-              }}
-              onPromptCompositionEnd={() => {
-                agentInputComposingRef.current = false;
-              }}
-              onPromptChange={(event) => {
-                const value = event.target.value;
-                captureAgentPromptHistoryDraft(value);
-                setAgentPromptInput(value);
-                const isSlash = /^\//.test(value) && !value.includes(" ");
-                setAgentSlashOpen(isSlash);
-                setAgentSlashActiveIndex(0);
-              }}
-              onPromptKeyDown={(event) => {
-                const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-                if (nativeEvent.isComposing || agentInputComposingRef.current || nativeEvent.keyCode === 229) return;
-                if (agentSlashOpen && agentSlashSuggestions.length > 0) {
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    setAgentSlashActiveIndex((index) => (index + 1) % agentSlashSuggestions.length);
-                    return;
-                  }
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault();
-                    setAgentSlashActiveIndex((index) => (index - 1 + agentSlashSuggestions.length) % agentSlashSuggestions.length);
-                    return;
-                  }
-                  if (event.key === "Enter" || event.key === "Tab") {
-                    event.preventDefault();
-                    const command = agentSlashSuggestions[agentSlashActiveIndex];
-                    if (command) activateAgentSlashCommand(command);
-                    return;
-                  }
-                  if (event.key === "Escape") {
-                    setAgentSlashOpen(false);
-                    return;
-                  }
-                }
-                // 运行中仍允许↑↓翻历史 / Enter 排队跟进；空输入 Enter 不停止（停止走按钮）。
-                if (event.key === "ArrowUp" && shouldUsePromptHistoryKey(event, "older")) {
-                  event.preventDefault();
-                  browseAgentPromptHistory("older");
-                  return;
-                }
-                if (event.key === "ArrowDown" && shouldUsePromptHistoryKey(event, "newer")) {
-                  event.preventDefault();
-                  browseAgentPromptHistory("newer");
-                  return;
-                }
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  if (!(activeAgentModel || "").trim()) {
-                    setError("请先配置并选择模型后再发送。");
-                    setMessage("请先选择模型");
-                    openSettingsPage("models");
-                    return;
-                  }
-                  // busy + 空草稿：不发送也不停止（停止用方钮）。
-                  if (
-                    activeAgentSessionBusy
-                    && !agentPromptInput.trim()
-                    && agentImageAttachments.length === 0
-                    && agentGraphContextRefs.length === 0
-                  ) {
-                    return;
-                  }
-                  void runAgentPrompt();
-                }
-              }}
-              onPromptPaste={async (event) => {
-                if (!hasClipboardFileReference(event.clipboardData) && hasPlainClipboardText(event.clipboardData)) {
-                  return;
-                }
-                event.preventDefault();
-                const attachments = await readAgentClipboardAttachments(event.clipboardData);
-                if (attachments.length === 0) {
-                  // preventDefault 后即便没有附件也要保住输入焦点。
-                  requestAnimationFrame(() => agentInputRef.current?.focus({ preventScroll: true }));
-                  return;
-                }
-                appendAgentAttachments(attachments);
-              }}
-              onPromptContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                setRepoContextMenu(null);
-                setSessionContextMenu(null);
-                setCommitContextMenu(null);
-                setTopologyContextMenu(null);
-                setComposerContextMenu({ x: event.clientX, y: event.clientY });
-              }}
-              onPromptDragOver={(event) => {
-                if ((event.dataTransfer?.files?.length || 0) <= 0) return;
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "copy";
-              }}
-              onPromptDrop={async (event) => {
-                event.preventDefault();
-                const attachments = await readTransferAttachments(event.dataTransfer);
-                if (attachments.length === 0) return;
-                appendAgentAttachments(attachments);
-              }}
+              onDraftChange={(text) => setAgentDraftText(text)}
               attachmentMenuOpen={agentAttachmentMenuOpen}
               onToggleAttachmentMenu={() => setAgentAttachmentMenuOpen((prev) => !prev)}
               attachmentInputRef={agentImageInputRef}
@@ -11660,6 +11722,8 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                 }
                 void runAgentPrompt();
               }}
+              onAddEngineAttachments={appendAgentAttachments}
+              captureDraft={captureAgentPromptHistoryDraft}
               onComposerSubmit={({ text, attachments }) => {
                 if (
                   activeAgentSessionBusy
@@ -11670,9 +11734,7 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
                   void stopAgentPrompt();
                   return;
                 }
-                if (attachments.length > 0) {
-                  setAgentImageAttachments(attachments);
-                }
+                // 引擎附件已在受理时进入宿主预览层；提交 payload 就是唯一真相。
                 void runAgentPrompt({
                   promptOverride: text,
                   attachmentsOverride: attachments
@@ -11847,6 +11909,36 @@ function getMissingRuntimeDeps(status: RuntimeRequirementsStatus): RuntimeDepNam
           turnDiffInitialPath={turnDiffPanel?.initialPath}
           canRestoreOfficeVersion={officeRestoreCount > 0 && Boolean(selectedAttachmentPreviewPath)}
           onRestoreOfficeVersion={() => void restoreOfficePreviousVersion(selectedAttachmentPreviewPath)}
+          attachmentPreviewPath={selectedAttachmentPreviewPath}
+          onRequestModify={(attachmentPath, attachmentContent) => {
+            const fileName = attachmentPath.split(/[\\/]/).filter(Boolean).pop() || attachmentPath;
+            const base64 = (attachmentContent?.dataBase64 || "").trim();
+            const mime = attachmentContent?.mime || "application/octet-stream";
+            // 请求修改必须把文件真实绑定给模型：优先复用右侧预览的本地源路径；
+            // 纯 base64 时走 composer 既有发送管线（可抽取内联正文，否则落盘给路径）。
+            const attachment: AgentAttachment = {
+              id: `file-${makeId()}`,
+              kind: "file",
+              filename: fileName,
+              mime,
+              dataUrl: base64 ? `data:${mime};base64,${base64}` : "",
+              sourcePath: selectedAttachmentPreviewPath || undefined
+            };
+            appendAgentAttachments([attachment]);
+            setAgentDraftText(`请修改附件「${fileName}」，完成后说明改动点。`, { focus: true });
+          }}
+          onOpenExternalAttachment={() => {
+            if (!selectedAttachmentPreviewPath) return;
+            void invoke("open_local_path", { path: selectedAttachmentPreviewPath }).catch((error) => {
+              setError(String(error));
+              setMessage("打开文件失败");
+            });
+          }}
+          onDownloadAttachment={(base64, fileName, attachmentMime) => {
+            downloadAttachmentCopy(base64, fileName, attachmentMime);
+          }}
+          onCloseAttachmentPreview={() => closeRightFileView()}
+          onCollapseRightPane={() => setRightDrawerOpen(false)}
           viewMode={selectedWorktreeViewMode}
           committing={committing}
           pushing={pushing}

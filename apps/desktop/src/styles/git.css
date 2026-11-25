@@ -391,6 +391,17 @@
   background: color-mix(in srgb, var(--bg) 98%, var(--accent) 2%);
 }
 
+.gt-monaco-diff-shell-document {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gt-monaco-diff-shell-document > .gt-document-preview-body {
+  min-height: 0;
+  flex: 1;
+}
+
 .gt-monaco-diff-shell .monaco-scrollable-element > .scrollbar.horizontal {
   display: none !important;
 }

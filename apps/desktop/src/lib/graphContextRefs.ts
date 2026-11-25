@@ -136,11 +136,29 @@ export function formatUiOnlyFileAttachmentHint(filename: string, mime: string): 
   ].join("\n");
 }
 
+/** 把可解码的文本附件正文直接注入 prompt（粘贴/上传的文档内容）。 */
+export function formatInlineFileAttachmentContent(filename: string, mime: string, text: string): string {
+  return [
+    `The user attached a file named "${filename}" (${mime}).`,
+    "Embedded attachment contents follow:",
+    `<attachment_content filename="${filename}">`,
+    text,
+    "</attachment_content>",
+  ].join("\n");
+}
+
 const LOCAL_FILE_ATTACHMENT_HINT_RE =
   /\n*The user attached a local file named "[^"]*"\.\nLocal path: [^\n]+\nUse the appropriate Pi tool to inspect it when needed\.(?:\n|$)/g;
 
 const UI_ONLY_FILE_ATTACHMENT_HINT_RE =
   /\n*The user attached a file named "[^"]*" \([^)]*\)\.\nThe attachment was selected in the desktop UI but is not available as a filesystem path to the embedded agent\.(?:\n|$)/g;
+
+const INLINE_FILE_ATTACHMENT_CONTENT_RE =
+  /\n*The user attached a file named "[^"]*" \([^)]*\)\.\nEmbedded attachment contents follow:\n<attachment_content filename="[^"]*">[\s\S]*?<\/attachment_content>(?:\n|$)/g;
+
+/** 兜底：即使前后说明文被改写，也剥掉 attachment_content 块，避免文档正文泄漏进气泡。 */
+const ATTACHMENT_CONTENT_TAG_RE =
+  /\n*<attachment_content\b[^>]*>[\s\S]*?<\/attachment_content>(?:\n|$)/gi;
 
 function collapseDisplayWhitespace(text: string): string {
   return text.replace(/\n{3,}/g, "\n\n").trim();
@@ -155,6 +173,8 @@ export function stripGraphContextBlock(content: string): string {
 export function stripFileAttachmentHints(content: string): string {
   return collapseDisplayWhitespace(
     content
+      .replace(INLINE_FILE_ATTACHMENT_CONTENT_RE, "\n")
+      .replace(ATTACHMENT_CONTENT_TAG_RE, "\n")
       .replace(LOCAL_FILE_ATTACHMENT_HINT_RE, "\n")
       .replace(UI_ONLY_FILE_ATTACHMENT_HINT_RE, "\n"),
   );

@@ -1,6 +1,9 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import DocViewer, { DocViewerRenderers } from "@cyntler/react-doc-viewer";
+import { Document as PdfDocument, Page as PdfPage, pdfjs } from "react-pdf";
+import "react-pdf/dist/esm/Page/TextLayer.css";
+import "react-pdf/dist/esm/Page/AnnotationLayer.css";
 import { renderAsync } from "docx-preview";
 import * as XLSX from "xlsx";
 import "@cyntler/react-doc-viewer/dist/index.css";
@@ -15,10 +18,29 @@ import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group";
 type DocumentPreviewViewerProps = {
   filePath: string;
   content: GitWorktreeFileContent;
+  /** 预览缩放（附件工具栏控制；仅 docx/ppt/xlsx 应用，PDF 走 viewer 内部缩放）。 */
+  zoom?: number;
+  /** docx/PDF 渲染完成并测出适配宽度后回调（工具栏据此显示真实百分比）。 */
+  onFitZoomReady?: (zoom: number) => void;
+  /** zoom 是否仍处于"自动适配"状态（true 时容器尺寸变化会重新适配）。 */
+  zoomAuto?: boolean;
   /** office 文件可恢复历史版本时提供：点击按钮回退到修改前内容。 */
   onRestorePreviousVersion?: () => void;
   canRestorePreviousVersion?: boolean;
+  /** 换文件时回落到默认视图，工具栏同步显示 100% / 自动适配。 */
+  setPreviewZoom?: (zoom: number) => void;
+  setPreviewZoomAuto?: (auto: boolean) => void;
 };
+
+// react-pdf esm 入口自带的 workerSrc 是坏路径，必须指向真实 worker 资源；
+// 复用项目唯一的 pdfjs-dist 实例（与 documentTextExtract 相同），避免双 worker。
+try {
+  void import("pdfjs-dist/build/pdf.worker.min.mjs?url").then((worker) => {
+    if (worker?.default) pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+  });
+} catch {
+  /* ignore worker wiring failures; pdf.js may still run on main thread */
+}
 
 function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path || "attachment";
@@ -127,14 +149,40 @@ function PreviewShell({ children, className }: { children: ReactNode; className?
   );
 }
 
-export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVersion, canRestorePreviousVersion }: DocumentPreviewViewerProps) {
+export function DocumentPreviewViewer({
+  filePath,
+  content,
+  zoom = 1,
+  zoomAuto = false,
+  onFitZoomReady,
+  onRestorePreviousVersion,
+  canRestorePreviousVersion,
+  setPreviewZoom,
+  setPreviewZoomAuto
+}: DocumentPreviewViewerProps) {
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
+  // 真正的滚动容器。不能靠 parentElement 找：缩放“舞台”层包住内容后，
+  // docxContainerRef.parentElement 是舞台（宽度 = 页宽 × zoom），会让适配测量
+  // 进入反馈循环（fit ≈ 页宽×zoom/页宽），zoom 一路收敛到下限 50%。
+  const docxScrollerRef = useRef<HTMLDivElement | null>(null);
+  const pdfContainerRef = useRef<HTMLDivElement | null>(null);
   const [blobUrl, setBlobUrl] = useState("");
+  const [contentReady, setContentReady] = useState(false);
   const [docxError, setDocxError] = useState("");
+  const [pdfPageCount, setPdfPageCount] = useState(0);
+  // PDF 首页在 scale=1 下的真实宽度（pdf.js viewport，单位 = CSS px）。
+  // 拿到它即可在首帧渲染前直接换算 fit-width，避免「先渲染再量 DOM 再跳一次」。
+  // ref + state 双写：onLoadSuccess 同步链路读 ref，渲染依赖读 state。
+  const pdfBasePageWidthRef = useRef(0);
+  const [pdfBasePageWidth, setPdfBasePageWidth] = useState(0);
+  const [pdfError, setPdfError] = useState("");
+  const pdfMeasuredKeyRef = useRef("");
   const fileName = fileNameFromPath(filePath);
   const ext = extensionFromName(fileName);
   const isMarkdown = ext === "md" || ext === "markdown" || ext === "mdx" || content.previewKind === "markdown";
+  const isImage = content.previewKind === "image" || ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext) || String(content.mime || "").startsWith("image/");
   const isDocx = ext === "docx" && content.dataBase64;
+  const isPdf = (ext === "pdf" || content.previewKind === "pdf") && Boolean(content.dataBase64);
   const isSpreadsheet = (ext === "xlsx" || ext === "xls" || ext === "csv") && content.dataBase64;
   const isSlides = ext === "pptx" && content.dataBase64;
   const [slidesData, setSlidesData] = useState<SlidePreview[]>([]);
@@ -160,17 +208,95 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
   const [changeNav, setChangeNav] = useState<{ total: number; index: number } | null>(null);
 
   useEffect(() => {
-    if (!content.dataBase64) {
+    setContentReady(false);
+    // PDF 不走 blob URL：数据源由下方 pdfSource（data URL 字符串）提供，
+    // 避免同一文档经历 data URL → blob URL 两次加载身份。
+    if (!content.dataBase64 || isPdf) {
       setBlobUrl("");
       return undefined;
     }
     const blob = blobFromBase64(content.dataBase64, content.mime);
     const nextUrl = URL.createObjectURL(blob);
     setBlobUrl(nextUrl);
-    return () => URL.revokeObjectURL(nextUrl);
-  }, [content.dataBase64, content.mime]);
+    return () => {
+      URL.revokeObjectURL(nextUrl);
+      setBlobUrl("");
+    };
+  }, [content.dataBase64, content.mime, isPdf]);
+
+  // PDF 数据源用 data URL 字符串（值语义）：引用天然稳定，且 pdf.js 对字符串
+  // 走 dataURItoByteString（拷贝），不会 transfer 出 detached buffer。
+  // 二进制数组方案在 StrictMode/重挂载时第二次 getDocument 会命中已 detach 的
+  // buffer，直接 DataCloneError —— 这是 PDF 预览失败的根因。
+  const pdfSource = !isPdf || !content.dataBase64
+    ? undefined
+    : `data:application/pdf;base64,${content.dataBase64}`;
+
+  // options 同样必须引用稳定，否则每次渲染都会被 react-pdf 视为变更并重建加载任务。
+  const pdfOptions = useMemo(() => ({
+    cMapUrl: new URL("pdfjs-dist/cmaps/", import.meta.url).toString(),
+    cMapPacked: true,
+    standardFontDataUrl: new URL("pdfjs-dist/standard_fonts/", import.meta.url).toString()
+  }), []);
 
   const docxPrevPathRef = useRef("");
+  const docxMeasuredKeyRef = useRef("");
+  // DOCX 渲染后的未缩放内容尺寸。外层“舞台”按 zoom × 尺寸占位，
+  // 内层再等比 transform 缩放；否则页宽超过容器时 transform 会造成偏移/大片留白。
+  const [docxLayoutSize, setDocxLayoutSize] = useState({ width: 0, height: 0 });
+  const measureDocxLayout = useCallback(() => {
+    const container = docxContainerRef.current;
+    if (!container) return;
+    const pages = Array.from(container.querySelectorAll<HTMLElement>(".docx-preview-page"));
+    const wrapper = container.querySelector<HTMLElement>(".docx-preview-page-wrapper");
+    const width = Math.max(wrapper?.offsetWidth || 0, ...pages.map((page) => page.offsetWidth));
+    const height = wrapper?.offsetHeight || container.offsetHeight;
+    if (width <= 0 || height <= 0) return;
+    const next = { width: Math.ceil(width), height: Math.ceil(height) };
+    setDocxLayoutSize((previous) => (
+      previous.width === next.width && previous.height === next.height ? previous : next
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (!isDocx || !onFitZoomReady) return;
+    const scroller = docxScrollerRef.current;
+    if (!scroller) return;
+    const measure = () => {
+      const page = docxContainerRef.current?.querySelector(".docx-preview-page") as HTMLElement | null;
+      if (!page || page.offsetWidth <= 0) return;
+      // clientWidth 含左右 padding；适配宽度必须按真实内容区再留少量呼吸边距。
+      const scrollerStyle = window.getComputedStyle(scroller);
+      const horizontalPadding = Number.parseFloat(scrollerStyle.paddingLeft || "0")
+        + Number.parseFloat(scrollerStyle.paddingRight || "0");
+      const available = scroller.clientWidth - horizontalPadding - 24;
+      if (available <= 0) return;
+      const key = `${filePath}:${Math.round(available)}:${Math.round(page.offsetWidth)}`;
+      if (key === docxMeasuredKeyRef.current) return;
+      docxMeasuredKeyRef.current = key;
+      // 不钳到 ≤1：面板比页宽宽时同样放大占满，两侧不再大片留白；
+      // 面板比页宽窄时缩小到刚好放下，避免横向滚动。
+      const fit = Math.min(2, Math.max(0.3, available / page.offsetWidth));
+      onFitZoomReady(Number(fit.toFixed(2)));
+    };
+    if (contentReady) measure();
+    // 网页字体（宋体/黑体等）晚于首测加载完成会改变页宽，加载完补测一次。
+    void document.fonts?.ready.then(() => measure());
+    if (!zoomAuto) return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [isDocx, contentReady, filePath, zoomAuto, onFitZoomReady]);
+
+  useEffect(() => {
+    if (!isDocx) return undefined;
+    const container = docxContainerRef.current;
+    if (!container) return undefined;
+    const observer = new ResizeObserver(() => measureDocxLayout());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [isDocx, measureDocxLayout]);
+
   useEffect(() => {
     const container = docxContainerRef.current;
     if (!isDocx || !container || !content.dataBase64) return;
@@ -187,7 +313,7 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
       docxMarkedRef.current = [];
     }
     const blob = blobFromBase64(content.dataBase64, content.mime);
-    const scroller = container.parentElement;
+    const scroller = docxScrollerRef.current;
     // 双缓冲：离屏渲染完成后一次性替换 DOM——不做 innerHTML="" 清空，
     // 检查点刷新就不会白屏闪动；滚动位置保持（agent 写入时贴底跟随）。
     const previousScroll = scroller?.scrollTop ?? 0;
@@ -208,9 +334,11 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
       .then(() => {
         if (cancelled) return;
         container.replaceChildren(...Array.from(buffer.childNodes));
+        setContentReady(true);
         // 全量刷新（completed 兜底）后重放修改标记，标记不因刷新丢失。
         applyDocxMarks(false);
         requestAnimationFrame(() => {
+          measureDocxLayout();
           if (!scroller) return;
           // 贴底才跟随：用户本来在底部（看最新追加）→ 跟到新内容；
           // 用户往上看了某一节 → 绝不挪动视口，改动只以高亮呈现。
@@ -314,6 +442,7 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
         if (!cancelled) {
           setSlidesData(slides);
           setSlidesError("");
+          setContentReady(true);
         }
       })
       .catch((error) => {
@@ -336,7 +465,7 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
   // docx 流式跟随：内容追加时滚到底部（office hint 存在 = agent 正在写）。
   useEffect(() => {
     if (!isDocx || !content.office) return;
-    const container = docxContainerRef.current?.parentElement;
+    const container = docxScrollerRef.current;
     if (container) container.scrollTop = container.scrollHeight;
   }, [isDocx, content.dataBase64, content.office]);
 
@@ -354,6 +483,7 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
         const workbook = XLSX.read(text, { type: "string" });
         if (workbook.SheetNames.length > 0) {
           setXlsxWorkbook(workbook);
+          setContentReady(true);
           const firstSheet = workbook.SheetNames[0];
           activeSheetRef.current = firstSheet;
           prevSheetDataRef.current = null;
@@ -532,6 +662,145 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
     }];
   }, [blobUrl, ext, fileName]);
 
+  useEffect(() => {
+    if (!isDocx && !isSpreadsheet && !isSlides && content.dataBase64) {
+      const timer = window.setTimeout(() => setContentReady(true), 60);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isDocx, isSpreadsheet, isSlides, content.dataBase64]);
+
+  // ── PDF：与 docx 同语义的一次到位适配。文档加载成功时直接从 pdf.js viewport
+  // 读取首页原始宽度，配合滚动容器宽度立刻算出 fit 比例并回调工具栏；
+  // 首帧渲染就用这个比例，不再经历「固定 720px 渲染 → 量 DOM → 再跳一次」。
+  useEffect(() => {
+    if (!isPdf) {
+      setPdfPageCount(0);
+      pdfBasePageWidthRef.current = 0;
+      setPdfBasePageWidth(0);
+      setPdfError("");
+      return;
+    }
+    setContentReady(false);
+    setPdfError("");
+    // 换文件：清掉旧文档量出的页宽与手动缩放，等新文档 load 回调里一步适配。
+    pdfBasePageWidthRef.current = 0;
+    setPdfBasePageWidth(0);
+    setPreviewZoom?.(1);
+    setPreviewZoomAuto?.(true);
+  }, [isPdf, content.dataBase64, filePath, setPreviewZoom, setPreviewZoomAuto]);
+
+  // 容器宽度来源：加载成功时读一次 + zoomAuto 时 ResizeObserver 持续跟随。
+  // 计算完全基于原始页宽（不依赖已渲染 DOM），任何缩放档位下结果都正确。
+  const measurePdfFitFromContainer = useCallback((scroller: HTMLElement) => {
+    if (!onFitZoomReady) return;
+    const baseWidth = pdfBasePageWidthRef.current;
+    if (baseWidth <= 0) return;
+    const available = scroller.clientWidth - 24;
+    if (available <= 0) return;
+    const fit = available / baseWidth;
+    if (!Number.isFinite(fit) || fit <= 0) return;
+    // key 含当前缩放档位：从手动 200% 切回「适合宽度」时，容器宽虽没变，
+    // 但必须重新回传 fit，否则工具栏会停留在一个错误的比例上。
+    const key = `${filePath}:${Math.round(Math.max(zoom, 0.05) * 100)}:${Math.round(available)}:${Math.round(baseWidth)}`;
+    if (key === pdfMeasuredKeyRef.current) return;
+    pdfMeasuredKeyRef.current = key;
+    onFitZoomReady(Number(Math.min(3, Math.max(0.3, fit)).toFixed(2)));
+  }, [filePath, zoom, onFitZoomReady]);
+
+  useEffect(() => {
+    const scroller = pdfContainerRef.current?.parentElement;
+    if (!isPdf || !scroller) return undefined;
+    measurePdfFitFromContainer(scroller);
+    if (!zoomAuto) return undefined;
+    const observer = new ResizeObserver(() => measurePdfFitFromContainer(scroller));
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [isPdf, zoomAuto, pdfBasePageWidth, measurePdfFitFromContainer]);
+
+  if (isImage && content.dataBase64) {
+    const mime = content.mime || "image/png";
+    const src = blobUrl || `data:${mime};base64,${content.dataBase64}`;
+    return (
+      <PreviewShell>
+        <div className="flex h-full min-h-0 items-center justify-center overflow-auto bg-[color-mix(in_srgb,var(--muted)_45%,var(--background)_55%)] p-4">
+          <img
+            src={src}
+            alt={fileName}
+            draggable={false}
+            style={{ transform: `scale(${zoom})`, transformOrigin: "center center", maxWidth: `${100 / Math.max(zoom, 0.01)}%`, maxHeight: `${100 / Math.max(zoom, 0.01)}%` }}
+            className="min-h-0 min-w-0 shrink rounded-lg object-contain shadow-[0_1px_3px_rgba(15,23,42,0.12)] outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
+          />
+        </div>
+      </PreviewShell>
+    );
+  }
+
+  if (isPdf) {
+    return (
+      <PreviewShell>
+        <div className="h-full min-h-0">
+          {pdfError ? (
+            <PreviewEmpty title="PDF 预览失败" description={pdfError} />
+          ) : (
+            <div
+              className={cn(
+                "h-full min-h-0 overflow-auto bg-background px-3 py-3 transition-opacity duration-300 ease-out md:px-4",
+                contentReady ? "opacity-100" : "opacity-0"
+              )}
+            >
+              {/* 容器不设百分比宽度：页面物理宽度 = 原始页宽 × zoom，
+                  容器跟随内容自适应。旧实现 width: zoom*100% 会让容器远大于
+                  小开本 PDF（如 A5 402pt）的页面，居中后页面被右移裁切。 */}
+              <div
+                ref={pdfContainerRef}
+                className="mx-auto flex min-w-fit flex-col items-center gap-4 [&_.react-pdf__Page]:shadow-sm [&_.react-pdf__Page]:outline [&_.react-pdf__Page]:outline-1 [&_.react-pdf__Page]:-outline-offset-1 [&_.react-pdf__Page]:outline-black/10 dark:[&_.react-pdf__Page]:outline-white/10"
+              >
+                <PdfDocument
+                  file={pdfSource}
+                  options={pdfOptions}
+                  noData={<PreviewEmpty title="PDF 预览失败" description="文件数据无效。" />}
+                  onLoadSuccess={(pdf) => {
+                    setPdfPageCount(pdf.numPages);
+                    // 首页原始宽度（scale=1 viewport）：首帧渲染前就完成适配测量。
+                    const firstPage = pdf.getPage(1) as Promise<{ getViewport: (options: { scale: number }) => { width: number } }>;
+                    void firstPage.then((page) => {
+                      const baseWidth = page.getViewport({ scale: 1 }).width;
+                      pdfBasePageWidthRef.current = baseWidth;
+                      setPdfBasePageWidth(baseWidth);
+                      const scroller = pdfContainerRef.current?.parentElement;
+                      if (scroller) measurePdfFitFromContainer(scroller);
+                      setContentReady(true);
+                    }).catch(() => {
+                      // viewport 拿不到时退化为原行为：先按固定宽度渲染。
+                      setContentReady(true);
+                    });
+                  }}
+                  onLoadError={(error) => setPdfError(String(error))}
+                  loading={<PreviewEmpty title="正在准备预览" description="正在解析 PDF..." />}
+                  error={<PreviewEmpty title="PDF 预览失败" description="无法读取该 PDF 文件。" />}
+                >
+                  {Array.from({ length: pdfPageCount }, (_, index) => (
+                    <PdfPage
+                      key={index + 1}
+                      pageNumber={index + 1}
+                      width={
+                        pdfBasePageWidth > 0
+                          ? Math.max(160, Math.round(pdfBasePageWidth * Math.max(zoom, 0.05)))
+                          : Math.max(160, Math.round(720 * Math.max(zoom, 0.05)))
+                      }
+                      renderAnnotationLayer={false}
+                      renderTextLayer={false}
+                    />
+                  ))}
+                </PdfDocument>
+              </div>
+            </div>
+          )}
+        </div>
+      </PreviewShell>
+    );
+  }
+
   if (isMarkdown) {
     const markdown = content.modified || content.original || (content.dataBase64 ? textFromBase64(content.dataBase64) : "");
     return (
@@ -562,19 +831,40 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
           {docxError ? (
             <PreviewEmpty title="DOCX 预览失败" description={docxError} />
           ) : (
-            <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden bg-background p-3 pb-5 md:p-4">
+            <div
+              ref={docxScrollerRef}
+              className={cn(
+                "h-full min-h-0 overflow-auto bg-background p-3 pb-5 transition-opacity duration-300 ease-out md:p-4",
+                contentReady ? "opacity-100" : "opacity-0"
+              )}
+            >
               <div
-                ref={docxContainerRef}
-                className={cn(
-                  "min-h-full w-full overflow-x-hidden",
-                  "[&_.docx-preview-page-wrapper]:!flex [&_.docx-preview-page-wrapper]:!min-h-full",
-                  "[&_.docx-preview-page-wrapper]:!items-start [&_.docx-preview-page-wrapper]:!justify-center",
-                  "[&_.docx-preview-page-wrapper]:!bg-background [&_.docx-preview-page-wrapper]:!p-0",
-                  "[&_.docx-preview-page-wrapper]:!shadow-none",
-                  "[&_.docx-preview-page]:!mx-auto [&_.docx-preview-page]:!mb-5",
-                  "[&_.docx-preview-page]:shadow-sm"
-                )}
-              />
+                className="mx-auto w-fit"
+                style={docxLayoutSize.width > 0 ? {
+                  width: Math.round(docxLayoutSize.width * zoom),
+                  height: Math.round(docxLayoutSize.height * zoom)
+                } : undefined}
+              >
+                <div
+                  ref={docxContainerRef}
+                  style={{
+                    width: docxLayoutSize.width > 0 ? docxLayoutSize.width : "100%",
+                    height: docxLayoutSize.height > 0 ? docxLayoutSize.height : undefined,
+                    transform: `scale(${zoom})`,
+                    transformOrigin: "top left"
+                  }}
+                  className={cn(
+                    "overflow-x-visible",
+                    docxLayoutSize.width <= 0 && "min-h-full",
+                    "[&_.docx-preview-page-wrapper]:!flex [&_.docx-preview-page-wrapper]:!min-h-full",
+                    "[&_.docx-preview-page-wrapper]:!items-start [&_.docx-preview-page-wrapper]:!justify-center",
+                    "[&_.docx-preview-page-wrapper]:!bg-background [&_.docx-preview-page-wrapper]:!p-0",
+                    "[&_.docx-preview-page-wrapper]:!shadow-none",
+                    "[&_.docx-preview-page]:!mx-auto [&_.docx-preview-page]:!mb-5",
+                    "[&_.docx-preview-page]:shadow-sm"
+                  )}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -601,8 +891,22 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
       <PreviewShell>
         <div className="relative h-full min-h-0">
           {RestoreButton}
-          <div ref={slidesContainerRef} className="h-full min-h-0 overflow-y-auto bg-background p-4">
-          <div className="mx-auto flex max-w-2xl flex-col gap-4">
+          <div
+          ref={slidesContainerRef}
+          className={cn(
+            "h-full min-h-0 overflow-auto bg-background p-4 transition-opacity duration-300 ease-out",
+            contentReady ? "opacity-100" : "opacity-0"
+          )}
+        >
+          <div
+            style={{
+              width: `${Math.min(100 / Math.max(zoom, 0.01), 100)}%`,
+              maxWidth: `${100 * zoom}%`,
+              transform: `scale(${zoom})`,
+              transformOrigin: "top center"
+            }}
+            className="mx-auto flex flex-col gap-4"
+          >
             {slidesData.map((slide) => (
               <div
                 key={slide.index}
@@ -673,8 +977,22 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
         <div className="relative h-full min-h-0">
           {ChangeNavChip}
           {RestoreButton}
-          <div ref={spreadsheetScrollRef} className="h-full min-h-0 overflow-auto bg-background p-4">
-            <div className="inline-block min-w-full align-top">
+          <div
+            ref={spreadsheetScrollRef}
+            className={cn(
+              "h-full min-h-0 overflow-auto bg-background p-4 transition-opacity duration-300 ease-out",
+              contentReady ? "opacity-100" : "opacity-0"
+            )}
+          >
+            <div
+              style={{
+                "--zoom": zoom,
+                width: `calc(100% / ${zoom})`,
+                transform: `scale(${zoom})`,
+                transformOrigin: "top left"
+              } as CSSProperties}
+              className="inline-block align-top"
+            >
             {xlsxWorkbook.SheetNames.length > 1 && (
               <ToggleGroup
                 type="single"
@@ -770,7 +1088,12 @@ export function DocumentPreviewViewer({ filePath, content, onRestorePreviousVers
 
   return (
     <PreviewShell>
-      <div className="h-full min-h-0 overflow-auto bg-background [&_#proxy-renderer]:min-h-full [&_#react-doc-viewer]:min-h-full [&_#react-doc-viewer]:bg-transparent">
+      <div
+        className={cn(
+          "h-full min-h-0 overflow-auto bg-background transition-opacity duration-300 ease-out [&_#proxy-renderer]:min-h-full [&_#react-doc-viewer]:min-h-full [&_#react-doc-viewer]:bg-transparent",
+          contentReady ? "opacity-100" : "opacity-0"
+        )}
+      >
         {documents.length > 0 ? (
           <DocViewer
             documents={documents}

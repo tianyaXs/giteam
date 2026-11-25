@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergeHistoryMessagesPreservingLive,
   mergeHistoryWithLiveTimeline,
+  reconcileLiveTimelineFromHistory,
   type AgentChatMessage
 } from "./agentSessions";
 
@@ -75,6 +76,36 @@ describe("mergeHistoryWithLiveTimeline", () => {
    * stableKey 变化 → Virtuoso 卸载重挂 → 列表闪动（每回合 load 一次）。
    * 幂等性：重复 load（同一 history + 已保留本地 id 的 live）输出必须稳定。
    */
+  it("preserves live file attachments when history user has none", () => {
+    const history: AgentChatMessage[] = [
+      { id: "srv-u1", role: "user", content: "能不能看到文件内容" },
+      { id: "srv-a1", role: "assistant", content: "" }
+    ];
+    const live: AgentChatMessage[] = [
+      {
+        id: "user-local",
+        role: "user",
+        content: "能不能看到文件内容",
+        attachments: [
+          {
+            id: "f1",
+            kind: "file",
+            uri: "data:application/octet-stream;base64,AAAA",
+            mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename: "02-总体设计方案.docx"
+          }
+        ]
+      },
+      { id: "assistant-local", role: "assistant", content: "", error: "已暂停" }
+    ];
+    const merged = mergeHistoryWithLiveTimeline(history, live, {
+      serverIdByLocalId: { "user-local": "srv-u1", "assistant-local": "srv-a1" }
+    });
+    const user = merged.find((row) => row.role === "user");
+    expect(user?.id).toBe("user-local");
+    expect(user?.attachments?.[0]?.filename).toBe("02-总体设计方案.docx");
+  });
+
   it("keeps live local id for mapped rows and stays idempotent across loads", () => {
     const history: AgentChatMessage[] = [
       { id: "srv-1", role: "user", content: "打开微博热搜榜" }
@@ -319,5 +350,28 @@ describe("mergeHistoryWithLiveTimeline", () => {
     ];
     const merged = mergeHistoryWithLiveTimeline([], live);
     expect(merged.map((m) => m.id)).toEqual(["u1", "a1"]);
+  });
+
+  /**
+   * 架构决策（2026-11-24）：整表归并只在冷启动使用；会话中途必须走
+   * reconcileLiveTimelineFromHistory。这条测试把两条路径的差异锁住——同一组
+   * 「三键全失配」数据，整表归并并排双 user（旧 bug），尾部对账只补尾巴。
+   */
+  it("cold-start merge keeps unanchored history turn while mid-session reconcile keeps live skeleton", () => {
+    const history: AgentChatMessage[] = [
+      { id: "user-1795492672723", role: "user", content: "能不能看到文件内容" },
+      { id: "asst-5a8295e3", role: "assistant", content: "已经读到了文件内容", error: "已暂停" }
+    ];
+    const live: AgentChatMessage[] = [
+      { id: "user-local", role: "user", content: "能不能看到文件内容" },
+      { id: "assistant-local", role: "assistant", content: "", error: "已暂停" }
+    ];
+
+    const coldStart = mergeHistoryWithLiveTimeline(history, live, { serverIdByLocalId: {} });
+    expect(coldStart.filter((row) => row.role === "user")).toHaveLength(2);
+
+    const midSession = reconcileLiveTimelineFromHistory(live, history, { serverIdByLocalId: {} });
+    expect(midSession.messages.filter((row) => row.role === "user")).toHaveLength(1);
+    expect(midSession.messages[0]?.id).toBe("user-local");
   });
 });

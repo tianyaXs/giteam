@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FilePen, BrainIcon, ChevronDownIcon, Copy as CopyIcon, Check as CheckIconLucide, CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, FlaskConicalIcon, LoaderCircleIcon, XCircleIcon } from "lucide-react";
+import {
+  FilePen,
+  BrainIcon,
+  ChevronDownIcon,
+  Copy as CopyIcon,
+  Check as CheckIconLucide,
+  CircleAlertIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  FlaskConicalIcon,
+  LoaderCircleIcon,
+  XCircleIcon
+} from "lucide-react";
 import { Badge } from "../ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card";
 import { ScrollArea } from "../ui/scroll-area";
@@ -40,6 +52,16 @@ import {
 } from "../../lib/subagentRun";
 import { humanizeAgentError } from "../../lib/humanizeAgentError";
 import { cn } from "../../lib/utils";
+import {
+  Attachment,
+  AttachmentHoverCard,
+  AttachmentHoverCardContent,
+  AttachmentHoverCardTrigger,
+  AttachmentInfo,
+  AttachmentPreview,
+  Attachments,
+  type AttachmentData
+} from "../ai-elements/attachments";
 import { MarkdownLite } from "../common/MarkdownLite";
 import { AnimatedCollapsibleContent } from "../ui/animated-collapsible-content";
 import { Button } from "../ui/button";
@@ -48,6 +70,8 @@ import { Skeleton } from "../ui/skeleton";
 import { AgentExecutionPartView, type AgentToolFileTarget } from "./AgentExecutionPartView";
 import { AgentMessageNavigator, type NavigatorMarker } from "./AgentMessageNavigator";
 import { AgentSailingNavigator } from "./AgentSailingNavigator";
+import { renderDocumentThumbnail } from "../../lib/documentThumbnail";
+import { FileTypeGlyph } from "./FileTypeGlyph";
 import { OfficeOperationCard } from "./OfficeOperationCard";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { MatrixLoader } from "../transitions/MatrixLoader";
@@ -350,6 +374,123 @@ function isMessageImageAttachment(attachment: AgentMessageAttachment): boolean {
     dataUrl: attachment.uri,
     filename: attachment.filename || ""
   });
+}
+
+
+
+function toAttachmentData(attachment: AgentMessageAttachment): AttachmentData {
+  return {
+    id: attachment.id,
+    type: "file",
+    url: attachment.uri || "",
+    mediaType: attachment.mime || "application/octet-stream",
+    filename: attachment.filename || undefined
+  };
+}
+
+function attachmentTypeCaption(attachment: AgentMessageAttachment): string {
+  return getAttachmentBadgeLabel({
+    mime: attachment.mime || "",
+    filename: attachment.filename || ""
+  });
+}
+
+/** 时间线与 composer 共用同一缩略图管线：QuickLook 出图前渲染 null（不闪文字行中间态）。 */
+function messageAttachmentRenderInput(attachment: AgentMessageAttachment) {
+  return {
+    filename: attachment.filename || "",
+    mime: attachment.mime || "",
+    dataUrl: attachment.uri || "",
+    sourcePath: attachment.uri?.startsWith("file://")
+      ? decodeURIComponent(attachment.uri.slice("file://".length))
+      : ""
+  };
+}
+
+/**
+ * QuickLook 快照预取：chip 挂载即发起（命中 composer 缓存则近乎同步返回）。
+ * 悬浮窗打开时快照已就绪，不再出现「先信息后长图」的两阶段。
+ */
+function useDocumentSnapshot(attachment: AgentMessageAttachment): string | null {
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    renderDocumentThumbnail(messageAttachmentRenderInput(attachment), {
+      maxWidth: 400,
+      maxHeight: 208,
+      pixelRatio: 2
+    }).then((result) => {
+      if (!cancelled && result?.dataUrl) setThumbnail(result.dataUrl);
+    }).catch(() => { /* 无快照时悬浮窗仅显示文件信息 */ });
+    return () => { cancelled = true; };
+  }, [attachment]);
+
+  return thumbnail;
+}
+
+/** 消息流文件附件 chip：挂载即预取快照，悬浮小窗展示 QuickLook 首页快照。 */
+function FileAttachmentChip({
+  attachment,
+  onOpen,
+  onCopyUri
+}: {
+  attachment: AgentMessageAttachment;
+  onOpen: (attachment: AgentMessageAttachment) => void;
+  onCopyUri: (uri: string) => void;
+}) {
+  const thumbnail = useDocumentSnapshot(attachment);
+  const data = toAttachmentData(attachment);
+  const caption = attachmentTypeCaption(attachment);
+  return (
+    <AttachmentHoverCard>
+      <AttachmentHoverCardTrigger asChild>
+        <Attachment
+          data={data}
+          role="button"
+          tabIndex={0}
+          title={attachment.filename || caption}
+          onClick={() => onOpen(attachment)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onOpen(attachment);
+            }
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            if (attachment.uri) onCopyUri(attachment.uri);
+          }}
+        >
+          <FileTypeGlyph
+            filename={attachment.filename}
+            mime={attachment.mime}
+            size="sm"
+          />
+          <AttachmentInfo />
+        </Attachment>
+      </AttachmentHoverCardTrigger>
+      <AttachmentHoverCardContent>
+        {thumbnail ? (
+          <div className="h-32 w-64 overflow-hidden rounded-md border border-border/60 bg-white">
+            <img src={thumbnail} alt={attachment.filename || caption} draggable={false} className="size-full object-cover object-top" />
+          </div>
+        ) : (
+          <div className="flex max-w-64 items-start gap-2 text-sm">
+            <FileTypeGlyph
+              filename={attachment.filename}
+              mime={attachment.mime}
+              size="md"
+            />
+            <div className="grid min-w-0 gap-0.5">
+              <span className="truncate font-medium">{attachment.filename || caption}</span>
+              <span className="text-muted-foreground text-xs">{caption}</span>
+            </div>
+          </div>
+        )}
+      </AttachmentHoverCardContent>
+    </AttachmentHoverCard>
+  );
 }
 
 function collapsePreview(text: string): string {
@@ -2447,68 +2588,53 @@ function MessageAttachments({
     filename: item.filename
   }));
   if (attachments.length <= 0) return null;
-  const imageColumnCount = Math.min(imageAttachments.length, 3);
 
   return (
     <div className={cn("grid min-w-0 select-none gap-2", className)}>
       {imageAttachments.length > 0 ? (
-        <div
-          className="grid max-w-full gap-2.5"
-          style={{ gridTemplateColumns: `repeat(${imageColumnCount}, minmax(112px, 136px))` }}
-          aria-label="图片附件"
-        >
-          {imageAttachments.map((attachment) => (
-            <Button
-              key={attachment.id}
-              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:border-border/80 hover:bg-background"
-              onClick={() => onPreviewImageGroup(
-                previewImages,
-                Math.max(0, imageAttachments.findIndex((item) => item.id === attachment.id))
-              )}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                onCopyAttachmentUri(attachment.uri);
-              }}
-              title="点击查看，右键复制图片数据"
-              variant="ghost"
-            >
-              <img
-                className="pointer-events-none size-full rounded-[14px] border border-border/35 bg-background object-contain"
-                src={attachment.uri}
-                alt={attachment.filename || "图片附件"}
-                loading="lazy"
-                draggable={false}
-              />
-            </Button>
-          ))}
-        </div>
+        <Attachments variant="grid" aria-label="图片附件">
+          {imageAttachments.map((attachment) => {
+            const data = toAttachmentData(attachment);
+            const index = Math.max(
+              0,
+              imageAttachments.findIndex((item) => item.id === attachment.id)
+            );
+            return (
+              <Attachment
+                key={attachment.id}
+                data={data}
+                role="button"
+                tabIndex={0}
+                title="点击查看，右键复制图片数据"
+                onClick={() => onPreviewImageGroup(previewImages, index)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onPreviewImageGroup(previewImages, index);
+                  }
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  if (attachment.uri) onCopyAttachmentUri(attachment.uri);
+                }}
+              >
+                <AttachmentPreview />
+              </Attachment>
+            );
+          })}
+        </Attachments>
       ) : null}
       {fileAttachments.length > 0 ? (
-        <div
-          className="grid max-w-full gap-2.5"
-          style={{ gridTemplateColumns: `repeat(${Math.min(fileAttachments.length, 3)}, minmax(112px, 136px))` }}
-          aria-label="文件附件"
-        >
+        <Attachments variant="inline" aria-label="文件附件" className="ml-auto justify-end">
           {fileAttachments.map((attachment) => (
-            <Button
+            <FileAttachmentChip
               key={attachment.id}
-              className="aspect-square h-auto min-h-0 w-full overflow-hidden rounded-[18px] border border-border/60 bg-background p-1 shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:border-border/80 hover:bg-background"
-              onClick={() => onOpenAttachment(attachment.uri, attachment.filename, attachment.mime)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                onCopyAttachmentUri(attachment.uri);
-              }}
-              title={attachment.filename || attachment.mime || "附件"}
-              variant="ghost"
-            >
-              <span className="flex size-full items-center justify-center rounded-[14px] border border-border/35 bg-muted/45">
-                <span className="max-w-[72px] truncate rounded-md bg-background/80 px-2 py-1 text-[12px] font-semibold tracking-normal text-foreground/85">
-                  {getAttachmentBadgeLabel({ mime: attachment.mime || "", filename: attachment.filename || "" })}
-                </span>
-              </span>
-            </Button>
+              attachment={attachment}
+              onOpen={(item) => onOpenAttachment(item.uri, item.filename, item.mime)}
+              onCopyUri={onCopyAttachmentUri}
+            />
           ))}
-        </div>
+        </Attachments>
       ) : null}
     </div>
   );

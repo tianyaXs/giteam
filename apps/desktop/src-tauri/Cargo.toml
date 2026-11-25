@@ -1,6 +1,6 @@
 [package]
 name = "giteam-desktop"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 
 # tauri dev 不走 .app bundle，macOS 菜单栏会显示二进制名；与 productName 对齐。
@@ -66,11 +66,18 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", features = ["std", "NSBitmapImageRep", "NSButton", "NSControl", "NSEvent", "NSImage", "NSImageRep", "NSMenu", "NSResponder", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSString", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSString", "NSValue", "objc2-core-foundation"] }
 # IdleDroplets 折射底板：WKWebView.takeSnapshot 抓「当前可视像素」，
 # 避开 DOM→foreignObject 与 Virtuoso 虚拟列表不兼容的问题。
 objc2-web-kit = { version = "0.3.2", features = ["WKSnapshotConfiguration", "WKWebView", "block2"] }
+# 文档缩略图走进程内 QLThumbnailGenerator（与 Finder 同管线）；不用 qlmanage 子进程，
+# 避免 Dock 短暂闪现独立程序图标。按需 feature，避免拖入 iOS UIKit 绑定。
+objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, features = ["std", "QLThumbnailErrors", "QLThumbnailGenerationRequest", "QLThumbnailGenerator", "QLThumbnailRepresentation", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
+# CGImage 以 Retained 带出 QuickLook 回调后在等待线程编码 PNG；CF 类型依赖必须显式声明。
+objc2-core-graphics = "0.3.2"
 block2 = "0.6"
+# QuickLook completion 用 GCD 信号量等待；Tauri/objc2 树已传递依赖 dispatch2，显式声明避免隐式依赖。
+dispatch2 = "0.3"
 # agent 覆盖层窗口转 NSPanel：普通 NSWindow 在 release 打包后置顶失效、盖不住全屏
 # 空间（tauri#9556/#5566）；NonActivatingPanel + FullScreenAuxiliary 配方照
 # tauri-macos-spotlight-example。rev 锁 v2.1 分支头（2026-11-10）。

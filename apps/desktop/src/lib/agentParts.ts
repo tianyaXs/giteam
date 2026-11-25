@@ -85,15 +85,29 @@ export function buildAgentImageAttachmentsFromParts(parts: AgentDetailedPart[] |
 export function mergeAgentMessageAttachments(prev: AgentChatMessage[] | undefined, next: AgentChatMessage[]) {
   const prevById = new Map<string, NonNullable<AgentChatMessage["attachments"]>>();
   const prevByContent = new Map<string, NonNullable<AgentChatMessage["attachments"]>>();
+  const prevByTurnId = new Map<string, NonNullable<AgentChatMessage["attachments"]>>();
+  // 仅附件、无正文的用户消息：按出现顺序回填，避免 history 换 id 后丢 chip。
+  const prevEmptyContentQueue: Array<NonNullable<AgentChatMessage["attachments"]>> = [];
   (Array.isArray(prev) ? prev : []).forEach((msg) => {
     if (msg.role !== "user" || !msg.attachments?.length) return;
     if (msg.id) prevById.set(msg.id, msg.attachments);
     const text = msg.content.trim();
     if (text) prevByContent.set(text, msg.attachments);
+    else prevEmptyContentQueue.push(msg.attachments);
+    const turnId = String(msg.turnId || "").trim();
+    if (turnId) prevByTurnId.set(turnId, msg.attachments);
   });
   return next.map((msg) => {
     if (msg.role !== "user" || msg.attachments?.length) return msg;
-    const attachments = prevById.get(msg.id) || prevByContent.get(msg.content.trim());
+    const text = msg.content.trim();
+    const turnId = String(msg.turnId || "").trim();
+    let attachments =
+      prevById.get(msg.id)
+      || (text ? prevByContent.get(text) : undefined)
+      || (turnId ? prevByTurnId.get(turnId) : undefined);
+    if (!attachments?.length && !text && prevEmptyContentQueue.length > 0) {
+      attachments = prevEmptyContentQueue.shift();
+    }
     return attachments?.length ? { ...msg, attachments } : msg;
   });
 }

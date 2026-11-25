@@ -1,6 +1,6 @@
 {
   "name": "giteam-desktop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cyntler/react-doc-viewer": "^1.17.1",
+    "@extend-ai/react-docx": "^0.15.3",
     "@fortawesome/fontawesome-svg-core": "^6.7.2",
     "@fortawesome/free-solid-svg-icons": "^6.7.2",
     "@fortawesome/react-fontawesome": "^0.2.6",
@@ -72,6 +73,7 @@
     "monaco-editor": "^0.52.2",
     "motion": "^12.40.0",
     "nanoid": "^6.0.2",
+    "pdfjs-dist": "^4.8.69",
     "prop-types": "^15.8.1",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
@@ -79,6 +81,7 @@
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
+    "react-pdf": "9.2.1",
     "react-resizable-panels": "^4.11.2",
     "react-virtuoso": "^4.18.7",
     "remark-gfm": "^4.0.1",

@@ -1,5 +1,17 @@
 import { IS_TAURI, invoke } from "./platform";
 import { makeId } from "./browserRuntime";
+import {
+  base64ToUint8Array,
+  detectDocumentKind,
+  extractDocumentTextFromBytes,
+  isExtractableDocumentAttachment,
+  wrapExtractedOfficePlainText
+} from "./documentTextExtract";
+import {
+  formatInlineFileAttachmentContent,
+  formatLocalFileAttachmentHint,
+  formatUiOnlyFileAttachmentHint
+} from "./graphContextRefs";
 
 export type AgentAttachment = {
   id: string;
@@ -7,6 +19,8 @@ export type AgentAttachment = {
   filename: string;
   mime: string;
   dataUrl: string;
+  /** 已解码的文本正文（非图片附件带正文 dataUrl 时由发送侧填充），供 UI 缩略预览复用。 */
+  dataText?: string;
   sourcePath?: string;
 };
 
@@ -434,6 +448,47 @@ export function dataUrlToBase64Payload(dataUrl: string): { mimeType: string; dat
   return { mimeType, data };
 }
 
+function isDecodableTextMime(mime: string): boolean {
+  const normalized = normalizeMime(mime);
+  if (!normalized) return false;
+  if (isTextMime(normalized)) return true;
+  if (!normalized.startsWith("application/")) return false;
+  // 常见“文本型”但未挂 text/* 的类型；PDF/Office 等二进制不在此列。
+  return (
+    normalized.includes("json")
+    || normalized.includes("xml")
+    || normalized.includes("yaml")
+    || normalized.includes("toml")
+    || normalized.includes("javascript")
+    || normalized.includes("typescript")
+  );
+}
+
+/** 从附件 dataUrl 解码文本正文；非文本或解码失败返回 null。 */
+export function decodeAttachmentTextContent(
+  attachment: Pick<AgentAttachment, "mime" | "dataUrl" | "filename">
+): string | null {
+  const payload = dataUrlToBase64Payload(attachment.dataUrl);
+  if (!payload) return null;
+  const mime = normalizeMime(attachment.mime) || payload.mimeType;
+  if (!isDecodableTextMime(mime) && !isDecodableTextMime(payload.mimeType)) {
+    // 无扩展名粘贴文本常标成 octet-stream；仍尝试按 utf-8 文本解码。
+    const ext = filenameExt(attachment.filename || "");
+    const looksTextExt = Boolean(ext) && !IMAGE_EXTS.has(ext) && !FILE_EXTS.has(ext);
+    if (!looksTextExt && mime !== "application/octet-stream" && payload.mimeType !== "application/octet-stream") {
+      return null;
+    }
+  }
+  try {
+    const binary = atob(payload.data);
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    if (!looksLikeTextBytes(bytes.slice(0, Math.min(bytes.length, SAMPLE_BYTES)))) return null;
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 async function stageAgentPromptImages(
   repoPath: string,
   inputs: StageAgentPromptImageInput[]
@@ -485,6 +540,160 @@ export async function resolveAgentPromptImages(
   return stageAgentPromptImages(root, inputs);
 }
 
+/**
+ * 抽取附件正文（纯文本 dataUrl / PDF / Office）。
+ * 只用于拼 sessionPrompt；UI 气泡不展示这块内容。
+ */
+export async function resolveAttachmentTextForPrompt(
+  attachment: AgentAttachment
+): Promise<string | null> {
+  const plain = decodeAttachmentTextContent(attachment);
+  if (plain != null && plain.length > 0) return plain;
+
+  const filename = attachment.filename || "attachment";
+  const mime = attachment.mime || "";
+  if (!isExtractableDocumentAttachment(filename, mime)) return null;
+
+  const payload = dataUrlToBase64Payload(attachment.dataUrl);
+  if (payload) {
+    const extracted = await extractDocumentTextFromBytes({
+      bytes: base64ToUint8Array(payload.data),
+      filename,
+      mime: mime || payload.mimeType
+    });
+    if (extracted) return extracted;
+  }
+
+  const sourcePath = String(attachment.sourcePath || "").trim();
+  if (!sourcePath) return null;
+  try {
+    const preview = await readLocalAttachmentPreview(sourcePath);
+    const kind = detectDocumentKind(filename, mime);
+    if (preview.modified?.trim() && (kind === "docx" || kind === "xlsx" || kind === "xls")) {
+      const wrapped = wrapExtractedOfficePlainText(
+        filename,
+        kind,
+        preview.modified
+      );
+      if (wrapped) return wrapped;
+    }
+    if (preview.dataBase64) {
+      return extractDocumentTextFromBytes({
+        bytes: base64ToUint8Array(preview.dataBase64),
+        filename,
+        mime: preview.mime || mime
+      });
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * 把非图片附件落到 `.giteam/prompt-attachments/`，供 agent 用相对路径读取。
+ * 已有 sourcePath / 已能内联正文的不落盘。
+ */
+/**
+ * 附件预览正文（同步）：
+ * - 已由发送侧解码的 dataText 直接复用（composer → Giteam 附件流）。
+ * - 纯文本 dataUrl 现场解码（PDF/Office 魔数拒绝）。
+ * 抽取 PDF/Office 是异步的，走 resolveAttachmentTextForPrompt。
+ */
+export function resolveAttachmentPreviewText(
+  attachment: AgentAttachment
+): string {
+  const direct = typeof attachment.dataText === "string" && attachment.dataText.trim()
+    ? attachment.dataText
+    : null;
+  if (direct) return direct;
+  return decodeAttachmentTextContent(attachment) ?? "";
+}
+
+export async function resolveAgentPromptFiles(
+  attachments: AgentAttachment[],
+  repoPath: string,
+  options?: { skipIds?: Set<string> }
+): Promise<AgentPromptImagePayload[]> {
+  const root = String(repoPath || "").trim();
+  if (!root) return [];
+  const inputs: StageAgentPromptImageInput[] = [];
+  for (const attachment of attachments) {
+    if (isImageAttachment(attachment)) continue;
+    if (options?.skipIds?.has(attachment.id)) continue;
+    if (String(attachment.sourcePath || "").trim()) continue;
+    const fromDataUrl = dataUrlToBase64Payload(attachment.dataUrl);
+    if (!fromDataUrl) continue;
+    inputs.push({
+      mime: normalizeMime(attachment.mime) || fromDataUrl.mimeType,
+      dataBase64: fromDataUrl.data,
+      filename: attachment.filename
+    });
+  }
+  return stageAgentPromptImages(root, inputs);
+}
+
+/**
+ * 组装非图片附件注入到 sessionPrompt 的文本块：
+ * - 可解码/可抽取文本 → 内联正文（粘贴文档的主路径，对齐 Pi web-ui）
+ * - 有本地路径 → path hint（抽取失败时的回退）
+ * - 仅有二进制 dataUrl → 落盘后给相对路径 hint
+ * - 否则 → UI-only 说明（明确不可用，避免静默丢内容）
+ *
+ * 注意：这些块只进发给模型的 sessionPrompt；乐观气泡用用户原文，
+ * 历史回放靠 stripFileAttachmentHints / normalizeUserMessageForDisplay 剥离。
+ */
+export async function buildAgentFileAttachmentPromptParts(
+  attachments: AgentAttachment[],
+  repoPath: string
+): Promise<string[]> {
+  const parts: string[] = [];
+  const inlinedIds = new Set<string>();
+  const extractedById = new Map<string, string>();
+
+  for (const attachment of attachments) {
+    if (isImageAttachment(attachment)) continue;
+    const text = await resolveAttachmentTextForPrompt(attachment);
+    if (text != null && text.length > 0) {
+      extractedById.set(attachment.id, text);
+      inlinedIds.add(attachment.id);
+    }
+  }
+
+  let stagedQueue: AgentPromptImagePayload[] = [];
+  try {
+    stagedQueue = await resolveAgentPromptFiles(attachments, repoPath, { skipIds: inlinedIds });
+  } catch {
+    stagedQueue = [];
+  }
+
+  for (const attachment of attachments) {
+    if (isImageAttachment(attachment)) continue;
+    const filename = attachment.filename || "unnamed attachment";
+    const mime = attachment.mime || "application/octet-stream";
+    const text = extractedById.get(attachment.id);
+    if (text) {
+      parts.push(formatInlineFileAttachmentContent(filename, mime, text));
+      continue;
+    }
+    const sourcePath = String(attachment.sourcePath || "").trim();
+    if (sourcePath) {
+      parts.push(formatLocalFileAttachmentHint(filename, sourcePath));
+      continue;
+    }
+    const needsStage = Boolean(dataUrlToBase64Payload(attachment.dataUrl));
+    if (needsStage) {
+      const staged = stagedQueue.shift();
+      if (staged?.relativePath || staged?.path) {
+        parts.push(formatLocalFileAttachmentHint(filename, staged.relativePath || staged.path));
+        continue;
+      }
+    }
+    parts.push(formatUiOnlyFileAttachmentHint(filename, mime));
+  }
+  return parts;
+}
+
 export function attachmentsFromLocalPaths(paths: string[]): AgentAttachment[] {
   return Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean))).map((path) => {
     const filename = filenameFromPath(path);
@@ -505,21 +714,7 @@ export function attachmentsFromLocalPaths(paths: string[]): AgentAttachment[] {
 export async function readFileAsAttachment(file: File): Promise<AgentAttachment | null> {
   const mime = await resolveAttachmentMime(file);
   if (!mime) return null;
-  if (isOfficeAttachment({ mime, filename: file.name })) {
-    const text = [
-      `Attached file "${file.name || "Office document"}" was added.`,
-      "",
-      "This Office document was pasted or uploaded through a browser file object, so the desktop app cannot access its local path to convert it to text.",
-      "Giteam can directly read images, PDFs, and text attachments. To include this document's contents, use the desktop file picker, export it as PDF/text, or paste the document text."
-    ].join("\n");
-    return {
-      id: `file-${makeId()}`,
-      kind: "file",
-      filename: file.name || `file-${Date.now()}`,
-      mime: "text/plain",
-      dataUrl: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(text)))}`
-    };
-  }
+  // Office / PDF 保留二进制 dataUrl，发送时再抽取正文内联；不再替换成说明占位。
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.addEventListener("error", () => resolve(null));
@@ -610,4 +805,24 @@ export async function readLocalAttachmentPreview(path: string): Promise<{
   dataBase64?: string;
 }> {
   return invoke("read_local_attachment_preview", { path });
+}
+
+/** 系统级文档缩略快照（macOS QuickLook；其它平台返回空串）。 */
+export async function documentQuicklookThumbnail(path: string, maxSize: number): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke<string>("document_quicklook_thumbnail", { path, maxSize });
+}
+
+/** 系统级文档缩略快照（字节输入：粘贴附件没有源路径时，按扩展名暂存后走同一 QuickLook 管线）。 */
+export async function documentQuicklookThumbnailFromBytes(
+  bytesBase64: string,
+  filename: string,
+  maxSize: number
+): Promise<string> {
+  if (!IS_TAURI) return "";
+  return invoke<string>("document_quicklook_thumbnail", {
+    bytesBase64,
+    filename,
+    maxSize
+  });
 }

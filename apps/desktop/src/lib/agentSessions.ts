@@ -385,65 +385,340 @@ export function isOpenAssistantPlaceholder(
   return canInsertUserBeforeAssistant(row, null);
 }
 
+/** 发送时登记、completed 时消费：一回合只有一个本地 user 身份。 */
+export type OpenUserTurn = {
+  localUserId: string;
+  turnId: string;
+  serverUserId?: string;
+};
+
 /**
- * 已提交的用户句进入时间线。
- * 只允许插到「当前最后一条」且仍是空占位的 live assistant 前面（发送时先建了回复泡）。
- * 助手 id 若落在更早的回合里，必须追加到末尾——插回去会把新消息嵌进历史中间，时序错乱。
- * 待发送跟进不得走这条路径，应留在输入框上方队列。
+ * 回合身份锚：发送时登记、completed 时绑定/收口。
+ *
+ * 「本回合唯一本地 user 行」只有这一个真相源；身份解析只靠显式状态
+ * （pending 队列 / serverIdByLocalId 映射 / open-turn），不做 id 形态猜测。
+ * - begin → 登记（runAgentPrompt 唯一写入点）
+ * - bind → completed 到达，锚定 serverUserId 并返回绑定的 localUserId
+ * - close → 回合终止（finalize / abort）后迟到 completed 不再允许另起/误绑
+ * - reconcile → 回合终止后用权威 history 回补缺失映射，再交给归并对账
+ *
+ * 纯函数 + 不可变更新：App 只在登记/收口/对账生命周期点调用，不再散落判重。
+ */
+export function beginOpenUserTurn(
+  openTurnBySession: Record<string, OpenUserTurn | null>,
+  sessionId: string,
+  turn: OpenUserTurn
+): Record<string, OpenUserTurn | null> {
+  return { ...openTurnBySession, [sessionId]: { ...turn } };
+}
+
+export function hasPendingOpenUserTurn(
+  openTurnBySession: Record<string, OpenUserTurn | null | undefined>,
+  sessionId: string
+): boolean {
+  return Boolean(openTurnBySession[sessionId]);
+}
+
+export function resolveBindLocalUserIdForCommit(input: {
+  sessionId: string;
+  serverUserId: string;
+  pendingLocalId?: string;
+  openTurnBySession: Record<string, OpenUserTurn | null | undefined>;
+  serverIdByLocalId: Record<string, string>;
+}): string {
+  const serverUserId = String(input.serverUserId || "").trim();
+  const mapped = Object.entries(input.serverIdByLocalId)
+    .find(([, serverId]) => serverId === serverUserId)?.[0];
+  if (mapped) return mapped;
+
+  const open = input.openTurnBySession[input.sessionId];
+  if (open?.localUserId && (!open.serverUserId || open.serverUserId === serverUserId)) {
+    return open.localUserId;
+  }
+  return String(input.pendingLocalId || "").trim();
+}
+
+/**
+ * completed 绑定成功后的唯一收口：锚定 serverUserId 并在列表中定位本地行。
+ * 返回 serverUserId 为空串表示 completed 未绑定任何本地身份（upsert 前应取消）。
+ */
+export function bindOpenUserTurn(
+  openTurnBySession: Record<string, OpenUserTurn | null>,
+  sessionId: string,
+  serverUserId: string,
+  bindLocalUserId: string
+): { openTurnBySession: Record<string, OpenUserTurn | null>; localUserId: string } {
+  const open = openTurnBySession[sessionId];
+  if (!open) return { openTurnBySession, localUserId: "" };
+  const localUserId = bindLocalUserId || open.localUserId;
+  if (!localUserId) return { openTurnBySession, localUserId: "" };
+  return {
+    openTurnBySession: {
+      ...openTurnBySession,
+      [sessionId]: { ...open, serverUserId }
+    },
+    localUserId
+  };
+}
+
+/** 回合终止（run finalize / abort 收口）后唯一清理点：此后该回合无身份锚。 */
+export function closeOpenUserTurn(
+  openTurnBySession: Record<string, OpenUserTurn | null>,
+  sessionId: string
+): Record<string, OpenUserTurn | null> {
+  if (!openTurnBySession[sessionId]) return openTurnBySession;
+  const next = { ...openTurnBySession };
+  delete next[sessionId];
+  return next;
+}
+
+/** 权威对账的待回填结果：本地行就位（含 turnId）、local→server 映射、消费掉的 pending。 */
+export type ReconcilePendingUserTurnsResult = {
+  serverIdByLocalId: Record<string, string>;
+  pendingLocalUserIds: string[];
+  matchedCount: number;
+};
+
+/**
+ * 回合终止后的权威身份对账：服务端 history（JSONL / 快照）是完成态事实来源。
+ *
+ * completed 丢失（超时 / abort）会让 local→server 映射缺失，此时同一回合在
+ * history 与 live 时间线各有一行；归并对账只认显式身份（id / 映射 / turnId），
+ * 绝不按正文猜测。这里按 FIFO 把「history 中尚未落到 live 的 user 行」与
+ * 「pending 中尚未确认的本地乐观 id」显式配对，回填 turnId 与映射，
+ * 让 mergeHistoryWithLiveTimeline / findHistoryUserAnchor 自然命中同一行。
+ */
+export function reconcilePendingUserTurns(input: {
+  historyUsers: Array<{ id: string; turnId?: string }>;
+  liveUserIds: Set<string>;
+  pendingLocalUserIds?: string[];
+  serverIdByLocalId: Record<string, string>;
+}): ReconcilePendingUserTurnsResult {
+  const pendingLocalUserIds = Array.isArray(input.pendingLocalUserIds)
+    ? input.pendingLocalUserIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  const serverIdByLocalId = { ...input.serverIdByLocalId };
+  const liveUserIds = input.liveUserIds || new Set<string>();
+  const pendingCount = pendingLocalUserIds.length;
+  if (pendingCount === 0) {
+    return { serverIdByLocalId, pendingLocalUserIds, matchedCount: 0 };
+  }
+
+  const isAccounted = (serverUserId: string) =>
+    liveUserIds.has(serverUserId)
+    || Object.values(serverIdByLocalId).includes(serverUserId);
+  // 尾部对齐：pending 是最近发出的本地回合，只可能对应「最后一个已确认行」之后的
+  // 未配对服务端行。全局 FIFO 会把陈旧 pending 错配到中间外来回合。
+  const users = input.historyUsers || [];
+  let lastAccountedIndex = -1;
+  for (let i = users.length - 1; i >= 0; i -= 1) {
+    const id = String(users[i]?.id || "").trim();
+    if (id && isAccounted(id)) {
+      lastAccountedIndex = i;
+      break;
+    }
+  }
+  const trailingUnmatched = users
+    .slice(lastAccountedIndex + 1)
+    .map((row) => ({
+      serverUserId: String(row?.id || "").trim(),
+      turnId: String(row?.turnId || "").trim()
+    }))
+    .filter((row) => row.serverUserId && !isAccounted(row.serverUserId));
+  const from = Math.max(0, trailingUnmatched.length - pendingCount);
+  const candidates = trailingUnmatched.slice(from);
+
+  const usedLocalIds = new Set<string>();
+  let matchedCount = 0;
+  for (let i = 0; i < candidates.length && i < pendingCount; i += 1) {
+    const localUserId = pendingLocalUserIds[i];
+    if (!localUserId || usedLocalIds.has(localUserId)) continue;
+    serverIdByLocalId[localUserId] = candidates[i].serverUserId;
+    usedLocalIds.add(localUserId);
+    matchedCount += 1;
+  }
+
+  return {
+    serverIdByLocalId,
+    pendingLocalUserIds: pendingLocalUserIds.filter((id) => !usedLocalIds.has(id)),
+    matchedCount
+  };
+}
+
+/**
+ * 权威对账第二步：把已映射本地行缺失的 turnId 显式回填（不做任何行位置变更）。
+ * turn 是归并对账的第一身份；补齐后 history 回合与 live 回合必然按 turn 配对。
+ */
+export function applyTurnIdReconciliation(
+  messages: AgentChatMessage[],
+  serverIdByLocalId: Record<string, string>,
+  historyTurnIdByServerUserId: Map<string, string>
+): { messages: AgentChatMessage[]; changed: boolean } {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { messages, changed: false };
+  }
+  let changed = false;
+  const next = messages.map((row) => {
+    if (row.role !== "user" || String(row.turnId || "").trim()) return row;
+    const serverUserId = String(serverIdByLocalId[row.id] || "").trim();
+    const turnId = serverUserId ? historyTurnIdByServerUserId.get(serverUserId) || "" : "";
+    if (!turnId) return row;
+    changed = true;
+    return { ...row, turnId };
+  });
+  return changed ? { messages: next, changed } : { messages, changed: false };
+}
+
+export type UpsertCommittedUserOptions = {
+  /** 本回合乐观本地 user id（pending / open-turn）。有则禁止另起一行。 */
+  bindLocalUserId?: string;
+  /** localId → serverId；用于迟到 completed 回绑。 */
+  serverIdByLocalId?: Record<string, string>;
+  liveAssistantId?: string;
+  isStillOpenAssistant?: (messageId: string) => boolean;
+};
+
+export type UpsertCommittedUserResult = {
+  messages: AgentChatMessage[];
+  /** 时间线上最终保留的 user 行 id（始终优先本地乐观 id）。 */
+  localUserId: string;
+  inserted: boolean;
+};
+
+function mergeUserMessageRow(
+  existing: AgentChatMessage,
+  incoming: AgentChatMessage
+): AgentChatMessage {
+  return {
+    ...existing,
+    ...incoming,
+    // 行身份以已上屏的为准，避免 local→server 换 id 触发列表重挂。
+    id: existing.id,
+    attachments: existing.attachments?.length ? existing.attachments : incoming.attachments,
+    graphRefs: existing.graphRefs?.length ? existing.graphRefs : incoming.graphRefs,
+    turnId: existing.turnId || incoming.turnId
+  };
+}
+
+function findUserIndexById(messages: AgentChatMessage[], id: string): number {
+  const target = String(id || "").trim();
+  if (!target) return -1;
+  return messages.findIndex((row) => row.role === "user" && row.id === target);
+}
+
+/**
+ * 用户消息唯一落地入口（乐观确认 / 本地 completed / 远程 completed 共用）。
+ *
+ * 身份解析顺序（不做 id 形态猜测、不做「同文就合并」）：
+ * 1. 已有同 id 行
+ * 2. bindLocalUserId 指向的乐观行（open-turn / pending）
+ * 3. serverIdByLocalId 反查已映射的本地行
+ * 4. 同 turnId 的已有 user 行
+ * 5. 以上皆无 → 才插入（open assistant 前或 append）
+ */
+export function upsertCommittedUserMessage(
+  messages: AgentChatMessage[],
+  incoming: AgentChatMessage,
+  options?: UpsertCommittedUserOptions
+): UpsertCommittedUserResult {
+  const byExact = findUserIndexById(messages, incoming.id);
+  if (byExact >= 0) {
+    return {
+      messages: messages.map((row, index) => (
+        index === byExact ? mergeUserMessageRow(row, incoming) : row
+      )),
+      localUserId: messages[byExact].id,
+      inserted: false
+    };
+  }
+
+  const bindLocalUserId = String(options?.bindLocalUserId || "").trim();
+  if (bindLocalUserId) {
+    const bindIndex = findUserIndexById(messages, bindLocalUserId);
+    if (bindIndex >= 0) {
+      return {
+        messages: messages.map((row, index) => (
+          index === bindIndex ? mergeUserMessageRow(row, incoming) : row
+        )),
+        localUserId: bindLocalUserId,
+        inserted: false
+      };
+    }
+  }
+
+  const mappedLocalId = Object.entries(options?.serverIdByLocalId || {})
+    .find(([, serverId]) => serverId === incoming.id)?.[0];
+  if (mappedLocalId) {
+    const mappedIndex = findUserIndexById(messages, mappedLocalId);
+    if (mappedIndex >= 0) {
+      return {
+        messages: messages.map((row, index) => (
+          index === mappedIndex ? mergeUserMessageRow(row, incoming) : row
+        )),
+        localUserId: mappedLocalId,
+        inserted: false
+      };
+    }
+  }
+
+  const turnId = String(incoming.turnId || "").trim();
+  // 身份合并只认显式回合号（不猜 id 形态、不比正文）：同 turnId 即同回合。
+  if (turnId) {
+    const turnIndex = messages.findIndex(
+      (row) => row.role === "user" && String(row.turnId || "").trim() === turnId
+    );
+    if (turnIndex >= 0) {
+      return {
+        messages: messages.map((row, index) => (
+          index === turnIndex ? mergeUserMessageRow(row, incoming) : row
+        )),
+        localUserId: messages[turnIndex].id,
+        inserted: false
+      };
+    }
+  }
+
+  const isStillOpen = options?.isStillOpenAssistant;
+  const liveId = String(options?.liveAssistantId || "").trim();
+  const liveIdx = liveId ? messages.findIndex((row) => row.id === liveId) : -1;
+  const live = liveIdx >= 0 ? messages[liveIdx] : undefined;
+  const liveIsOpenTail =
+    liveIdx === messages.length - 1
+    && isOpenAssistantPlaceholder(live, isStillOpen);
+  if (liveIsOpenTail) {
+    return {
+      messages: [...messages.slice(0, liveIdx), incoming, ...messages.slice(liveIdx)],
+      localUserId: incoming.id,
+      inserted: true
+    };
+  }
+  return {
+    messages: [...messages, incoming],
+    localUserId: incoming.id,
+    inserted: true
+  };
+}
+
+/**
+ * 已提交的用户句进入时间线（兼容旧调用方）。
+ * 必须显式传入 bindLocalUserId / serverIdByLocalId / turnId，禁止同文猜测。
  */
 export function commitUserBeforeLiveAssistant(
   messages: AgentChatMessage[],
   userMessage: AgentChatMessage,
   liveAssistantId = "",
-  options?: { isStillOpenAssistant?: (messageId: string) => boolean }
+  options?: {
+    isStillOpenAssistant?: (messageId: string) => boolean;
+    bindLocalUserId?: string;
+    serverIdByLocalId?: Record<string, string>;
+  }
 ): AgentChatMessage[] {
-  if (messages.some((row) => row.id === userMessage.id)) {
-    return messages.map((row) =>
-      row.id === userMessage.id
-        ? { ...row, ...userMessage, attachments: row.attachments || userMessage.attachments }
-        : row
-    );
-  }
-  const isStillOpen = options?.isStillOpenAssistant;
-  const text = String(userMessage.content || "").trim();
-  if (text) {
-    let tailUser = -1;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i]?.role === "user") {
-        tailUser = i;
-        break;
-      }
-    }
-    const tail = tailUser >= 0 ? messages[tailUser] : undefined;
-    const afterTail = tailUser >= 0 ? messages.slice(tailUser + 1) : [];
-    // 只有「这句已经在末尾」才原地更新：后面没有实质回复。
-    // 再发一遍相同正文必须追加，不能改写更早的那条。
-    // DSH：active/settled 助手不算未答复占位。
-    const tailIsUnanswered =
-      afterTail.length === 0
-      || (
-        afterTail.length === 1
-        && isOpenAssistantPlaceholder(afterTail[0], isStillOpen)
-      );
-    if (tail && tailIsUnanswered && String(tail.content || "").trim() === text) {
-      return messages.map((row, index) =>
-        index === tailUser
-          ? { ...row, ...userMessage, id: row.id, attachments: row.attachments || userMessage.attachments }
-          : row
-      );
-    }
-  }
-  const liveId = String(liveAssistantId || "").trim();
-  const liveIdx = liveId ? messages.findIndex((row) => row.id === liveId) : -1;
-  const live = liveIdx >= 0 ? messages[liveIdx] : undefined;
-  // 只有末尾且 phase===open 的回复泡，才把用户句插到它前面。
-  const liveIsOpenTail =
-    liveIdx === messages.length - 1
-    && isOpenAssistantPlaceholder(live, isStillOpen);
-  if (liveIsOpenTail) {
-    return [...messages.slice(0, liveIdx), userMessage, ...messages.slice(liveIdx)];
-  }
-  return [...messages, userMessage];
+  return upsertCommittedUserMessage(messages, userMessage, {
+    bindLocalUserId: options?.bindLocalUserId,
+    serverIdByLocalId: options?.serverIdByLocalId,
+    liveAssistantId,
+    isStillOpenAssistant: options?.isStillOpenAssistant
+  }).messages;
 }
 
 /** Codex：assistant 只追加；禁止插回已有正文前面。 */
@@ -546,6 +821,15 @@ function mergeAnchoredMessage(
   }
   // id 保留 live 本地 id（换 id 会让列表卸载重挂）。
   if (liveRow.id !== merged.id) merged = { ...merged, id: liveRow.id };
+  // history 不含 UI 附件 chip（docx 等）；优先保留 live 侧 attachments / graphRefs。
+  if (liveRow.role === "user") {
+    if (liveRow.attachments?.length) {
+      merged = { ...merged, attachments: liveRow.attachments };
+    }
+    if (liveRow.graphRefs?.length) {
+      merged = { ...merged, graphRefs: liveRow.graphRefs };
+    }
+  }
   return merged;
 }
 
@@ -861,6 +1145,140 @@ export function mergeHistoryWithLiveTimeline(
   }
   emitLiveOnlyUntil(liveTurns.length);
   return out;
+}
+
+export type ReconcileLiveTimelineResult = {
+  messages: AgentChatMessage[];
+  changed: boolean;
+  touchedAssistantIds: string[];
+  /** 命中的 local→server 身份绑定对应的本地 user id；未绑定时空串。 */
+  bindLocalUserId: string;
+};
+
+/**
+ * 会话中途的 history 对账（DSH/pi 语义：事件流/live 时间线是唯一事实源）。
+ *
+ * 与 mergeHistoryWithLiveTimeline 的区别：不把 history 行集合并进时间线，而是
+ * 以 live 为骨架，只把「当前尾部 user 回合」对应的 assistant 尾巴补齐/替换。
+ * history 的 user 行永不进入 live 时间线，所以锚点缺失时最坏结果是「少一个
+ * 回合的补齐」，绝不是「history 与 live 各出一行 user」。
+ */
+export function reconcileLiveTimelineFromHistory(
+  current: AgentChatMessage[],
+  history: AgentChatMessage[],
+  options?: {
+    hasLiveParts?: (messageId: string) => boolean;
+    pickContent?: (historyContent: string, currentContent: string) => string;
+    serverIdByLocalId?: Record<string, string>;
+  }
+): ReconcileLiveTimelineResult {
+  if (!Array.isArray(current) || current.length === 0 || !Array.isArray(history) || history.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [], bindLocalUserId: "" };
+  }
+  const serverIdByLocalId = options?.serverIdByLocalId || {};
+  const historyById = new Map(history.map((row) => [row.id, row]));
+
+  const lastUserIdx = current.reduce<number>((acc, row, index) => (
+    row?.role === "user" ? index : acc
+  ), -1);
+  if (lastUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [], bindLocalUserId: "" };
+  }
+
+  // 唯一身份锚：id / local→server 映射 / 显式 turnId。不做同文猜测。
+  const currentTurnId = String(current[lastUserIdx]?.turnId || "").trim();
+  const historyTurnIdByUserId = new Map<string, string>();
+  for (const row of history) {
+    if (row.role !== "user") continue;
+    const turnId = String(row.turnId || "").trim();
+    if (turnId) historyTurnIdByUserId.set(row.id, turnId);
+  }
+  const bindLocalUserId = Object.entries(serverIdByLocalId).find(([localId, serverId]) => {
+    if (!current.some((row) => row.role === "user" && row.id === localId)) return false;
+    if (historyById.has(serverId)) return true;
+    return Boolean(currentTurnId && historyTurnIdByUserId.get(serverId) === currentTurnId);
+  })?.[0] || "";
+
+  let historyUserIdx = findHistoryUserAnchor(history, current[lastUserIdx], serverIdByLocalId);
+  if (historyUserIdx < 0 && currentTurnId) {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const row = history[i];
+      if (row.role !== "user") continue;
+      if (historyTurnIdByUserId.get(row.id) === currentTurnId) {
+        historyUserIdx = i;
+        break;
+      }
+    }
+  }
+  if (historyUserIdx < 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [], bindLocalUserId: "" };
+  }
+
+  const historyTail = assistantTailAfterUser(history, historyUserIdx);
+  const currentTail = assistantTailAfterUser(current, lastUserIdx);
+  if (historyTail.length === 0) {
+    return { messages: current, changed: false, touchedAssistantIds: [], bindLocalUserId: "" };
+  }
+
+  const pickContent = options?.pickContent
+    || ((historyContent: string, liveContent: string) =>
+      liveContent.length > historyContent.length ? liveContent : historyContent);
+  const touchedAssistantIds: string[] = [];
+  const historyTailIds = new Set(historyTail.map((row) => row.id));
+  const currentTailById = new Map(currentTail.map((row) => [row.id, row]));
+  const mergedTail: AgentChatMessage[] = [];
+
+  for (const historyRow of historyTail) {
+    const existing = currentTailById.get(historyRow.id);
+    if (existing) {
+      const content = pickContent(historyRow.content || "", existing.content || "");
+      const usage = historyRow.usage ?? existing.usage;
+      const sessionUsage = historyRow.sessionUsage ?? existing.sessionUsage;
+      const contextBreakdown = historyRow.contextBreakdown ?? existing.contextBreakdown;
+      if (
+        content !== existing.content
+        || !agentChatUsageEquals(usage, existing.usage)
+        || !agentChatUsageEquals(sessionUsage, existing.sessionUsage)
+        || contextBreakdown !== existing.contextBreakdown
+      ) {
+        mergedTail.push({ ...existing, content, usage, sessionUsage, contextBreakdown });
+        touchedAssistantIds.push(existing.id);
+      } else {
+        mergedTail.push(existing);
+      }
+      continue;
+    }
+    // history 独有的 assistant 尾巴补进来；其 local 乐观影子行若在原地，后面跳过。
+    mergedTail.push({ ...historyRow });
+    touchedAssistantIds.push(historyRow.id);
+  }
+
+  for (const row of currentTail) {
+    if (historyTailIds.has(row.id)) continue;
+    if (historyIdForLiveRow(row, historyById, serverIdByLocalId)) continue;
+    if (keepLiveAssistantRow(row, options?.hasLiveParts)) mergedTail.push(row);
+  }
+
+  const prefix = current.slice(0, lastUserIdx + 1);
+  const suffix = current.slice(lastUserIdx + 1 + currentTail.length);
+  const next = [...prefix, ...mergedTail, ...suffix];
+  const changed =
+    next.length !== current.length
+    || next.some((row, index) =>
+      row.id !== current[index]?.id
+      || row.content !== current[index]?.content
+      || !agentChatUsageEquals(row.usage, current[index]?.usage)
+      || !agentChatUsageEquals(row.sessionUsage, current[index]?.sessionUsage)
+    );
+  if (!changed) {
+    return { messages: current, changed: false, touchedAssistantIds: [], bindLocalUserId: "" };
+  }
+  return {
+    messages: next,
+    changed: true,
+    touchedAssistantIds: [...new Set(touchedAssistantIds)],
+    bindLocalUserId
+  };
 }
 
 /**

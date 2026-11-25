@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatGraphContextBlock,
+  formatInlineFileAttachmentContent,
   formatLocalFileAttachmentHint,
   formatUiOnlyFileAttachmentHint,
   IMAGE_ONLY_USER_PROMPT,
@@ -34,6 +35,12 @@ describe("stripInjectedUserPromptBlocks", () => {
     const hint = formatUiOnlyFileAttachmentHint("doc.pdf", "application/pdf");
     const raw = ["check attachment", hint].join("\n\n");
     expect(stripInjectedUserPromptBlocks(raw)).toBe("check attachment");
+  });
+
+  it("strips inline file attachment content blocks", () => {
+    const hint = formatInlineFileAttachmentContent("notes.txt", "text/plain", "secret body");
+    const raw = ["summarize", hint].join("\n\n");
+    expect(stripInjectedUserPromptBlocks(raw)).toBe("summarize");
   });
 
   it("strips image-only placeholder when it is the entire message", () => {

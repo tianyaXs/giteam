@@ -66,13 +66,27 @@ pub struct PetSync {
     last_activity_at: u64,
 }
 
-fn default_enabled() -> bool { true }
-fn default_type() -> String { "circle".into() }
-fn default_shading() -> String { "flat".into() }
-fn default_face() -> String { "eyes".into() }
-fn default_none() -> String { "none".into() }
-fn default_size() -> u32 { 168 }
-fn default_sleep() -> u32 { 5 }
+fn default_enabled() -> bool {
+    true
+}
+fn default_type() -> String {
+    "circle".into()
+}
+fn default_shading() -> String {
+    "flat".into()
+}
+fn default_face() -> String {
+    "eyes".into()
+}
+fn default_none() -> String {
+    "none".into()
+}
+fn default_size() -> u32 {
+    168
+}
+fn default_sleep() -> u32 {
+    5
+}
 
 fn on_main<T: Send + 'static>(
     app: &AppHandle,
@@ -92,22 +106,24 @@ fn current_snapshot() -> PetSync {
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
-        .unwrap_or_else(|| serde_json::from_value(serde_json::json!({})).unwrap_or_else(|_| PetSync {
-            enabled: true,
-            shape: default_type(),
-            shading: default_shading(),
-            face: default_face(),
-            hat: default_none(),
-            glasses: default_none(),
-            headphones: false,
-            bow_tie: false,
-            color: String::new(),
-            accessory_color: String::new(),
-            size: default_size(),
-            sleep_minutes: default_sleep(),
-            busy: false,
-            last_activity_at: 0,
-        }))
+        .unwrap_or_else(|| {
+            serde_json::from_value(serde_json::json!({})).unwrap_or_else(|_| PetSync {
+                enabled: true,
+                shape: default_type(),
+                shading: default_shading(),
+                face: default_face(),
+                hat: default_none(),
+                glasses: default_none(),
+                headphones: false,
+                bow_tie: false,
+                color: String::new(),
+                accessory_color: String::new(),
+                size: default_size(),
+                sleep_minutes: default_sleep(),
+                busy: false,
+                last_activity_at: 0,
+            })
+        })
 }
 
 fn avatar_size(size: u32) -> u32 {

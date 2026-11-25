@@ -394,6 +394,7 @@ fn main() {
             commands::office::office_turn_snapshots_gc,
             commands::ui::read_local_attachment_preview,
             commands::ui::append_ui_debug_log,
+            commands::ui::document_quicklook_thumbnail,
             commands::ui::office_restore_previous_version,
             commands::ui::office_previous_version_count,
             commands::ui::open_local_path,

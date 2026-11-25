@@ -45,17 +45,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const name = `Giteam ${tag}`;
-            const body = `## 本版重点（0.3.2）
+            const body = `## 本版重点（0.3.3）
 
-            - 助手回合按 open / active / settled 收口：同一次重试只留一行，暂停后的「已重试」留在对应「继续」后面
-            - 已有正文或工具的回合不再被下一条 message 收掉，过程时间线保持原序
-            - 继承 0.3.1：Windows 仍钉 pi_agent_rust win_job feature gate（上游 #257 未合前）
+            - 会话附件预览管线：docx / pdf / xlsx 等附件可直接在右侧面板预览，配套工具栏支持复制、下载、外部打开、适合宽度与面板折叠
+            - PDF 预览一步到位：打开即按原始页宽测量容器并自动适配比例，不再先落到默认 300% 再二次缩放
+            - 附件正文抽取：粘贴 / 上传的 docx / pdf / xlsx 自动抽取正文进入 prompt，气泡渲染剥离文件提示
+            - 附件真实版式缩略图：macOS 走 QuickLook 与 Finder 同源管线生成缩略快照，失败时回退文本行 / glyph
 
             ## 说明
 
             - 打开 **设置 → 关于** 即可安装，或在下方下载对应平台安装包
             - Windows 建议安装 Git for Windows
-            - 详细说明见 \`docs/releases/desktop-v0.3.2.md\``;
+            - 详细说明见 \`docs/releases/desktop-v0.3.3.md\``;
 
             let release;
             try {

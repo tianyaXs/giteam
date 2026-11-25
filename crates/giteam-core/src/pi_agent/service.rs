@@ -209,7 +209,8 @@ fn wrap_asset_graph_digest(
     (!digest.is_empty()).then_some(digest)
 }
 
-/// 将可 supersede 的 runtime Custom 写入会话：旧快照 display=false，仅最新进入模型。
+/// 追加一条 runtime 快照 Custom。append-only：已落盘的会话条目不可变，
+/// pi 会在下次 autosave 校验内存/磁盘指纹，回改旧条目必然造成持久化冲突。
 async fn write_runtime_context_snapshot(
     handle: &AgentSessionHandle,
     content: String,
@@ -221,37 +222,6 @@ async fn write_runtime_context_snapshot(
         .lock(cx.cx())
         .await
         .map_err(|error| error.to_string())?;
-    let runtime_ids: Vec<String> = session
-        .entries_for_current_path()
-        .into_iter()
-        .filter_map(|entry| {
-            let pi::session::SessionEntry::Message(message_entry) = entry else {
-                return None;
-            };
-            let pi::session::SessionMessage::Custom { custom_type, .. } =
-                &message_entry.message
-            else {
-                return None;
-            };
-            if custom_type == super::runtime_context::RUNTIME_CONTEXT_CUSTOM_TYPE {
-                entry.base().id.clone()
-            } else {
-                None
-            }
-        })
-        .collect();
-    for id in runtime_ids {
-        let Some(entry) = session.get_entry_mut(&id) else {
-            continue;
-        };
-        if let pi::session::SessionEntry::Message(message_entry) = entry {
-            if let pi::session::SessionMessage::Custom { display, .. } =
-                &mut message_entry.message
-            {
-                *display = false;
-            }
-        }
-    }
     let timestamp = i64::try_from(now_ms()).unwrap_or(0);
     session.append_model_message(super::runtime_context::runtime_context_message(
         content, timestamp,
@@ -387,7 +357,7 @@ struct ManagedSession {
     usage_projection: Arc<Mutex<AgentUsageProjection>>,
     /// 原 append_system_prompt 的调用方扩展；现改为每次 prompt 的 runtime snapshot。
     runtime_prompt: Option<String>,
-    /// 动态 runtime Custom 的 supersede 投影（仅内容变化时写入）。
+    /// runtime Custom 的去重投影（内容变化才追加；不回改历史条目）。
     runtime_context: Mutex<super::runtime_context::RuntimeContextProjection>,
     /// 官方 turn control 安装前的 follow-up 缓冲（register_run → prompt_controlled
     /// 之间的窗口）。control 就绪后一次性 flush 进 `SessionControlHandle::follow_up`。
@@ -1065,7 +1035,10 @@ impl PiAgentService {
             let live_id = state.session_id.unwrap_or_else(|| session_id.clone());
             // 标题派生：pi SessionHeader 无标题字段，取首条用户消息摘要。
             // 派生结果缓存进 record（标题不会变），避免每次列表都全量解析消息。
-            let cached_title = self.record_title(&live_id);
+            // 修复前派生的缓存可能带着附件 hint 文案：命中标记时作废并重派生。
+            let cached_title = self
+                .record_title(&live_id)
+                .filter(|title| !title.contains(super::runtime_context::ATTACHMENT_HINT_TITLE_MARKER));
             let (title, live_messages) = match cached_title {
                 Some(title) => (Some(title), None),
                 None => {
@@ -1334,10 +1307,9 @@ impl PiAgentService {
         self.register_run(run_id, session_id, abort_handle)?;
         let abort_signal_for_prompt = abort_signal.clone();
         let prompt = prompt.into();
-        // 动态段不再拼进用户正文：以可 supersede 的 Custom 注入，保护前缀缓存与历史。
-        // 被动 digest **不**按本轮 prompt 做相关性裁剪——相关性每轮都变会改写
-        // 靠前的 runtime Custom，打爆 kimi/Anthropic 前缀缓存（cache_read 全程为 0）。
-        // 按需检索仍走 asset_context 工具。
+        // 动态段不再拼进用户正文：以 append-only Custom 注入，保护历史与 UI/抽取语义。
+        // 被动 digest **不**按本轮 prompt 做相关性裁剪——相关性每轮都变会触发
+        // 新快照追加，制造大量冗余条目；按需检索仍走 asset_context 工具。
         let digest = (session.session_kind != "subagent")
             .then(|| {
                 wrap_asset_graph_digest(&session.repo_path, Some(session_id), None)
@@ -1587,7 +1559,7 @@ impl PiAgentService {
             // 图片降级重试标记：provider 拒收图片时去图重试一次，不报错中断（配套"默认允许图片"）。
             let mut image_degraded_retry = false;
             let mut handle = session_for_run.handle.lock().await;
-            // 动态 runtime：仅内容变化时写入 Custom，旧快照 display=false（不进模型）。
+            // 动态 runtime：仅内容变化时追加 Custom；历史落盘条目不可变。
             // 先在锁外算出是否需要写入，避免 std::MutexGuard 跨 await。
             let runtime_to_write = session_for_run
                 .runtime_context
@@ -4031,7 +4003,7 @@ fn derive_session_title(messages: &[pi::sdk::Message]) -> Option<String> {
                 })
                 .unwrap_or_default(),
         };
-        let cleaned = super::runtime_context::strip_runtime_context(&text);
+        let cleaned = super::runtime_context::strip_runtime_context_for_title(&text);
         let collapsed: String = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
             continue;
@@ -4061,7 +4033,7 @@ fn derive_agent_session_title(messages: &[AgentMessage]) -> Option<String> {
                 _ => None,
             })
             .unwrap_or("");
-        let cleaned = super::runtime_context::strip_runtime_context(text);
+        let cleaned = super::runtime_context::strip_runtime_context_for_title(text);
         let collapsed: String = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
         if collapsed.is_empty() {
             continue;
@@ -4160,6 +4132,74 @@ mod title_tests {
         })];
         assert_eq!(derive_session_title(&messages), None);
         assert_eq!(derive_session_title(&[]), None);
+    }
+
+    /// 回归（2026-11-24）：附件注入 hint 与用户输入拼在同一条 user text 里，
+    /// 标题派生必须剥掉 hint 行，只保留真实输入。
+    #[test]
+    fn title_strips_file_attachment_hints() {
+        let raw = concat!(
+            "能不能看到文件\n",
+            "The user attached a file named \"02-总体设计方案.docx\" (application/vnd.openxmlformats-officedocument.wordprocessingml.document).\n",
+            "Embedded attachment contents follow:\n",
+            "<attachment_content filename=\"02-总体设计方案.docx\">\nDOC BODY\n</attachment_content>"
+        );
+        let messages = vec![pi::sdk::Message::User(pi::sdk::UserMessage {
+            content: pi::sdk::UserContent::Text(raw.to_string()),
+            timestamp: 1,
+        })];
+        assert_eq!(
+            derive_session_title(&messages).as_deref(),
+            Some("能不能看到文件")
+        );
+
+        let agent_messages = vec![AgentMessage {
+            id: "u1".to_string(),
+            role: AgentRole::User,
+            created_at_ms: 1,
+            parts: vec![AgentPart::Text {
+                text: "能不能看到文件\nThe user attached a local file named \"a.docx\".\nLocal path: /tmp/a.docx\nUse the appropriate Pi tool to inspect it when needed.".to_string(),
+            }],
+            usage: None,
+            session_usage: None,
+            context_breakdown: None,
+        }];
+        assert_eq!(
+            derive_agent_session_title(&agent_messages).as_deref(),
+            Some("能不能看到文件")
+        );
+    }
+
+    /// 回归（2026-11-25）：仅附件、无正文输入时，标题回退附件文件名。
+    /// 否则 catalog title 落空，重启后列表退化成 `Session <id前缀>`。
+    #[test]
+    fn title_falls_back_to_attachment_filename_for_attachment_only_prompt() {
+        let raw = concat!(
+            "The user attached a file named \"spec.pdf\" (application/pdf).\n",
+            "Embedded attachment contents follow:\n",
+            "<attachment_content filename=\"spec.pdf\">\nPDF BODY\n</attachment_content>"
+        );
+        let messages = vec![pi::sdk::Message::User(pi::sdk::UserMessage {
+            content: pi::sdk::UserContent::Text(raw.to_string()),
+            timestamp: 1,
+        })];
+        assert_eq!(derive_session_title(&messages).as_deref(), Some("spec.pdf"));
+
+        let agent_messages = vec![AgentMessage {
+            id: "u1".to_string(),
+            role: AgentRole::User,
+            created_at_ms: 1,
+            parts: vec![AgentPart::Text {
+                text: raw.to_string(),
+            }],
+            usage: None,
+            session_usage: None,
+            context_breakdown: None,
+        }];
+        assert_eq!(
+            derive_agent_session_title(&agent_messages).as_deref(),
+            Some("spec.pdf")
+        );
     }
 }
 

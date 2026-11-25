@@ -1,12 +1,19 @@
-import type { CSSProperties } from "react";
-import { Suspense, lazy, memo, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Decoration, Diff, Hunk, getCollapsedLinesCountBetween, markEdits, parseDiff, tokenize, type FileData, type HunkData } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import { GroupedVirtuoso, type GroupedVirtuosoHandle, type ListRange } from "react-virtuoso";
 import {
   CheckIcon as StageAllIcon,
+  ChevronDownIcon as ChevronDownGlyph,
+  CopyIcon as CopyGlyph,
+  DownloadIcon as DownloadGlyph,
+  FolderOpenIcon as FolderOpenGlyph,
   ListTreeIcon,
+  MaximizeIcon as MaximizeGlyph,
+  MessageSquarePlusIcon as MessageSquarePlusGlyph,
   MinusIcon as UnstageAllIcon,
+  PanelRightIcon as PanelRightGlyph,
   RefreshCwIcon,
   RotateCcwIcon
 } from "lucide-react";
@@ -41,6 +48,9 @@ import { GitStageToggle } from "./GitStageToggle";
 import { WorktreeChangesList } from "./WorktreeFileTree";
 
 const MonacoDiffViewer = lazy(() => import("./MonacoDiffViewer"));
+const DocumentPreviewToolbar = lazy(() => import("./DocumentPreviewToolbar").then((module) => ({
+  default: module.DocumentPreviewToolbar
+})));
 const DocumentPreviewViewer = lazy(() => import("./DocumentPreviewViewer").then((module) => ({
   default: module.DocumentPreviewViewer
 })));
@@ -78,6 +88,14 @@ type GitChangesPanelProps = {
   selectedContent: GitWorktreeFileContent;
   canRestoreOfficeVersion?: boolean;
   onRestoreOfficeVersion?: () => void;
+  /** 附件预览模式：右侧展示的是会话附件而非 git 工作区文件。 */
+  attachmentPreviewPath?: string;
+  /** 请求修改：把右侧预览文件及其可用内容（路径/base64/mime）一起交给 composer 附件管线。 */
+  onRequestModify?: (path: string, content?: GitWorktreeFileContent) => void;
+  onOpenExternalAttachment?: () => void;
+  onDownloadAttachment?: (base64: string, fileName: string, mime?: string) => void;
+  onCloseAttachmentPreview?: () => void;
+  onCollapseRightPane?: () => void;
   selectedLine?: number;
   viewMode?: "auto" | "editor" | "diff";
   committing: boolean;
@@ -331,6 +349,12 @@ export function GitChangesPanel({
   selectedContent,
   canRestoreOfficeVersion,
   onRestoreOfficeVersion,
+  attachmentPreviewPath,
+  onRequestModify,
+  onOpenExternalAttachment,
+  onDownloadAttachment,
+  onCloseAttachmentPreview,
+  onCollapseRightPane,
   selectedLine,
   viewMode = "auto",
   committing,
@@ -366,6 +390,7 @@ export function GitChangesPanel({
   const standaloneFileView = viewMode !== "auto";
   const singleFile = viewMode === "editor" || (viewMode !== "diff" && !selectedEntry);
   const inlineDiff = true;
+  const attachmentMode = Boolean(attachmentPreviewPath);
   const previewSupported = selectedContent.previewSupported !== false;
   const previewReason = selectedContent.previewReason || "该文件可能是二进制文件或包含不可解析内容，暂不支持文本预览。";
   const previewFileName = selectedFile.split(/[\\/]/).pop() || selectedFile;
@@ -380,6 +405,39 @@ export function GitChangesPanel({
   const showSyncState = !hasCommittableChanges && syncable;
   const idleDisabled = !hasCommittableChanges && !syncable;
   const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewZoomAuto, setPreviewZoomAuto] = useState(true);
+  const previewZoomAutoRef = useRef(true);
+  const applyPreviewZoom = useCallback((zoom: number) => {
+    setPreviewZoom(zoom);
+  }, []);
+  const applyAutoFitZoom = useCallback((zoom: number) => {
+    if (!previewZoomAutoRef.current) return;
+    setPreviewZoom(zoom);
+  }, []);
+  const applyPreviewZoomAuto = useCallback((auto: boolean) => {
+    previewZoomAutoRef.current = auto;
+    setPreviewZoomAuto(auto);
+  }, []);
+  const changePreviewZoom = useCallback((zoom: number) => {
+    // -1 是工具栏「适合宽度」哨兵：回到自动适配，比例交由 viewer 测量回调下发。
+    if (zoom < 0) {
+      previewZoomAutoRef.current = true;
+      setPreviewZoomAuto(true);
+      return;
+    }
+    previewZoomAutoRef.current = false;
+    setPreviewZoomAuto(false);
+    setPreviewZoom(zoom);
+  }, []);
+  // 切换附件时恢复自动适配，避免上一文件的缩放残留。
+  // 这里把 zoom 重置为 1（100%）作为"未量测"基线：viewer 会先按 100% 布局量出
+  // fit-width，再回调把工具栏改成真实适配比例（大多数文档约为 60%~110%）。
+  useEffect(() => {
+    previewZoomAutoRef.current = true;
+    setPreviewZoomAuto(true);
+    setPreviewZoom(1);
+  }, [attachmentPreviewPath]);
   const directoryPaneLabel = directoryPaneOpen ? "收起目录区" : "展开目录区";
   const directoryTrackWidth = directoryPaneOpen ? "min(var(--changes-sidebar-width, 276px), 42%)" : "0px";
   const changesGridColumns = directoryPaneOpen
@@ -575,9 +633,11 @@ export function GitChangesPanel({
         </Empty>
       );
     }
-    if (shouldUseDocumentPreview) {
-      return (
-        <div className={`${shellClassName ?? "gt-monaco-diff-shell"} gt-monaco-diff-shell-document`}>
+    if (attachmentMode) {
+      const shell = shellClassName ?? "gt-monaco-diff-shell";
+      let body: ReactNode;
+      if (shouldUseDocumentPreview) {
+        body = (
           <Suspense fallback={(
             <Empty className="h-full rounded-none border-0">
               <EmptyDescription>Loading document preview...</EmptyDescription>
@@ -586,10 +646,58 @@ export function GitChangesPanel({
             <DocumentPreviewViewer
               filePath={selectedFile}
               content={selectedContent}
+              zoom={previewZoom}
+              zoomAuto={previewZoomAuto}
+              onFitZoomReady={applyAutoFitZoom}
               canRestorePreviousVersion={canRestoreOfficeVersion}
               onRestorePreviousVersion={() => onRestoreOfficeVersion?.()}
+              setPreviewZoom={applyPreviewZoom}
+              setPreviewZoomAuto={applyPreviewZoomAuto}
             />
           </Suspense>
+        );
+      } else {
+        body = renderUnsupportedPreview();
+      }
+      return (
+        <div className={`${shell} gt-monaco-diff-shell-document`}>
+          <Suspense fallback={<div className="h-11 shrink-0 border-b border-border/55 bg-card/70" aria-hidden="true" />}>
+            <DocumentPreviewToolbar
+              filePath={attachmentPreviewPath || selectedFile}
+              mime={selectedContent.mime}
+              hasBinary={Boolean(selectedContent.dataBase64)}
+              zoom={previewZoom}
+              zoomAuto={previewZoomAuto}
+              onZoomChange={changePreviewZoom}
+              onRequestModify={() => onRequestModify?.(selectedFile, selectedContent)}
+              onDownload={() => void onDownloadAttachment?.(selectedContent.dataBase64 || "", selectedFile, selectedContent.mime)}
+              onOpenExternal={() => onOpenExternalAttachment?.()}
+              onCopyPath={() => onCopyText(selectedFile)}
+              onCollapse={() => (onCollapseRightPane ? onCollapseRightPane() : onCloseAttachmentPreview?.())}
+            />
+          </Suspense>
+          <div className="gt-document-preview-body min-h-0 flex-1">{body}</div>
+        </div>
+      );
+    }
+    if (shouldUseDocumentPreview) {
+      const shell = shellClassName ?? "gt-monaco-diff-shell";
+      return (
+        <div className={`${shell} gt-monaco-diff-shell-document`}>
+          <div className="gt-document-preview-body min-h-0 flex-1">
+            <Suspense fallback={(
+              <Empty className="h-full rounded-none border-0">
+                <EmptyDescription>Loading document preview...</EmptyDescription>
+              </Empty>
+            )}>
+              <DocumentPreviewViewer
+                filePath={selectedFile}
+                content={selectedContent}
+                canRestorePreviousVersion={canRestoreOfficeVersion}
+                onRestorePreviousVersion={() => onRestoreOfficeVersion?.()}
+              />
+            </Suspense>
+          </div>
         </div>
       );
     }
@@ -664,7 +772,7 @@ export function GitChangesPanel({
   if (standaloneFileView) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {renderPreviewContent("gt-monaco-diff-shell h-full rounded-none border-0")}
+        {renderPreviewContent("gt-monaco-diff-shell min-h-0 flex-1 rounded-none border-0")}
       </div>
     );
   }

@@ -497,17 +497,36 @@ pub fn stage_agent_prompt_images(
             .filter(|value| !value.is_empty())
             .unwrap_or("image/png")
             .to_string();
-        let ext = match mime.as_str() {
-            "image/jpeg" => "jpg",
-            "image/gif" => "gif",
-            "image/webp" => "webp",
-            _ => "png",
-        };
-        let stem = image
+        let filename = image
             .filename
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+            .unwrap_or("attachment");
+        let ext_from_name = Path::new(filename)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 16
+                    && value.chars().all(|ch| ch.is_ascii_alphanumeric())
+            });
+        let ext = ext_from_name.unwrap_or_else(|| match mime.as_str() {
+            "image/jpeg" => "jpg".to_string(),
+            "image/gif" => "gif".to_string(),
+            "image/webp" => "webp".to_string(),
+            "image/png" => "png".to_string(),
+            "application/pdf" => "pdf".to_string(),
+            "text/plain" => "txt".to_string(),
+            "text/markdown" => "md".to_string(),
+            "application/json" => "json".to_string(),
+            _ if mime.starts_with("image/") => "png".to_string(),
+            _ => "bin".to_string(),
+        });
+        let stem = Path::new(filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
             .unwrap_or("attachment");
         let safe_stem = stem
             .chars()
@@ -637,21 +656,6 @@ pub fn read_local_attachment_preview(path: &str) -> Result<UiAttachmentPreview, 
     }
 }
 
-/// UI debug 日志落盘（前端 appendAgentDebugLog 同步写入，便于离线排查）。
-/// 超过上限时滚动为 ui-debug.log.1（单文件轮转，避免无限增长——曾累积到 266MB）。
-const UI_DEBUG_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-
-fn rotate_ui_debug_log_if_needed(log_path: &std::path::Path) {
-    let Ok(meta) = std::fs::metadata(log_path) else {
-        return;
-    };
-    if meta.len() < UI_DEBUG_LOG_MAX_BYTES {
-        return;
-    }
-    let rotated = log_path.with_extension("log.1");
-    let _ = std::fs::rename(log_path, rotated);
-}
-
 #[tauri::command]
 pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -665,7 +669,6 @@ pub async fn append_ui_debug_log(line: String) -> Result<(), String> {
         let text = format!("{stamp} {line}\n");
         use std::io::Write as _;
         let log_path = base.join("ui-debug.log");
-        rotate_ui_debug_log_if_needed(&log_path);
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -804,4 +807,155 @@ pub fn send_desktop_notification(title: &str, body: &str) -> Result<(), String> 
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to send notification: {e}"))
+}
+
+/// 系统级文档缩略快照（macOS：QuickLookThumbnailing，与 Finder/Spotlight 同一渲染管线）。
+/// 必须进程内生成：qlmanage 是独立可执行程序，每次调用都会在 Dock 闪现图标。
+/// 优先直接读源文件；无源文件的粘贴附件走 `bytes` + `filename`（按扩展名落临时
+/// 文件，QuickLook 依赖扩展名挑选渲染器），用完即删。无缩略图时返回 Err。
+#[tauri::command]
+pub async fn document_quicklook_thumbnail(
+    path: Option<String>,
+    bytes_base64: Option<String>,
+    filename: Option<String>,
+    max_size: u32,
+) -> Result<String, String> {
+    let size = max_size.clamp(64, 1024);
+    // 源文件路径直接用；字节输入按扩展名落临时文件（QuickLook 依赖扩展名选渲染器），
+    // 其所在目录在出图后整体删除。
+    let (target, staged_dir) = match (
+        path.as_deref().map(str::trim).filter(|p| !p.is_empty()),
+        bytes_base64
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty()),
+    ) {
+        (Some(path), _) if Path::new(path).is_file() => (PathBuf::from(path), None),
+        (_, Some(base64)) => {
+            let name = filename
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .unwrap_or("document.docx");
+            let ext = Path::new(name)
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or("bin");
+            let bytes = BASE64_STANDARD
+                .decode(base64)
+                .map_err(|e| format!("invalid base64 payload: {e}"))?;
+            let dir = std::env::temp_dir().join(format!("giteam-quicklook-{}", fastrand::u64(..)));
+            fs::create_dir_all(&dir).map_err(|e| format!("failed to create temp dir: {e}"))?;
+            let staged = dir.join(format!("source.{ext}"));
+            fs::write(&staged, bytes).map_err(|e| format!("failed to stage attachment: {e}"))?;
+            (staged, Some(dir))
+        }
+        (Some(_), None) => return Err("attachment file not found".to_string()),
+        (None, None) => return Err("path or bytes_base64 is required".to_string()),
+    };
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            generate_quicklook_thumbnail(&target, size)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (target, size);
+            Err("document thumbnails are only implemented on macOS".to_string())
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("thumbnail task failed: {e}")));
+
+    if let Some(dir) = staged_dir {
+        let _ = fs::remove_dir_all(dir);
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn generate_quicklook_thumbnail(path: &Path, size: u32) -> Result<String, String> {
+    use block2::RcBlock;
+    use dispatch2::{DispatchSemaphore, DispatchTime};
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
+    use objc2_core_graphics::CGImage;
+    use objc2_foundation::{NSDictionary, NSError, NSSize, NSString, NSURL};
+    use objc2_quick_look_thumbnailing::{
+        QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
+        QLThumbnailGenerator, QLThumbnailRepresentation,
+    };
+
+    let file_url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    let request = unsafe {
+        QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
+            QLThumbnailGenerationRequest::alloc(),
+            &file_url,
+            NSSize::new(f64::from(size), f64::from(size)),
+            2.0,
+            QLThumbnailGenerationRequestRepresentationTypes::Thumbnail
+                | QLThumbnailGenerationRequestRepresentationTypes::LowQualityThumbnail,
+        )
+    };
+    let semaphore = DispatchSemaphore::new(0);
+    let outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // completion 可能发生在任意队列；块内只取出 representation，PNG 编码统一放到
+    // 等待线程执行，避免假设 Objective-C 回调线程的运行环境。
+    let completion_outcome = outcome.clone();
+    let completion_semaphore = semaphore.clone();
+    let completion = RcBlock::new(
+        move |representation: *mut QLThumbnailRepresentation, error: *mut NSError| {
+            let outcome = completion_outcome.clone();
+            let semaphore = completion_semaphore.clone();
+            // 回调参数是 +0 借用：QuickLook 在回调结束后自行释放 representation，
+            // 绝不能 Retained::from_raw 接管（会双重释放，request 析构时段错误）。
+            // CGImage 是线程安全的不可变 CF 对象，以 +1 Retained 带出回调编码即可。
+            let result = if !error.is_null() {
+                // SAFETY: QuickLook 保证回调期间参数有效。
+                let error = unsafe { &*error };
+                Err(error.localizedDescription().to_string())
+            } else if representation.is_null() {
+                Err("QuickLook returned no thumbnail representation".to_string())
+            } else {
+                // SAFETY: 同上，回调期间借用有效。
+                let representation = unsafe { &*representation };
+                // SAFETY: CGImage 方法返回 +1 Retained，所有权归本闭包。
+                Ok(unsafe { representation.CGImage() })
+            };
+            *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            semaphore.signal();
+        },
+    );
+    unsafe {
+        QLThumbnailGenerator::sharedGenerator()
+            .generateBestRepresentationForRequest_completionHandler(&request, &completion);
+    }
+    if semaphore.wait(DispatchTime::FOREVER) != 0 {
+        return Err("QuickLook thumbnail wait failed".to_string());
+    }
+    let outcome = outcome
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .ok_or("QuickLook thumbnail completion was missed".to_string())?;
+    let cg_image: Retained<CGImage> = outcome.map_err(|e| e)?;
+
+    // SAFETY: cg_image 持有独立引用计数，等待线程编码安全。
+    let bitmap = NSBitmapImageRep::initWithCGImage(NSBitmapImageRep::alloc(), &cg_image);
+    let properties = NSDictionary::<NSString, AnyObject>::new();
+    // SAFETY: PNG + 空 properties 是 AppKit 常规用法。
+    let png = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, properties.as_ref())
+    }
+    .ok_or_else(|| "thumbnail PNG encode failed".to_string())?;
+    if png.is_empty() {
+        return Err("thumbnail PNG encode produced no data".to_string());
+    }
+    Ok(format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(png.to_vec())
+    ))
 }
